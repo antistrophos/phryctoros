@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>optical-carriage — self-characterisation (§6.1)</title>
+<style>
+  body { font: 14px/1.45 system-ui, sans-serif; margin: 1rem; background: #14161a; color: #d8dce2; }
+  h1 { font-size: 1.1rem; }
+  button { font-size: 14px; padding: .4rem .9rem; margin-right: .4rem; cursor: pointer; }
+  .warn { color: #ffb86b; } .ok { color: #7ce38b; } .bad { color: #ff8b8b; } .dim { color: #9aa3ad; }
+  #patch { width: 220px; height: 220px; background: #888; margin: .8rem 0; }
+  video { max-width: 300px; border: 1px solid #333; }
+  pre { background: #0d0f12; padding: .6rem; }
+</style>
+</head>
+<body>
+<h1>Self-characterisation — §6.1 (v0: latency + refresh/capture beat)</h1>
+<p class="warn">v0, UNTESTED ON REAL HARDWARE — built to the spec's §6.1 shape; run it with a
+mirror and file findings. Point this device's camera at its own screen in a mirror
+(<code>mirror.receive</code> is handled — the measurements below don't depend on parity).
+Measures: display→capture latency, and the beat between display refresh and capture rate.
+Line-rate, gamma, and MTF are v0.2 work.</p>
+<p>
+  <button id="camBtn">Start camera</button>
+  <button id="runBtn" disabled>Run (12 s)</button>
+  <button id="dlBtn" disabled>Download characterisation JSON</button>
+</p>
+<div id="patch"></div>
+<video id="vid" muted playsinline></video>
+<div id="status" class="dim">idle</div>
+<pre id="out">(no result yet)</pre>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+let stream = null, result = null;
+
+$("camBtn").onclick = async () => {
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: { ideal: 640 } } });
+    const v = $("vid"); v.srcObject = stream; await v.play();
+    $("runBtn").disabled = false;
+    $("status").textContent = "camera live — arrange the mirror so the flashing patch is visible to the camera, then Run";
+  } catch (e) { $("status").textContent = "camera failed: " + e.message; $("status").className = "bad"; }
+};
+
+$("runBtn").onclick = () => {
+  const v = $("vid"), patch = $("patch");
+  const c = document.createElement("canvas"); c.width = 160; c.height = 90;
+  const ctx = c.getContext("2d", { willReadFrequently: true });
+  const cmd = [], obs = [];
+  const T = 12000, t0 = performance.now();
+  const FLASH_HZ = 2;
+  $("status").textContent = "running 12 s — keep the mirror still";
+  function frame(now) {
+    const t = now - t0;
+    if (t > T) { finish(); return; }
+    const on = Math.floor(t / 1000 * FLASH_HZ * 2) % 2 === 0;
+    patch.style.background = on ? "#fff" : "#000";
+    cmd.push({ t, on });
+    ctx.drawImage(v, 0, 0, c.width, c.height);
+    const d = ctx.getImageData(0, 0, c.width, c.height).data;
+    let sum = 0;
+    for (let i = 0; i < d.length; i += 16) sum += d[i];
+    obs.push({ t, lum: sum });
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  function finish() {
+    patch.style.background = "#888";
+    // Normalize observed luminance to ±1 square-ish wave.
+    const lums = obs.map(o => o.lum);
+    const lo = Math.min(...lums), hi = Math.max(...lums);
+    if (hi - lo < 1e-6) { $("status").textContent = "no signal seen — is the patch in view via the mirror?"; $("status").className = "bad"; return; }
+    const norm = obs.map(o => ({ t: o.t, v: ((o.lum - lo) / (hi - lo)) * 2 - 1 }));
+    const cmdAt = t => (Math.floor(t / 1000 * FLASH_HZ * 2) % 2 === 0 ? 1 : -1);
+    // Latency: cross-correlate observed against commanded over 0..400 ms lags.
+    let bestLag = 0, bestC = -Infinity;
+    for (let lag = 0; lag <= 400; lag += 5) {
+      let s = 0;
+      for (const o of norm) s += o.v * cmdAt(o.t - lag);
+      if (s > bestC) { bestC = s; bestLag = lag; }
+    }
+    // Beat: DFT of the raw luminance sequence (uniform-ish rAF sampling assumed),
+    // 0.2–12 Hz sweep; report top 3 peaks away from the flash frequency.
+    const n = norm.length, dur = (norm[n - 1].t - norm[0].t) / 1000;
+    const peaks = [];
+    for (let f = 0.2; f <= 12; f += 0.05) {
+      let re = 0, im = 0;
+      for (const o of norm) { const w = 2 * Math.PI * f * o.t / 1000; re += o.v * Math.cos(w); im += o.v * Math.sin(w); }
+      const mag = Math.hypot(re, im) / n;
+      if (Math.abs(f - FLASH_HZ) > 0.3) peaks.push({ f: +f.toFixed(2), mag: +mag.toFixed(4) });
+    }
+    peaks.sort((a, b) => b.mag - a.mag);
+    result = {
+      kind: "self-characterisation-v0",
+      ts: new Date().toISOString(),
+      display_to_capture_latency_ms_est: bestLag,
+      beat_peaks_hz: peaks.slice(0, 3),
+      samples: n, duration_s: +dur.toFixed(1),
+      caveats: ["v0: rAF-sampled, ±5 ms lag grid", "line-rate/gamma/MTF not yet measured", "UNTESTED on real hardware at authoring time"]
+    };
+    $("out").textContent = JSON.stringify(result, null, 2);
+    $("dlBtn").disabled = false;
+    $("status").textContent = "done — cache this JSON; re-run after OS/camera updates (§6.1)";
+    $("status").className = "ok";
+  }
+};
+
+$("dlBtn").onclick = () => {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(result, null, 2)], { type: "application/json" }));
+  a.download = "characterisation.json";
+  a.click();
+};
+</script>
+</body>
+</html>

@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>optical-carriage — golden-vector manifest generator</title>
+<style>
+  body { font: 14px/1.45 system-ui, sans-serif; margin: 1rem; background: #14161a; color: #d8dce2; }
+  h1 { font-size: 1.1rem; }
+  button { font-size: 14px; padding: .4rem .9rem; cursor: pointer; }
+  pre { background: #0d0f12; padding: .6rem; max-height: 420px; overflow: auto; }
+  .dim { color: #9aa3ad; }
+</style>
+</head>
+<body>
+<h1>Golden-vector manifest (scaffolding — review F8)</h1>
+<p class="dim">Conformance model: decoders must be byte-exact against committed frames;
+encoders are conformant iff a reference decoder recovers their output. The reference
+rasterizer is the analytic per-pixel renderer with deterministic trig (dtrig.js) and
+8-bit quantized output. This page emits the MANIFEST — profile, seed, per-frame
+SHA-256 of quantized frames — which pins the vectors textually until a PNG-writing
+runtime is available. Final vectors freeze only after Phase 0 sets real constants.</p>
+<p><button id="runBtn">Generate manifest (16 frames, 512 px)</button></p>
+<pre id="out">(pending)</pre>
+
+<script src="../src/prng.js"></script>
+<script src="../src/dtrig.js"></script>
+<script src="../src/geom.js"></script>
+<script src="../src/flicker.js"></script>
+<script src="../src/profile.js"></script>
+<script src="../src/emission.js"></script>
+<script>
+"use strict";
+const OC = window.OC;
+async function sha256Hex(bytes) {
+  const h = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(h)].map(b => b.toString(16).padStart(2, "0")).join("");
+}
+document.getElementById("runBtn").onclick = async () => {
+  const out = document.getElementById("out");
+  out.textContent = "rendering…";
+  const profile = OC.profile.defaultProfile({ render: { size_px: 512, scale_px_per_unit: 82 }, preamble_symbols: 4 });
+  const trig = { sin: OC.dtrig.dsin, cos: OC.dtrig.dcos, atan2: OC.dtrig.datan2 };
+  const N = 16;
+  const schedules = OC.emission.buildSchedules(profile, N);
+  const modules = OC.emission.fiducialModules(profile.fiducial);
+  const frames = [];
+  for (let f = 0; f < N; f++) {
+    const img = OC.emission.renderFrame(profile, f, { trig, schedules, modules });
+    const q = new Uint8Array(img.data.length);
+    for (let i = 0; i < q.length; i++) q[i] = Math.max(0, Math.min(255, Math.round(img.data[i] * 255)));
+    frames.push({ f, sha256: await sha256Hex(q) });
+    out.textContent = "rendering… " + (f + 1) + "/" + N;
+    await new Promise(r => setTimeout(r, 0));
+  }
+  const manifest = {
+    kind: "golden-manifest",
+    version: "phase0-v0-scaffold",
+    rasterizer: "emission.renderFrame + dtrig (deterministic), 8-bit quantized, row-major luminance",
+    note: "NOT frozen — profile constants await Phase 0. Committed to pin the mechanism, not the values.",
+    profile, n_frames: N, frames
+  };
+  out.textContent = JSON.stringify(manifest, null, 1);
+};
+</script>
+</body>
+</html>

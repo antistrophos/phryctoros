@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>optical-carriage — receiver / acuity harness</title>
+<style>
+  body { font: 14px/1.45 system-ui, sans-serif; margin: 1rem; background: #14161a; color: #d8dce2; }
+  h1 { font-size: 1.1rem; } h3 { font-size: 1rem; margin: 1rem 0 .3rem; }
+  fieldset { border: 1px solid #333; margin: .6rem 0; }
+  label { margin-right: .9rem; white-space: nowrap; }
+  input, select { background: #0d0f12; color: #d8dce2; border: 1px solid #444; padding: .15rem .3rem; }
+  button { font-size: 14px; padding: .4rem .9rem; margin: .15rem .3rem .15rem 0; cursor: pointer; }
+  table { border-collapse: collapse; margin: .4rem 0; }
+  td, th { border: 1px solid #333; padding: .2rem .5rem; font-size: 12.5px; }
+  .ok { color: #7ce38b; } .bad { color: #ff8b8b; } .dim { color: #9aa3ad; } .warn { color: #ffb86b; }
+  #status { font-weight: 600; margin: .4rem 0; }
+  video, #prev { max-width: 380px; border: 1px solid #333; }
+  #plot { border: 1px solid #333; background: #0d0f12; }
+</style>
+</head>
+<body>
+<h1>Receiver — acuity harness (Phase 0)</h1>
+<div id="caps" class="dim"></div>
+
+<fieldset><legend>Session metadata (logged with every decode — spec §6)</legend>
+  <label>range (m) <input id="m_range" type="number" step="0.5" style="width:4.5rem"></label>
+  <label>lighting <select id="m_light"><option>indoor-dim</option><option>indoor-bright</option><option>dark</option><option>daylight-shade</option><option>daylight-direct</option></select></label>
+  <label>tx type <input id="m_tx" value="laptop-screen" style="width:8rem"></label>
+  <label>tx size (m) <input id="m_txsize" type="number" step="0.01" value="0.30" style="width:4.5rem"></label>
+  <label>rx device <input id="m_rx" placeholder="e.g. Pixel 8" style="width:9rem"></label>
+  <label>camera <select id="m_cam"><option>rear</option><option>front</option></select></label>
+  <label>handheld <input id="m_hand" type="checkbox" checked></label>
+  <label>emitter loop (s) <input id="m_loop" type="number" value="60" style="width:4rem"></label>
+  <label>notes <input id="m_notes" style="width:12rem"></label>
+</fieldset>
+
+<p>
+  <button id="selftestBtn">Run self-test (no camera)</button>
+  <button id="camBtn">Start camera</button>
+  <button id="capBtn" disabled>Capture <input id="capSecs" type="number" value="8" min="3" style="width:3rem"> s → decode</button>
+  <label style="border:1px dashed #555; padding:.4rem .6rem">video file (§9.1): <input id="fileIn" type="file" accept="video/*"></label>
+</p>
+<div id="status">idle</div>
+<video id="vid" muted playsinline style="display:none"></video>
+<canvas id="prev" width="380" height="214" style="display:none"></canvas>
+
+<h3>Decode results</h3>
+<div id="results"><span class="dim">nothing decoded yet</span></div>
+
+<h3>Session log</h3>
+<p><button id="csvBtn">Export CSV</button> <span id="rowsN" class="dim">0 rows</span></p>
+<canvas id="plot" width="640" height="240"></canvas>
+
+<script src="../src/prng.js"></script>
+<script src="../src/dtrig.js"></script>
+<script src="../src/geom.js"></script>
+<script src="../src/flicker.js"></script>
+<script src="../src/profile.js"></script>
+<script src="../src/emission.js"></script>
+<script src="../src/register.js"></script>
+<script src="../src/sample.js"></script>
+<script src="../src/transform.js"></script>
+<script src="../src/separate.js"></script>
+<script src="../src/demap.js"></script>
+<script src="../src/ser.js"></script>
+<script src="../src/degrade.js"></script>
+<script src="../src/pipeline.js"></script>
+<script>
+"use strict";
+const OC = window.OC;
+const $ = id => document.getElementById(id);
+const profile = OC.profile.defaultProfile(); // field profile — must match the emitter's
+const rows = [];
+let stream = null, capturing = false, camFrames = [], frameCounter = 0;
+
+$("caps").textContent =
+  "capabilities: secureContext=" + window.isSecureContext +
+  " · getUserMedia=" + !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia) +
+  " · origin=" + location.protocol + " — file-input decode needs NO camera and NO secure context (§9.1); " +
+  "this page is the sneakernet artifact: it must keep working from file://.";
+
+function setStatus(t, cls) { $("status").textContent = t; $("status").className = cls || ""; }
+
+function toLumFromCanvas(ctx, w, h) {
+  const id = ctx.getImageData(0, 0, w, h).data;
+  const out = new Uint8Array(w * h);
+  for (let i = 0, j = 0; i < out.length; i++, j += 4)
+    out[i] = (id[j] * 77 + id[j + 1] * 150 + id[j + 2] * 29) >> 8;
+  return { w, h, data: out, norm: 255 };
+}
+
+function layerSummary(res) {
+  if (res.error) return "<span class='bad'>" + res.error + "</span>";
+  let html = "";
+  res.emitters.forEach((em, ei) => {
+    html += "<table><tr><th colspan='10'>emitter " + ei + " — fiducial " + em.fiducialWidthPx + "px</th></tr>" +
+      "<tr><th>annulus</th><th>layer</th><th>present</th><th>carrier</th><th>SER</th><th>erasures</th><th>lock</th><th>contrast</th><th>SNR/harmonic (dB)</th><th>verdict</th></tr>";
+    em.annuli.forEach(a => {
+      const snr = a.snr_db ? Object.entries(a.snr_db).map(([k, v]) => "k" + k + ":" + v).join(" ") : "—";
+      const lock = a.alignMethod ? (a.alignMethod + " lag " + a.alignLag + (a.alignMatchFrac ? " (" + a.alignMatchFrac + ")" : "")) : "—";
+      const verdict = !a.present ? "<span class='dim'>unresolved</span>" :
+        a.error ? "<span class='bad'>" + a.error + "</span>" :
+        a.ok ? "<span class='ok'>DECODES</span>" : "<span class='warn'>degraded</span>";
+      html += "<tr><td>" + a.annulus + "</td><td>" + a.layer + "</td><td>" + (a.present ? "yes" : "no") +
+        "</td><td>" + (a.carrierRatio ?? "—") + "×</td><td>" + (a.ser ?? "—") + "</td><td>" + (a.erasures ?? "—") + "</td><td>" + lock +
+        "</td><td>" + (a.contrast ?? "—") + "</td><td>" + snr + "</td><td>" + verdict + "</td></tr>";
+    });
+    html += "</table>";
+  });
+  return html;
+}
+
+function logRow(res, source, fpsMeasured, nFrames) {
+  const em = res.emitters && res.emitters[0];
+  const row = {
+    ts: new Date().toISOString(),
+    range_m: $("m_range").value || "", lighting: $("m_light").value,
+    tx_type: $("m_tx").value, tx_size_m: $("m_txsize").value,
+    rx_device: $("m_rx").value || "", camera: $("m_cam").value,
+    handheld: $("m_hand").checked, source, fps_measured: fpsMeasured, frames: nFrames,
+    notes: $("m_notes").value || ""
+  };
+  for (let a = 0; a < 3; a++) {
+    const A = em && em.annuli[a] || {};
+    row["a" + a + "_present"] = A.present ?? false;
+    row["a" + a + "_ser"] = A.ser ?? "";
+    row["a" + a + "_erasure_rate"] = A.erasureRate ?? "";
+    row["a" + a + "_ok"] = A.ok ?? false;
+    row["a" + a + "_contrast"] = A.contrast ?? "";
+    row["a" + a + "_snr"] = A.snr_db ? Object.entries(A.snr_db).map(([k, v]) => k + ":" + v).join("|") : "";
+  }
+  rows.push(row);
+  $("rowsN").textContent = rows.length + " rows";
+  drawPlot();
+}
+
+function decodeFrames(frames, source, fpsMeasured) {
+  setStatus("decoding " + frames.length + " frames…", "warn");
+  setTimeout(() => {
+    try {
+      const res = OC.pipeline.decodeSequence(frames, profile, {
+        aligned: false, handheld: $("m_hand").checked,
+        loopSeconds: +$("m_loop").value || 60,
+        mirror: { receive: false }, maxEmitters: 4
+      });
+      $("results").innerHTML = layerSummary(res);
+      logRow(res, source, fpsMeasured, frames.length);
+      setStatus(res.error ? "decode failed: " + res.error : "decode complete", res.error ? "bad" : "ok");
+    } catch (e) { setStatus("decode error: " + e.message, "bad"); console.error(e); }
+  }, 30);
+}
+
+/* ---------- self-test: render → decode entirely in-page ---------- */
+$("selftestBtn").onclick = () => {
+  setStatus("self-test: rendering 64 synthetic frames…", "warn");
+  setTimeout(() => {
+    const p = OC.profile.defaultProfile({ render: { size_px: 512, scale_px_per_unit: 82 }, preamble_symbols: 4 });
+    const seq = OC.emission.renderSequence(p, 64, {});
+    const res = OC.pipeline.decodeSequence(seq.frames, p, { aligned: true });
+    $("results").innerHTML = layerSummary(res);
+    const a0 = res.emitters && res.emitters[0].annuli[0];
+    setStatus(a0 && a0.ser === 0 ? "self-test PASS — install works; decoder closes the loop" : "self-test FAIL", a0 && a0.ser === 0 ? "ok" : "bad");
+  }, 30);
+};
+
+/* ---------- live camera (C1: needs secure context) ---------- */
+$("camBtn").onclick = async () => {
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: $("m_cam").value === "front" ? "user" : "environment", width: { ideal: 1280 }, frameRate: { ideal: 30 } }
+    });
+    const v = $("vid"); v.srcObject = stream; v.style.display = ""; await v.play();
+    $("capBtn").disabled = false;
+    setStatus("camera live — frame the emitter, prop the phone (or tick handheld), then Capture", "ok");
+  } catch (e) { setStatus("camera failed: " + e.message + " (C1: HTTPS or localhost only — use the file path instead)", "bad"); }
+};
+
+$("capBtn").onclick = () => {
+  const v = $("vid");
+  const secs = Math.max(3, +$("capSecs").value || 8);
+  const W = 800, H = Math.round(800 * v.videoHeight / v.videoWidth) || 450;
+  const c = document.createElement("canvas"); c.width = W; c.height = H;
+  const ctx = c.getContext("2d", { willReadFrequently: true });
+  camFrames = []; capturing = true;
+  const fps = profile.frame_rate_hz;
+  const perIdx = {};
+  const tEnd = performance.now() + secs * 1000;
+  const t0Wall = performance.now();
+  const times = [];
+  setStatus("capturing " + secs + " s…", "warn");
+  // Duplicates are DELIBERATE: the camera runs faster than the 15 fps emission,
+  // so each emission frame gets ≥2 looks and the decoder keeps the tear-free one.
+  function grab(now, meta) {
+    if (!capturing) return;
+    if (now >= tEnd) {
+      capturing = false;
+      const fpsMeas = times.length > 1 ? (1000 * (times.length - 1) / (times[times.length - 1] - times[0])).toFixed(1) : "?";
+      decodeFrames(camFrames, "camera-live", fpsMeas);
+      return;
+    }
+    const t = meta ? meta.mediaTime : (now - t0Wall) / 1000;
+    const idx = Math.round(t * fps);
+    if ((perIdx[idx] || 0) < 3) {
+      ctx.drawImage(v, 0, 0, W, H);
+      camFrames.push({ f: idx, img: toLumFromCanvas(ctx, W, H) });
+      perIdx[idx] = (perIdx[idx] || 0) + 1;
+    }
+    times.push(now);
+    if ("requestVideoFrameCallback" in v) v.requestVideoFrameCallback(grab);
+    else requestAnimationFrame(grab);
+  }
+  if ("requestVideoFrameCallback" in v) v.requestVideoFrameCallback(grab);
+  else requestAnimationFrame(grab);
+};
+
+/* ---------- recorded input (§9.1 — first-class, works without camera/secure ctx) ----------
+   Seek-stepped, crop-at-native-resolution. Browser-agnostic by construction: no
+   rVFC dependence (Firefox lacks it — its rAF fallback jittered frame timing),
+   and no 800 px downscale (which cost the phase margin that made laptop decodes
+   work at 1200). Pre-scan finds the emitter; capture crops around it at source
+   resolution (≤1280 wide), stepping exact 1/30 s seeks mapped to the 15 fps
+   emission clock with duplicates kept (tear defense). */
+$("fileIn").onchange = async () => {
+  const file = $("fileIn").files[0];
+  if (!file) return;
+  const v = $("vid");
+  v.srcObject = null; v.src = URL.createObjectURL(file); v.style.display = ""; v.muted = true;
+  const fps = profile.frame_rate_hz;
+  const seek = t => new Promise(r => { v.onseeked = () => r(); v.currentTime = t; });
+  try {
+    await new Promise((r, j) => { v.onloadedmetadata = () => r(); v.onerror = () => j(new Error("video failed to load")); });
+    // Pre-scan: find the emitter's crop box at a few probe times (800 px is fine
+    // for FINDING it; the capture itself then uses native resolution).
+    setStatus("pre-scan: locating emitter…", "warn");
+    const pc = document.createElement("canvas");
+    const pctx = pc.getContext("2d", { willReadFrequently: true });
+    const PW = 800, PH = Math.round(PW * v.videoHeight / v.videoWidth);
+    pc.width = PW; pc.height = PH;
+    // Union the emitter's position across ALL probe frames — handheld sway moves
+    // it, and a crop fit to one instant silently clips boundary sectors later
+    // (bilinear clamps at edges; no error, just poisoned samples). Margin 4.2
+    // fiducial widths beyond the outermost annulus's ~3.0.
+    let hits = [];
+    for (const t of [0.5, v.duration * 0.3, v.duration * 0.6, Math.max(0.5, v.duration - 1)]) {
+      await seek(Math.min(t, v.duration - 0.1));
+      pctx.drawImage(v, 0, 0, PW, PH);
+      const reg = OC.register.registerAll(toLumFromCanvas(pctx, PW, PH));
+      if (reg.emitters.length) {
+        const em = reg.emitters[0];
+        const sc = v.videoWidth / PW;
+        hits.push({
+          cx: ((em.corners.TL.x + em.corners.TR.x + em.corners.BL.x) / 3 + em.fiducialWidthPx * 0.14) * sc,
+          cy: ((em.corners.TL.y + em.corners.TR.y + em.corners.BL.y) / 3 + em.fiducialWidthPx * 0.14) * sc,
+          fid: em.fiducialWidthPx * sc
+        });
+      }
+    }
+    let box = null;
+    if (hits.length) {
+      const fidMax = Math.max(...hits.map(h => h.fid));
+      const half = fidMax * 4.2;
+      const x0 = Math.min(...hits.map(h => h.cx)) - half, x1 = Math.max(...hits.map(h => h.cx)) + half;
+      const y0 = Math.min(...hits.map(h => h.cy)) - half, y1 = Math.max(...hits.map(h => h.cy)) + half;
+      const sx = Math.max(0, Math.round(x0)), sy = Math.max(0, Math.round(y0));
+      box = { sx, sy, sw: Math.min(v.videoWidth - sx, Math.round(x1 - x0)), sh: Math.min(v.videoHeight - sy, Math.round(y1 - y0)) };
+    }
+    const c = document.createElement("canvas");
+    const ctx = c.getContext("2d", { willReadFrequently: true });
+    let sx = 0, sy = 0, sw = v.videoWidth, sh = v.videoHeight;
+    if (box) ({ sx, sy, sw, sh } = box);
+    const W = Math.min(1024, sw), H = Math.round(sh * W / sw);
+    c.width = W; c.height = H;
+    setStatus(box ? ("emitter found — cropping " + sw + "×" + sh + " at native res, seek-stepping…")
+                  : "no emitter in pre-scan — capturing uncropped (decode may still find it)…", "warn");
+    const frames = []; const perIdx = {};
+    let steps = 0;
+    for (let i = 0; ; i++) {
+      const t = i / 30;
+      if (t >= v.duration - 0.05) break;
+      await seek(t);
+      const idx = Math.round(t * fps);
+      if ((perIdx[idx] || 0) < 2) {
+        ctx.drawImage(v, sx, sy, sw, sh, 0, 0, W, H);
+        frames.push({ f: idx, img: toLumFromCanvas(ctx, W, H) });
+        perIdx[idx] = (perIdx[idx] || 0) + 1;
+      }
+      if (++steps % 60 === 0) {
+        setStatus("seek-capture " + t.toFixed(1) + "/" + v.duration.toFixed(1) + " s…", "warn");
+        await new Promise(r => setTimeout(r, 0));
+      }
+    }
+    decodeFrames(frames, "video-file-seek(" + file.name + ")", "seek30" + (box ? "-crop" : ""));
+  } catch (e) { setStatus("file decode failed: " + e.message, "bad"); console.error(e); }
+};
+
+/* ---------- CSV + plot ---------- */
+$("csvBtn").onclick = () => {
+  if (!rows.length) { setStatus("no rows to export", "warn"); return; }
+  const cols = Object.keys(rows[0]);
+  const esc = s => '"' + String(s).replace(/"/g, '""') + '"';
+  const csv = cols.join(",") + "\n" + rows.map(r => cols.map(cn => esc(r[cn])).join(",")).join("\n");
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+  a.download = "acuity-" + Date.now() + ".csv";
+  a.click();
+};
+
+function drawPlot() {
+  const c = $("plot"), ctx = c.getContext("2d");
+  ctx.fillStyle = "#0d0f12"; ctx.fillRect(0, 0, c.width, c.height);
+  ctx.strokeStyle = "#444"; ctx.strokeRect(40, 10, c.width - 60, c.height - 40);
+  ctx.fillStyle = "#9aa3ad"; ctx.font = "11px monospace";
+  ctx.fillText("highest decoding layer vs range (m) — the acuity curve", 44, c.height - 8);
+  const withRange = rows.filter(r => r.range_m !== "");
+  if (!withRange.length) return;
+  const maxR = Math.max(5, ...withRange.map(r => +r.range_m));
+  for (let l = 0; l <= 3; l++) {
+    const y = 10 + (c.height - 50) * (1 - l / 3);
+    ctx.fillText(l === 3 ? "" : "L" + l, 20, y + 4);
+  }
+  withRange.forEach(r => {
+    let top = -1;
+    for (let a = 0; a < 3; a++) if (r["a" + a + "_ok"]) top = a;
+    const x = 40 + (c.width - 60) * (+r.range_m / maxR);
+    const y = 10 + (c.height - 50) * (1 - Math.max(top, 0) / 3);
+    ctx.fillStyle = top < 0 ? "#ff8b8b" : "#7ce38b";
+    ctx.beginPath(); ctx.arc(x, y, 4, 0, 7); ctx.fill();
+    ctx.fillStyle = "#9aa3ad";
+    ctx.fillText(String(+r.range_m), x - 6, c.height - 22);
+  });
+}
+drawPlot();
+</script>
+</body>
+</html>

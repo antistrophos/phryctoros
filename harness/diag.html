@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>optical-carriage — field-clip diagnostics</title>
+<style>
+  body { font: 13px/1.4 system-ui, sans-serif; margin: 1rem; background: #14161a; color: #d8dce2; }
+  pre { background: #0d0f12; padding: .6rem; max-height: 480px; overflow: auto; white-space: pre-wrap; }
+  canvas { border: 1px solid #333; max-width: 100%; }
+  .dim { color: #9aa3ad; }
+</style>
+</head>
+<body>
+<h1 style="font-size:1.05rem">Field clip diagnostics — stage-by-stage autopsy (spec §9.1: failures must explain themselves)</h1>
+<div id="status" class="dim">loading clip…</div>
+<pre id="out">(pending)</pre>
+<canvas id="probe" width="800" height="450"></canvas>
+
+<script src="../src/prng.js"></script>
+<script src="../src/dtrig.js"></script>
+<script src="../src/geom.js"></script>
+<script src="../src/flicker.js"></script>
+<script src="../src/profile.js"></script>
+<script src="../src/emission.js"></script>
+<script src="../src/register.js"></script>
+<script src="../src/sample.js"></script>
+<script src="../src/transform.js"></script>
+<script src="../src/separate.js"></script>
+<script src="../src/demap.js"></script>
+<script src="../src/ser.js"></script>
+<script src="../src/degrade.js"></script>
+<script src="../src/pipeline.js"></script>
+<script>
+"use strict";
+const OC = window.OC;
+const $ = id => document.getElementById(id);
+const report = { stages: [] };
+
+function lumFrom(ctx, w, h) {
+  const id = ctx.getImageData(0, 0, w, h).data;
+  const out = new Uint8Array(w * h);
+  for (let i = 0, j = 0; i < out.length; i++, j += 4)
+    out[i] = (id[j] * 77 + id[j + 1] * 150 + id[j + 2] * 29) >> 8;
+  return { w, h, data: out, norm: 255 };
+}
+
+function lumStats(img) {
+  const s = [];
+  for (let i = 0; i < img.data.length; i += 97) s.push(img.data[i]);
+  s.sort((a, b) => a - b);
+  const q = p => s[Math.floor(s.length * p)];
+  return { p02: q(0.02), p25: q(0.25), p50: q(0.5), p75: q(0.75), p98: q(0.98) };
+}
+
+function seekTo(v, t) {
+  return new Promise(res => { v.onseeked = () => res(); v.currentTime = t; });
+}
+
+async function main() {
+  const v = document.createElement("video");
+  v.muted = true; v.playsInline = true;
+  const clipName = new URLSearchParams(location.search).get("clip") || "field1.mp4";
+  report.clip = clipName;
+  const blob = await (await fetch("../clips/" + clipName)).blob();
+  v.src = URL.createObjectURL(blob);
+  await new Promise(res => { v.onloadedmetadata = res; });
+  report.video = { w: v.videoWidth, h: v.videoHeight, duration: +v.duration.toFixed(2) };
+  $("status").textContent = "clip " + v.videoWidth + "×" + v.videoHeight + " " + v.duration.toFixed(1) + "s — probing…";
+
+  const times = [];
+  for (let i = 1; i <= 6; i++) times.push(v.duration * i / 7);
+
+  const scales = [800, 1200, 1600, Math.min(v.videoWidth, 2200)];
+  const c = document.createElement("canvas");
+  const ctx = c.getContext("2d", { willReadFrequently: true });
+
+  for (const t of times) {
+    await seekTo(v, t);
+    const row = { t: +t.toFixed(2), scales: [] };
+    for (const W of scales) {
+      const H = Math.round(W * v.videoHeight / v.videoWidth);
+      c.width = W; c.height = H;
+      ctx.drawImage(v, 0, 0, W, H);
+      const img = lumFrom(ctx, W, H);
+      const thr = OC.register.threshold(img);
+      const cands = OC.register.findFinderCandidates(img);
+      const reg = OC.register.registerAll(img);
+      row.scales.push({
+        W, thr: +thr.toFixed(1),
+        lum: lumStats(img),
+        candidates: cands.length,
+        units: cands.slice(0, 8).map(x => +x.unit.toFixed(1)),
+        emitters: reg.emitters.length,
+        modulePx: reg.emitters[0] ? +reg.emitters[0].moduleSizePx.toFixed(2) : null,
+        fidPx: reg.emitters[0] ? +reg.emitters[0].fiducialWidthPx.toFixed(0) : null
+      });
+    }
+    report.stages.push(row);
+    $("out").textContent = JSON.stringify(report, null, 1);
+  }
+
+  // If any probe registered, take the best (largest module) and check annulus contrast there.
+  let best = null;
+  for (const row of report.stages)
+    for (const s of row.scales)
+      if (s.emitters > 0 && (!best || s.modulePx > best.s.modulePx)) best = { row, s };
+  if (best) {
+    await seekTo(v, best.row.t);
+    const W = best.s.W, H = Math.round(W * v.videoHeight / v.videoWidth);
+    c.width = W; c.height = H;
+    ctx.drawImage(v, 0, 0, W, H);
+    const img = lumFrom(ctx, W, H);
+    const reg = OC.register.registerAll(img);
+    const em = reg.emitters[0];
+    const profile = OC.profile.defaultProfile();
+    report.annulusProbe = { t: best.row.t, W, annuli: [] };
+    for (const a of profile.annuli) {
+      const sb = OC.sample.sampleBoundary(img, em.H, a);
+      report.annulusProbe.annuli.push({
+        annulus: a.index, contrast: +sb.contrast.toFixed(3),
+        foundFrac: +(sb.found / sb.N).toFixed(2)
+      });
+    }
+    // draw the registered frame + corners on the visible canvas
+    const pc = $("probe"), pctx = pc.getContext("2d");
+    const ps = pc.width / W;
+    pc.height = Math.round(H * ps);
+    pctx.drawImage(v, 0, 0, pc.width, pc.height);
+    pctx.strokeStyle = "#7ce38b"; pctx.lineWidth = 2;
+    ["TL", "TR", "BL"].forEach(k => {
+      const p = em.corners[k];
+      pctx.strokeRect(p.x * ps - 6, p.y * ps - 6, 12, 12);
+    });
+  } else {
+    // show a middle frame anyway so the framing is visible
+    await seekTo(v, v.duration / 2);
+    const pc = $("probe"), pctx = pc.getContext("2d");
+    pctx.drawImage(v, 0, 0, pc.width, pc.height);
+    report.annulusProbe = "NO REGISTRATION AT ANY SCALE — see per-scale candidate counts above";
+  }
+
+  // Deep probe (v1): seek-step at 30 Hz, map to the 15 fps emission clock with
+  // DUPLICATES KEPT — mirrors the real receiver. First question answered before
+  // any decode: inter-candidate content diff per emission frame — near-zero says
+  // the emitter really ran 15 fps (interior pairs identical); one-frame-of-rotation
+  // (~5–15 px) says a stale v0 page was filmed.
+  $("status").textContent = "deep probe: capturing 8 s (duplicate-mapped)…";
+  const W2 = 1200, H2 = Math.round(W2 * v.videoHeight / v.videoWidth);
+  c.width = W2; c.height = H2;
+  const profile = OC.profile.defaultProfile();
+  const fps = profile.frame_rate_hz;
+  const frames = [];
+  const perIdx = {};
+  for (let i = 0; i < 240; i++) {
+    const t = 2.0 + i / 30;
+    if (t >= v.duration - 0.1) break;
+    await seekTo(v, t);
+    const idx = Math.round(t * fps);
+    if ((perIdx[idx] || 0) < 3) {
+      ctx.drawImage(v, 0, 0, W2, H2);
+      frames.push({ f: idx, img: lumFrom(ctx, W2, H2) });
+      perIdx[idx] = (perIdx[idx] || 0) + 1;
+    }
+    if (i % 40 === 0) { $("status").textContent = "deep probe: seek-capture " + i + "/240…"; await new Promise(r => setTimeout(r, 0)); }
+  }
+  report.deep = { captures: frames.length, groups: Object.keys(perIdx).length };
+  // Emitter-version check: RMS annulus-0 boundary diff between same-idx candidates.
+  const regD = OC.register.registerAll(frames[0].img);
+  if (regD.emitters.length) {
+    const HD = regD.emitters[0].H;
+    const a0 = profile.annuli[0];
+    const byIdx = {};
+    frames.forEach(fr => { (byIdx[fr.f] = byIdx[fr.f] || []).push(fr.img); });
+    const diffs = [];
+    for (const k in byIdx) {
+      if (byIdx[k].length < 2) continue;
+      const r1 = OC.sample.sampleBoundary(byIdx[k][0], HD, a0, { N: 64 });
+      const r2 = OC.sample.sampleBoundary(byIdx[k][1], HD, a0, { N: 64 });
+      OC.sample.fillGaps(r1.r); OC.sample.fillGaps(r2.r);
+      let s = 0, n = 0;
+      for (let q = 0; q < 64; q++) if (!isNaN(r1.r[q]) && !isNaN(r2.r[q])) { const d = (r1.r[q] - r2.r[q]) * 200; s += d * d; n++; }
+      if (n) diffs.push(Math.sqrt(s / n));
+    }
+    diffs.sort((x, y) => x - y);
+    report.deep.interCandidateDiffPx = diffs.length ? {
+      n: diffs.length,
+      p25: +diffs[Math.floor(diffs.length * 0.25)].toFixed(2),
+      median: +diffs[Math.floor(diffs.length / 2)].toFixed(2),
+      p75: +diffs[Math.floor(diffs.length * 0.75)].toFixed(2)
+    } : "no duplicate pairs";
+  } else report.deep.interCandidateDiffPx = "no registration";
+  // Full pipeline verdict on the same frames — what the receiver page now reports.
+  $("status").textContent = "full pipeline decode on the captured segment…";
+  await new Promise(r => setTimeout(r, 10));
+  try {
+    const res = OC.pipeline.decodeSequence(frames, OC.profile.defaultProfile(), { aligned: false, loopSeconds: 60, handheld: true });
+    report.pipelineVerdict = res.error ? res.error :
+      res.emitters[0].annuli.map(a => ({
+        annulus: a.annulus, present: a.present, carrierRatio: a.carrierRatio,
+        method: a.alignMethod || null, ser: a.ser, error: a.error || null
+      }));
+  } catch (e) { report.pipelineVerdict = "pipeline threw: " + e.message; }
+
+  report.done = true;
+  $("out").textContent = JSON.stringify(report, null, 1);
+  $("status").textContent = "diagnostics complete";
+}
+main().catch(e => { report.error = String(e.stack || e); report.done = true; $("out").textContent = JSON.stringify(report, null, 1); });
+</script>
+</body>
+</html>

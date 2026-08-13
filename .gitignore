@@ -1,0 +1,6 @@
+# Field footage stays local: personal environment in frame, and heavy.
+clips/
+
+__pycache__/
+*.pyc
+.DS_Store

@@ -1,0 +1,1923 @@
+<!DOCTYPE html>
+<!-- single-file build 2026-08-13 — regenerate with build_standalone.py -->
+
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>optical-carriage — receiver / acuity harness</title>
+<style>
+  body { font: 14px/1.45 system-ui, sans-serif; margin: 1rem; background: #14161a; color: #d8dce2; }
+  h1 { font-size: 1.1rem; } h3 { font-size: 1rem; margin: 1rem 0 .3rem; }
+  fieldset { border: 1px solid #333; margin: .6rem 0; }
+  label { margin-right: .9rem; white-space: nowrap; }
+  input, select { background: #0d0f12; color: #d8dce2; border: 1px solid #444; padding: .15rem .3rem; }
+  button { font-size: 14px; padding: .4rem .9rem; margin: .15rem .3rem .15rem 0; cursor: pointer; }
+  table { border-collapse: collapse; margin: .4rem 0; }
+  td, th { border: 1px solid #333; padding: .2rem .5rem; font-size: 12.5px; }
+  .ok { color: #7ce38b; } .bad { color: #ff8b8b; } .dim { color: #9aa3ad; } .warn { color: #ffb86b; }
+  #status { font-weight: 600; margin: .4rem 0; }
+  video, #prev { max-width: 380px; border: 1px solid #333; }
+  #plot { border: 1px solid #333; background: #0d0f12; }
+</style>
+</head>
+<body>
+<h1>Receiver — acuity harness (Phase 0)</h1>
+<div id="caps" class="dim"></div>
+
+<fieldset><legend>Session metadata (logged with every decode — spec §6)</legend>
+  <label>range (m) <input id="m_range" type="number" step="0.5" style="width:4.5rem"></label>
+  <label>lighting <select id="m_light"><option>indoor-dim</option><option>indoor-bright</option><option>dark</option><option>daylight-shade</option><option>daylight-direct</option></select></label>
+  <label>tx type <input id="m_tx" value="laptop-screen" style="width:8rem"></label>
+  <label>tx size (m) <input id="m_txsize" type="number" step="0.01" value="0.30" style="width:4.5rem"></label>
+  <label>rx device <input id="m_rx" placeholder="e.g. Pixel 8" style="width:9rem"></label>
+  <label>camera <select id="m_cam"><option>rear</option><option>front</option></select></label>
+  <label>handheld <input id="m_hand" type="checkbox" checked></label>
+  <label>emitter loop (s) <input id="m_loop" type="number" value="60" style="width:4rem"></label>
+  <label>notes <input id="m_notes" style="width:12rem"></label>
+</fieldset>
+
+<p>
+  <button id="selftestBtn">Run self-test (no camera)</button>
+  <button id="camBtn">Start camera</button>
+  <button id="capBtn" disabled>Capture <input id="capSecs" type="number" value="8" min="3" style="width:3rem"> s → decode</button>
+  <label style="border:1px dashed #555; padding:.4rem .6rem">video file (§9.1): <input id="fileIn" type="file" accept="video/*"></label>
+</p>
+<div id="status">idle</div>
+<video id="vid" muted playsinline style="display:none"></video>
+<canvas id="prev" width="380" height="214" style="display:none"></canvas>
+
+<h3>Decode results</h3>
+<div id="results"><span class="dim">nothing decoded yet</span></div>
+
+<h3>Session log</h3>
+<p><button id="csvBtn">Export CSV</button> <span id="rowsN" class="dim">0 rows</span></p>
+<canvas id="plot" width="640" height="240"></canvas>
+
+<script>
+/* inlined: prng.js */
+/* prng.js — seeded, deterministic randomness for symbol streams and noise.
+   Dual-environment: browser global OC.prng / CommonJS module.exports. */
+(function (global) {
+  "use strict";
+
+  // mulberry32 — small, fast, adequate statistical quality for streams/noise.
+  function mulberry32(seed) {
+    var a = seed >>> 0;
+    return function () {
+      a = (a + 0x6D2B79F5) >>> 0;
+      var t = a;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  // Symbol stream: n symbols uniform in [0, M). Deterministic per (seed, M).
+  function symbolStream(seed, n, M) {
+    var rng = mulberry32(seed);
+    var out = new Uint8Array(n);
+    for (var i = 0; i < n; i++) out[i] = Math.floor(rng() * M) % M;
+    return out;
+  }
+
+  // Gaussian via Box-Muller (paired), seeded.
+  function gaussian(rng) {
+    var spare = null;
+    return function () {
+      if (spare !== null) { var s = spare; spare = null; return s; }
+      var u = 0, v = 0;
+      while (u === 0) u = rng();
+      v = rng();
+      var m = Math.sqrt(-2.0 * Math.log(u));
+      spare = m * Math.sin(2 * Math.PI * v);
+      return m * Math.cos(2 * Math.PI * v);
+    };
+  }
+
+  var API = { mulberry32: mulberry32, symbolStream: symbolStream, gaussian: gaussian };
+  if (typeof module !== "undefined" && module.exports) module.exports = API;
+  global.OC = global.OC || {}; global.OC.prng = API;
+})(typeof window !== "undefined" ? window : globalThis);
+
+</script>
+<script>
+/* inlined: dtrig.js */
+/* dtrig.js — deterministic sin/cos/atan2.
+   WHY: Math.sin/cos/atan2 are implementation-defined in precision; golden-vector
+   frames must be bit-identical across JS engines (review finding F8). The GOLDEN
+   render path uses these; the live decoder uses native Math (it needs speed, not
+   cross-engine determinism). fdlibm-style kernels; |err| ~1e-14 for sin/cos,
+   ~1e-7 for atan2 (boundary-eval error far below one pixel). */
+(function (global) {
+  "use strict";
+
+  var PIO2_HI = 1.57079632679489655800e+00;
+  var PIO2_LO = 6.12323399573676603587e-17;
+
+  var S1 = -1.66666666666666324348e-01, S2 = 8.33333333332248946124e-03,
+      S3 = -1.98412698298579493134e-04, S4 = 2.75573137070700676789e-06,
+      S5 = -2.50507602534068634195e-08, S6 = 1.58969099521155010221e-10;
+  var C1 = 4.16666666666666019037e-02, C2 = -1.38888888888741095749e-03,
+      C3 = 2.48015872894767294178e-05, C4 = -2.75573143513906633035e-07,
+      C5 = 2.08757232129817482790e-09, C6 = -1.13596475577881948265e-11;
+
+  function kernelSin(r) {
+    var z = r * r;
+    return r + r * z * (S1 + z * (S2 + z * (S3 + z * (S4 + z * (S5 + z * S6)))));
+  }
+  function kernelCos(r) {
+    var z = r * r;
+    return 1 - 0.5 * z + z * z * (C1 + z * (C2 + z * (C3 + z * (C4 + z * (C5 + z * C6)))));
+  }
+  function reduce(x) {
+    var n = Math.round(x / PIO2_HI);
+    var r = x - n * PIO2_HI - n * PIO2_LO;
+    return { r: r, q: ((n % 4) + 4) % 4 };
+  }
+  function dsin(x) {
+    var t = reduce(x);
+    switch (t.q) {
+      case 0: return kernelSin(t.r);
+      case 1: return kernelCos(t.r);
+      case 2: return -kernelSin(t.r);
+      default: return -kernelCos(t.r);
+    }
+  }
+  function dcos(x) {
+    var t = reduce(x);
+    switch (t.q) {
+      case 0: return kernelCos(t.r);
+      case 1: return -kernelSin(t.r);
+      case 2: return -kernelCos(t.r);
+      default: return kernelSin(t.r);
+    }
+  }
+
+  // atan on [0, ~0.4142] by truncated series; fold with atan(t)=π/4+atan((t-1)/(t+1)).
+  var TAN_PI_8 = 0.41421356237309503;
+  function atanSmall(z) {
+    var z2 = z * z;
+    return z * (1 + z2 * (-1 / 3 + z2 * (1 / 5 + z2 * (-1 / 7 + z2 * (1 / 9 + z2 * (-1 / 11 + z2 * (1 / 13)))))));
+  }
+  function atanPos(t) { // t >= 0
+    if (t > 1) return PIO2_HI - atanPos(1 / t);
+    if (t > TAN_PI_8) return PIO2_HI / 2 + atanSmall((t - 1) / (t + 1));
+    return atanSmall(t);
+  }
+  function datan2(y, x) {
+    if (x === 0 && y === 0) return 0;
+    var PI = 2 * PIO2_HI;
+    if (x > 0) return y >= 0 ? atanPos(y / x) : -atanPos(-y / x);
+    if (x < 0) return y >= 0 ? PI - atanPos(y / -x) : atanPos(-y / -x) - PI;
+    return y > 0 ? PIO2_HI : -PIO2_HI;
+  }
+
+  var API = { dsin: dsin, dcos: dcos, datan2: datan2 };
+  if (typeof module !== "undefined" && module.exports) module.exports = API;
+  global.OC = global.OC || {}; global.OC.dtrig = API;
+})(typeof window !== "undefined" ? window : globalThis);
+
+</script>
+<script>
+/* inlined: geom.js */
+/* geom.js — homography (DLT), 3x3 ops, bilinear sampling.
+   Images everywhere are {w, h, data: Float32Array} luminance in [0,1]. */
+(function (global) {
+  "use strict";
+
+  // Solve A x = b, A is n x n (row-major), Gaussian elimination w/ partial pivot.
+  function solve(A, b, n) {
+    var M = new Float64Array(n * (n + 1));
+    for (var r = 0; r < n; r++) {
+      for (var c = 0; c < n; c++) M[r * (n + 1) + c] = A[r * n + c];
+      M[r * (n + 1) + n] = b[r];
+    }
+    for (var col = 0; col < n; col++) {
+      var piv = col;
+      for (var r2 = col + 1; r2 < n; r2++)
+        if (Math.abs(M[r2 * (n + 1) + col]) > Math.abs(M[piv * (n + 1) + col])) piv = r2;
+      if (Math.abs(M[piv * (n + 1) + col]) < 1e-12) return null;
+      if (piv !== col)
+        for (var c2 = col; c2 <= n; c2++) {
+          var tmp = M[col * (n + 1) + c2]; M[col * (n + 1) + c2] = M[piv * (n + 1) + c2]; M[piv * (n + 1) + c2] = tmp;
+        }
+      var d = M[col * (n + 1) + col];
+      for (var c3 = col; c3 <= n; c3++) M[col * (n + 1) + c3] /= d;
+      for (var r3 = 0; r3 < n; r3++) {
+        if (r3 === col) continue;
+        var f = M[r3 * (n + 1) + col];
+        if (f === 0) continue;
+        for (var c4 = col; c4 <= n; c4++) M[r3 * (n + 1) + c4] -= f * M[col * (n + 1) + c4];
+      }
+    }
+    var x = new Float64Array(n);
+    for (var i = 0; i < n; i++) x[i] = M[i * (n + 1) + n];
+    return x;
+  }
+
+  // Homography from 4 correspondences (src -> dst), row-major 3x3 with H[8]=1.
+  function homographyFromPoints(src, dst) {
+    var A = new Float64Array(64), b = new Float64Array(8);
+    for (var i = 0; i < 4; i++) {
+      var x = src[i][0], y = src[i][1], X = dst[i][0], Y = dst[i][1];
+      var r1 = 2 * i, r2 = 2 * i + 1;
+      A[r1 * 8 + 0] = x; A[r1 * 8 + 1] = y; A[r1 * 8 + 2] = 1;
+      A[r1 * 8 + 6] = -x * X; A[r1 * 8 + 7] = -y * X; b[r1] = X;
+      A[r2 * 8 + 3] = x; A[r2 * 8 + 4] = y; A[r2 * 8 + 5] = 1;
+      A[r2 * 8 + 6] = -x * Y; A[r2 * 8 + 7] = -y * Y; b[r2] = Y;
+    }
+    var h = solve(A, b, 8);
+    if (!h) return null;
+    return new Float64Array([h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], 1]);
+  }
+
+  function applyH(H, x, y) {
+    var w = H[6] * x + H[7] * y + H[8];
+    return [(H[0] * x + H[1] * y + H[2]) / w, (H[3] * x + H[4] * y + H[5]) / w];
+  }
+
+  function invertH(H) {
+    var a = H[0], b = H[1], c = H[2], d = H[3], e = H[4], f = H[5], g = H[6], h = H[7], i = H[8];
+    var A = e * i - f * h, B = c * h - b * i, C = b * f - c * e;
+    var D = f * g - d * i, E = a * i - c * g, F = c * d - a * f;
+    var G = d * h - e * g, Hh = b * g - a * h, I = a * e - b * d;
+    var det = a * A + b * D + c * G;
+    if (Math.abs(det) < 1e-14) return null;
+    return new Float64Array([A / det, B / det, C / det, D / det, E / det, F / det, G / det, Hh / det, I / det]);
+  }
+
+  function bilinear(img, x, y) {
+    var w = img.w, h = img.h, d = img.data;
+    if (x < 0) x = 0; if (y < 0) y = 0;
+    if (x > w - 1.001) x = w - 1.001; if (y > h - 1.001) y = h - 1.001;
+    var x0 = Math.floor(x), y0 = Math.floor(y);
+    var fx = x - x0, fy = y - y0;
+    var i00 = y0 * w + x0;
+    var v00 = d[i00], v10 = d[i00 + 1], v01 = d[i00 + w], v11 = d[i00 + w + 1];
+    return v00 * (1 - fx) * (1 - fy) + v10 * fx * (1 - fy) + v01 * (1 - fx) * fy + v11 * fx * fy;
+  }
+
+  function makeImage(w, h) { return { w: w, h: h, data: new Float32Array(w * h) }; }
+
+  var API = { solve: solve, homographyFromPoints: homographyFromPoints, applyH: applyH, invertH: invertH, bilinear: bilinear, makeImage: makeImage };
+  if (typeof module !== "undefined" && module.exports) module.exports = API;
+  global.OC = global.OC || {}; global.OC.geom = API;
+})(typeof window !== "undefined" ? window : globalThis);
+
+</script>
+<script>
+/* inlined: flicker.js */
+/* flicker.js — review finding F1 made executable.
+   Local flicker at a fixed retinal point near an annulus boundary is k·f_rot,
+   NOT f_rot: harmonic k alternates a fixed point k times per revolution. The
+   modulation deviation adds k·(dφ/dt)_dev on top during symbol sweeps. This
+   report computes the worst local flicker per annulus/harmonic and flags the
+   3–60 Hz photosensitive band (peak sensitivity ~15–25 Hz). Numbers cited
+   secondhand — spec §7.7 says check current WCAG / ITU-R BT.1702 text. */
+(function (global) {
+  "use strict";
+
+  var BAND_LO = 3, BAND_HI = 60, PEAK_LO = 15, PEAK_HI = 25;
+
+  function report(p) {
+    var rows = [], worstBandHit = false, worstPeakHit = false;
+    var fps = p.frame_rate_hz;
+    for (var i = 0; i < p.annuli.length; i++) {
+      var a = p.annuli[i];
+      var symRate = fps / a.rotation.frames_per_symbol;
+      // Worst deviation sweep rate: |Δθ| up to 180° over one symbol.
+      var devHz = 0.5 * symRate; // (180°/360°) · symbols/sec = rev/sec equivalent
+      for (var j = 0; j < a.boundary.harmonics.length; j++) {
+        var k = a.boundary.harmonics[j];
+        var fNominal = k * a.rotation.nominal_hz;
+        var fWorst = k * (a.rotation.nominal_hz + devHz);
+        var inBand = (fWorst >= BAND_LO && fNominal <= BAND_HI);
+        var inPeak = (fWorst >= PEAK_LO && fNominal <= PEAK_HI);
+        if (inBand) worstBandHit = true;
+        if (inPeak) worstPeakHit = true;
+        rows.push({ annulus: a.index, k: k, f_nominal_hz: round2(fNominal), f_worst_hz: round2(fWorst), in_band_3_60: inBand, in_peak_15_25: inPeak });
+      }
+    }
+    var contrast = p.render.background - p.render.fill;
+    return {
+      rows: rows,
+      contrast: round2(contrast),
+      worstBandHit: worstBandHit,
+      worstPeakHit: worstPeakHit,
+      advice: advice(worstBandHit, worstPeakHit, contrast)
+    };
+  }
+
+  function advice(band, peak, contrast) {
+    var out = [];
+    if (peak) out.push("Harmonic content reaches the 15–25 Hz peak-sensitivity band. Mitigated here by low contrast (" + contrast + ") and thin-band area; for projector/wall deployment REDUCE contrast further or lower nominal_hz — the area argument does not hold there.");
+    else if (band) out.push("Harmonic content lands in the 3–60 Hz band (outside the 15–25 Hz peak). Keep contrast low; log this configuration's flicker row in every capture session.");
+    else out.push("No harmonic reaches the 3–60 Hz band at these parameters.");
+    out.push("Require explicit start; show the first-run warning; nobody needs to watch the emission for the link to work (spec §7.7).");
+    return out;
+  }
+
+  function round2(x) { return Math.round(x * 100) / 100; }
+
+  var API = { report: report, BAND: [BAND_LO, BAND_HI], PEAK: [PEAK_LO, PEAK_HI] };
+  if (typeof module !== "undefined" && module.exports) module.exports = API;
+  global.OC = global.OC || {}; global.OC.flicker = API;
+})(typeof window !== "undefined" ? window : globalThis);
+
+</script>
+<script>
+/* inlined: profile.js */
+/* profile.js — the emission profile: the contract (spec §8), plus the validator.
+   UNITS (review F4): every length is in units of FIDUCIAL WIDTH, measured from the
+   emission centre. Registration measures the fiducial, so geometry is camera-
+   invariant by construction. The validator embodies review findings F1 (flicker
+   bound), F5 (coupling rules), and the spec's own collision/slip bounds. */
+(function (global) {
+  "use strict";
+
+  function defaultProfile(overrides) {
+    var p = {
+      profile_version: "phase0-v1",
+      units: "fiducial-width",
+      // 15 fps emission against 30 fps capture: every emission frame persists two
+      // camera frames, so one of each pair escapes the rolling-shutter/refresh
+      // TEAR (field-clip-2 finding) and the decoder selects it by fit residual.
+      // Also halves render load — margin against the throttle-stall failure mode.
+      frame_rate_hz: 15,
+      render: {
+        size_px: 1024,
+        scale_px_per_unit: 166,   // fiducial width in pixels (validator needs r_max + margin ≤ size/2)
+        background: 0.62,
+        fill: 0.32,               // low contrast by default — review F1/§7.7 dividend
+        edge_soft_px: 1.6         // linear soft edge; decoder's 0.5-crossing is the boundary
+      },
+      fiducial: {
+        type: "finders-only",     // Phase 0: registration only; enrollment QR payload is future work
+        modules: 25,
+        quiet_modules: 4,
+        seed: 77,
+        dark: 0.05, light: 0.95   // finders need punch; they are static (small area)
+      },
+      preamble_symbols: 8,
+      annuli: [
+        { index: 0, layer: 0, r_inner: 1.05, r0: 1.45,
+          rotation: { nominal_hz: 1.5, rate_tier_fps: 30, constellation: "dqpsk", M: 4, gray: true, frames_per_symbol: 4, seed: 101 },
+          boundary: { harmonics: [1, 2, 3], amplitudes: [0.030, 0.050, 0.050], phases_deg: [0, 40, 80] } },
+        { index: 1, layer: 1, r_inner: 1.75, r0: 2.15,
+          rotation: { nominal_hz: 1.0, rate_tier_fps: 30, constellation: "d8psk", M: 8, gray: true, frames_per_symbol: 4, seed: 202 },
+          boundary: { harmonics: [1, 2, 3, 5, 8], amplitudes: [0.020, 0.030, 0.030, 0.030, 0.030], phases_deg: [0, 30, 60, 90, 120] } },
+        { index: 2, layer: 2, r_inner: 2.45, r0: 2.85,
+          rotation: { nominal_hz: 0.75, rate_tier_fps: 30, constellation: "d16psk", M: 16, gray: true, frames_per_symbol: 4, seed: 303 },
+          boundary: { harmonics: [1, 2, 3, 5, 8, 13, 20], amplitudes: [0.014, 0.018, 0.018, 0.018, 0.018, 0.018, 0.018], phases_deg: [0, 25, 50, 75, 100, 125, 150] } }
+      ],
+      layers: [
+        { index: 0, role: "base" },
+        { index: 1, role: "enhancement" },
+        { index: 2, role: "enhancement" }
+      ]
+    };
+    if (overrides) deepMerge(p, overrides);
+    return p;
+  }
+
+  function deepMerge(dst, src) {
+    for (var k in src) {
+      if (src[k] && typeof src[k] === "object" && !Array.isArray(src[k]) && dst[k] && typeof dst[k] === "object" && !Array.isArray(dst[k])) deepMerge(dst[k], src[k]);
+      else dst[k] = src[k];
+    }
+    return dst;
+  }
+
+  function sumAmp(a) { var s = 0; for (var i = 0; i < a.boundary.amplitudes.length; i++) s += a.boundary.amplitudes[i]; return s; }
+
+  // Radial sampling window for an annulus (shared emitter/decoder assumption).
+  function sampleWindow(a) {
+    var s = sumAmp(a);
+    return { lo: a.r0 - s - 0.08, hi: a.r0 + s + 0.08 };
+  }
+
+  /* validate(profile) -> { ok, errors[], warnings[], flicker } */
+  function validate(p) {
+    var errors = [], warnings = [];
+    var fps = p.frame_rate_hz;
+    var halfSizeUnits = (p.render.size_px / 2) / p.render.scale_px_per_unit;
+    var fidHalfWithQuiet = 0.5 * (p.fiducial.modules + 2 * p.fiducial.quiet_modules) / p.fiducial.modules;
+    var fidCornerRadius = fidHalfWithQuiet * Math.SQRT2;
+
+    for (var i = 0; i < p.annuli.length; i++) {
+      var a = p.annuli[i], tag = "annulus " + a.index + ": ";
+      var s = sumAmp(a);
+      if (a.boundary.harmonics.length !== a.boundary.amplitudes.length ||
+          a.boundary.harmonics.length !== a.boundary.phases_deg.length)
+        errors.push(tag + "harmonics/amplitudes/phases_deg length mismatch");
+
+      // F5(c): slip ambiguity — require an odd harmonic (k=1 anchors the ladder).
+      var hasOdd = a.boundary.harmonics.some(function (k) { return k % 2 === 1; });
+      if (!hasOdd) errors.push(tag + "all harmonics even — half-turn symmetry halves the slip bound (F5c); include an odd pilot");
+      if (a.boundary.harmonics[0] !== 1) warnings.push(tag + "no k=1 pilot — the phase ladder loses its unambiguous anchor");
+
+      // F5(d): magnitude floors (static pilots in v0, but keep the floor stated).
+      for (var j = 0; j < a.boundary.amplitudes.length; j++)
+        if (a.boundary.amplitudes[j] * p.render.scale_px_per_unit < 1.5)
+          warnings.push(tag + "harmonic k=" + a.boundary.harmonics[j] + " amplitude under ~1.5 px at this scale — phase reads will be noisy");
+
+      // Geometry collisions (spec §7.4: enforce at validation, not render).
+      if (a.r_inner + 0.03 > a.r0 - s - 0.08)
+        errors.push(tag + "sampling window bottom (" + (a.r0 - s - 0.08).toFixed(3) + ") is inside r_inner + margin");
+      if (i === 0 && a.r_inner < fidCornerRadius + 0.03)
+        errors.push(tag + "r_inner " + a.r_inner + " intrudes on fiducial quiet zone (corner radius " + fidCornerRadius.toFixed(3) + ")");
+      if (i > 0) {
+        var prev = p.annuli[i - 1];
+        if (prev.r0 + sumAmp(prev) + 0.05 > a.r_inner)
+          errors.push(tag + "collides with annulus " + prev.index + " (prev outer max " + (prev.r0 + sumAmp(prev)).toFixed(3) + " vs r_inner " + a.r_inner + ")");
+      }
+      if (a.r0 + s + 0.04 > halfSizeUnits)
+        errors.push(tag + "outer boundary max " + (a.r0 + s).toFixed(3) + " exceeds render half-size " + halfSizeUnits.toFixed(3));
+
+      // Cycle-slip bound (spec §7.3): nominal advance + worst deviation per frame.
+      var nomDeg = 360 * a.rotation.nominal_hz / fps;
+      var devDeg = (180 / a.rotation.frames_per_symbol); // worst |Δ| = 180° spread over the symbol
+      var per = nomDeg + devDeg;
+      if (per > 150) errors.push(tag + "per-frame advance " + per.toFixed(1) + "° breaks the slip bound");
+      else if (per > 90) warnings.push(tag + "per-frame advance " + per.toFixed(1) + "° leaves little headroom (spec asks 'well below 180°')");
+    }
+
+    var flicker = (global.OC && global.OC.flicker) ? global.OC.flicker.report(p)
+      : (typeof require !== "undefined" ? require("./flicker.js").report(p) : null);
+    if (flicker && flicker.worstBandHit && p.render.background - p.render.fill > 0.35)
+      warnings.push("flicker: harmonic content lands in the 3–60 Hz band at contrast > 0.35 — drop contrast or slow rotation (F1)");
+
+    return { ok: errors.length === 0, errors: errors, warnings: warnings, flicker: flicker };
+  }
+
+  var API = { defaultProfile: defaultProfile, validate: validate, sumAmp: sumAmp, sampleWindow: sampleWindow, deepMerge: deepMerge };
+  if (typeof module !== "undefined" && module.exports) module.exports = API;
+  global.OC = global.OC || {}; global.OC.profile = API;
+})(typeof window !== "undefined" ? window : globalThis);
+
+</script>
+<script>
+/* inlined: emission.js */
+/* emission.js — profile-driven emission: symbol schedule + analytic per-pixel renderer.
+   Shared by the emitter page, the golden renderer (deterministic trig), and the
+   synthetic test path. Rendering is ANALYTIC (no canvas primitives): every pixel is
+   evaluated from the profile, which is what makes a pinned reference rasterizer
+   possible at all (review F8).
+
+   Conventions (must match the decoder):
+     φ_a(f)      = 2π·nominal_hz·f/fps + θ_data(f)           [radians]
+     r_out(θ, f) = r0 + Σ_k a_k · cos(k·(θ − φ_a) + ψ_k)
+     so arg(c_k) of the decoder's DFT (e^{-ikθ} convention) equals ψ_k − k·φ_a.
+   Differential data: symbol s → Δθ = wrapSigned(s · 2π/M), swept linearly across
+   frames_per_symbol frames (CPM: no phase jumps; rate steps at symbol boundaries). */
+(function (global) {
+  "use strict";
+
+  function P() { return (typeof module !== "undefined" && module.exports) ? require("./prng.js") : global.OC.prng; }
+
+  var TAU = Math.PI * 2;
+
+  function wrapSigned(x) { // wrap to (-π, π]
+    x = x % TAU; if (x > Math.PI) x -= TAU; if (x <= -Math.PI) x += TAU; return x;
+  }
+
+  /* Symbol schedule for one annulus: preamble (alternating +step/−step) then seeded data.
+     Returns { symbols, deltas, base, thetaData(f), nSymbols } — angles in radians. */
+  function buildSchedule(annulus, fps, nFrames, preambleSymbols) {
+    var F = annulus.rotation.frames_per_symbol, M = annulus.rotation.M;
+    var nSym = Math.ceil(nFrames / F) + 1;
+    var symbols = new Uint8Array(nSym);
+    var nData = Math.max(0, nSym - preambleSymbols);
+    var data = P().symbolStream(annulus.rotation.seed, nData, M);
+    for (var i = 0; i < nSym; i++)
+      symbols[i] = i < preambleSymbols ? (i % 2 === 0 ? 1 : M - 1) : data[i - preambleSymbols];
+    var deltas = new Float64Array(nSym), base = new Float64Array(nSym + 1);
+    for (var j = 0; j < nSym; j++) {
+      deltas[j] = wrapSigned(symbols[j] * TAU / M);
+      base[j + 1] = base[j] + deltas[j];
+    }
+    function thetaData(f) {
+      var i2 = Math.floor(f / F);
+      if (i2 >= nSym) i2 = nSym - 1;
+      var u = (f - i2 * F) / F;
+      return base[i2] + deltas[i2] * u;
+    }
+    return { symbols: symbols, deltas: deltas, base: base, thetaData: thetaData, nSymbols: nSym, dataSymbols: data };
+  }
+
+  /* Full emission schedule: one per annulus. */
+  function buildSchedules(profile, nFrames) {
+    return profile.annuli.map(function (a) {
+      return buildSchedule(a, profile.frame_rate_hz, nFrames, profile.preamble_symbols);
+    });
+  }
+
+  function phaseAt(annulus, schedule, fps, f) {
+    return TAU * annulus.rotation.nominal_hz * f / fps + schedule.thetaData(f);
+  }
+
+  /* Fiducial module map: finders (TL/TR/BL), timing lines, seeded static fill. 1 = dark. */
+  function fiducialModules(fid) {
+    var n = fid.modules, m = new Uint8Array(n * n);
+    var rng = P().mulberry32(fid.seed);
+    for (var y = 0; y < n; y++) for (var x = 0; x < n; x++) m[y * n + x] = rng() < 0.5 ? 1 : 0;
+    function finder(ox, oy) {
+      for (var j = 0; j < 7; j++) for (var i = 0; i < 7; i++) {
+        var d = Math.max(Math.abs(i - 3), Math.abs(j - 3));
+        m[(oy + j) * n + (ox + i)] = (d === 3 || d <= 1) ? 1 : 0;
+      }
+      for (var q = -1; q <= 7; q++) { // one-module light separator ring (clipped at edges)
+        setIf(ox + q, oy - 1, 0); setIf(ox + q, oy + 7, 0);
+        setIf(ox - 1, oy + q, 0); setIf(ox + 7, oy + q, 0);
+      }
+    }
+    function setIf(x, y, v) { if (x >= 0 && y >= 0 && x < n && y < n) m[y * n + x] = v; }
+    finder(0, 0); finder(n - 7, 0); finder(0, n - 7);
+    for (var t = 8; t <= n - 9; t++) { m[6 * n + t] = (t % 2 === 0) ? 1 : 0; m[t * n + 6] = (t % 2 === 0) ? 1 : 0; }
+    return m;
+  }
+
+  /* Render frame f to {w,h,data} luminance. opts: { trig: {sin,cos,atan2} } for the
+     deterministic golden path; defaults to native Math. */
+  function renderFrame(profile, f, opts) {
+    opts = opts || {};
+    var sin = opts.trig ? opts.trig.sin : Math.sin;
+    var cos = opts.trig ? opts.trig.cos : Math.cos;
+    var atan2 = opts.trig ? opts.trig.atan2 : Math.atan2;
+    var schedules = opts.schedules || buildSchedules(profile, f + 1);
+
+    var R = profile.render, size = R.size_px, scale = R.scale_px_per_unit;
+    var img = { w: size, h: size, data: new Float32Array(size * size) };
+    var bg = R.background, fill = R.fill, soft = R.edge_soft_px;
+    var fid = profile.fiducial, nMod = fid.modules;
+    var modules = opts.modules || fiducialModules(fid);
+    var quietHalf = 0.5 + fid.quiet_modules / nMod;
+    var fps = profile.frame_rate_hz;
+
+    // Per-annulus per-frame constants.
+    var ann = profile.annuli.map(function (a, ai) {
+      var phi = phaseAt(a, schedules[ai], fps, f);
+      var betas = a.boundary.harmonics.map(function (k, j) {
+        return { k: k, a: a.boundary.amplitudes[j], beta: a.boundary.phases_deg[j] * Math.PI / 180 - k * phi };
+      });
+      var sA = 0; for (var j2 = 0; j2 < a.boundary.amplitudes.length; j2++) sA += a.boundary.amplitudes[j2];
+      var pad = (soft / scale) * 2 + 0.01;
+      return { a: a, betas: betas, rMin: a.r_inner - pad, rMax: a.r0 + sA + pad, phi: phi };
+    });
+
+    var half = size / 2, d = img.data;
+    for (var py = 0; py < size; py++) {
+      var y = (py + 0.5 - half) / scale;
+      var rowOff = py * size;
+      for (var px = 0; px < size; px++) {
+        var x = (px + 0.5 - half) / scale;
+        var v = bg;
+        var ax = x < 0 ? -x : x, ay = y < 0 ? -y : y;
+        if (ax <= quietHalf && ay <= quietHalf) {
+          v = fid.light;
+          if (ax <= 0.5 && ay <= 0.5) {
+            var mx = Math.floor((x + 0.5) * nMod); if (mx >= nMod) mx = nMod - 1;
+            var my = Math.floor((y + 0.5) * nMod); if (my >= nMod) my = nMod - 1;
+            v = modules[my * nMod + mx] ? fid.dark : fid.light;
+          }
+        } else {
+          var r = Math.sqrt(x * x + y * y);
+          for (var ai2 = 0; ai2 < ann.length; ai2++) {
+            var A = ann[ai2];
+            if (r < A.rMin || r > A.rMax) continue;
+            var th = atan2(y, x);
+            var b = A.a.r0;
+            for (var h2 = 0; h2 < A.betas.length; h2++) {
+              var B = A.betas[h2];
+              b += B.a * cos(B.k * th + B.beta);
+            }
+            var covOuter = clamp01((b - r) * scale / soft + 0.5);
+            var covInner = clamp01((r - A.a.r_inner) * scale / soft + 0.5);
+            var cov = covOuter * covInner;
+            if (cov > 0) v = bg + (fill - bg) * cov;
+            break; // annuli are disjoint by validation
+          }
+        }
+        d[rowOff + px] = v;
+      }
+    }
+    return img;
+  }
+
+  function clamp01(u) { return u < 0 ? 0 : (u > 1 ? 1 : u); }
+
+  /* Render a sequence [f0, f0+n) sharing schedules/modules. */
+  function renderSequence(profile, n, opts) {
+    opts = opts || {};
+    var schedules = buildSchedules(profile, n);
+    var modules = fiducialModules(profile.fiducial);
+    var frames = [];
+    for (var f = 0; f < n; f++)
+      frames.push({ f: f, img: renderFrame(profile, f, { trig: opts.trig, schedules: schedules, modules: modules }) });
+    return { frames: frames, schedules: schedules };
+  }
+
+  /* Browser helper: luminance image -> ImageData (RGBA gray). */
+  function toImageData(img, imageData) {
+    var n = img.w * img.h, src = img.data, out = imageData.data;
+    for (var i = 0; i < n; i++) {
+      var g = Math.round(clamp01(src[i]) * 255);
+      var o = i * 4; out[o] = g; out[o + 1] = g; out[o + 2] = g; out[o + 3] = 255;
+    }
+    return imageData;
+  }
+
+  var API = {
+    wrapSigned: wrapSigned, buildSchedule: buildSchedule, buildSchedules: buildSchedules,
+    phaseAt: phaseAt, fiducialModules: fiducialModules, renderFrame: renderFrame,
+    renderSequence: renderSequence, toImageData: toImageData, TAU: TAU
+  };
+  if (typeof module !== "undefined" && module.exports) module.exports = API;
+  global.OC = global.OC || {}; global.OC.emission = API;
+})(typeof window !== "undefined" ? window : globalThis);
+
+</script>
+<script>
+/* inlined: register.js */
+/* register.js — stage 2: find EVERY fiducial in the frame (spec §5.1: never write a
+   decoder that finds *a* fiducial). Finder-pattern detection is the classic
+   1:1:3:1:1 run-length scan (plain JS, no QR library — C8). Output: one candidate
+   emitter per finder triple, each with its own canonical→image homography.
+   Canonical frame: x right, y down, origin at fiducial centre, unit = fiducial
+   width. Finder centres: TL(−0.36,−0.36), TR(+0.36,−0.36), BL(−0.36,+0.36)
+   (3.5/25 = 0.14 from the edge of a 25-module fiducial). */
+(function (global) {
+  "use strict";
+
+  function G() { return (typeof module !== "undefined" && module.exports) ? require("./geom.js") : global.OC.geom; }
+
+  var FC = 0.5 - 3.5 / 25; // 0.36
+
+  function threshold(img) {
+    // Percentile midpoint over a subsample — robust to the low-contrast annuli.
+    var d = img.data, n = img.w * img.h, step = Math.max(1, Math.floor(n / 20000));
+    var vals = [];
+    for (var i = 0; i < n; i += step) vals.push(d[i]);
+    vals.sort(function (a, b) { return a - b; });
+    var lo = vals[Math.floor(vals.length * 0.02)], hi = vals[Math.floor(vals.length * 0.98)];
+    return (lo + hi) / 2;
+  }
+
+  function ratioOK(w, u) {
+    return Math.abs(w[0] - u) <= 0.75 * u && Math.abs(w[1] - u) <= 0.75 * u &&
+           Math.abs(w[2] - 3 * u) <= 1.5 * u &&
+           Math.abs(w[3] - u) <= 0.75 * u && Math.abs(w[4] - u) <= 0.75 * u;
+  }
+
+  /* Scan one line (array of booleans dark) for 1:1:3:1:1; call cb(centerIdx, unit). */
+  function scanLine(dark, len, cb) {
+    var runs = [], runStart = 0, cur = dark(0);
+    for (var i = 1; i < len; i++) {
+      var v = dark(i);
+      if (v !== cur) { runs.push({ v: cur, s: runStart, w: i - runStart }); runStart = i; cur = v; }
+    }
+    runs.push({ v: cur, s: runStart, w: len - runStart });
+    for (var r = 0; r + 4 < runs.length; r++) {
+      if (!runs[r].v) continue; // pattern starts dark
+      var w = [runs[r].w, runs[r + 1].w, runs[r + 2].w, runs[r + 3].w, runs[r + 4].w];
+      var total = w[0] + w[1] + w[2] + w[3] + w[4];
+      var u = total / 7;
+      if (u < 1.2) continue;
+      if (ratioOK(w, u)) cb(runs[r + 2].s + runs[r + 2].w / 2, u);
+    }
+  }
+
+  function crossCheck(img, thr, cx, cy, unit) {
+    // Verify the vertical profile through (cx, cy) shows the same pattern; refine cy.
+    var half = Math.ceil(unit * 5), h = img.h, w = img.w;
+    var y0 = Math.max(0, Math.round(cy - half)), y1 = Math.min(h - 1, Math.round(cy + half));
+    var x = Math.round(cx);
+    if (x < 0 || x >= w) return null;
+    var found = null;
+    scanLine(function (i) { return img.data[(y0 + i) * w + x] < thr; }, y1 - y0 + 1, function (c, u) {
+      var yC = y0 + c;
+      if (Math.abs(yC - cy) < unit * 2.5 && (!found || Math.abs(yC - cy) < Math.abs(found.y - cy)))
+        found = { y: yC, u: u };
+    });
+    return found;
+  }
+
+  function findFinderCandidates(img, opts) {
+    opts = opts || {};
+    var thr = opts.thr !== undefined ? opts.thr : threshold(img);
+    var stride = opts.rowStride || 2;
+    var cands = [];
+    for (var y = 0; y < img.h; y += stride) {
+      (function (yy) {
+        scanLine(function (i) { return img.data[yy * img.w + i] < thr; }, img.w, function (cx, u) {
+          var v = crossCheck(img, thr, cx, yy, u);
+          if (!v) return;
+          if (Math.abs(v.u - u) > 0.7 * u) return;
+          cands.push({ x: cx, y: v.y, unit: (u + v.u) / 2 });
+        });
+      })(y);
+    }
+    // Merge candidates within 3 units.
+    var merged = [];
+    for (var i = 0; i < cands.length; i++) {
+      var c = cands[i], hit = null;
+      for (var j = 0; j < merged.length; j++) {
+        var m = merged[j];
+        if (Math.abs(m.x - c.x) < 3 * m.unit && Math.abs(m.y - c.y) < 3 * m.unit) { hit = m; break; }
+      }
+      if (hit) { hit.x = (hit.x * hit.n + c.x) / (hit.n + 1); hit.y = (hit.y * hit.n + c.y) / (hit.n + 1); hit.unit = (hit.unit * hit.n + c.unit) / (hit.n + 1); hit.n++; }
+      else merged.push({ x: c.x, y: c.y, unit: c.unit, n: 1 });
+    }
+    return merged.filter(function (m) { return m.n >= 2; });
+  }
+
+  /* Group candidates into triples: corner + two arms, equal length, ~90°. */
+  function groupTriples(cands) {
+    var out = [], used = {};
+    var idx = [];
+    for (var a = 0; a < cands.length; a++) idx.push(a);
+    var combos = [];
+    for (var i = 0; i < cands.length; i++)
+      for (var j = i + 1; j < cands.length; j++)
+        for (var k = j + 1; k < cands.length; k++) combos.push([i, j, k]);
+    for (var c = 0; c < combos.length; c++) {
+      var t = combos[c], A2 = cands[t[0]], B = cands[t[1]], C = cands[t[2]];
+      var uMean = (A2.unit + B.unit + C.unit) / 3;
+      if (Math.max(A2.unit, B.unit, C.unit) / Math.min(A2.unit, B.unit, C.unit) > 1.6) continue;
+      // Try each point as corner.
+      var best = null;
+      var pts = [A2, B, C];
+      for (var corner = 0; corner < 3; corner++) {
+        var P0 = pts[corner], P1 = pts[(corner + 1) % 3], P2 = pts[(corner + 2) % 3];
+        var v1 = [P1.x - P0.x, P1.y - P0.y], v2 = [P2.x - P0.x, P2.y - P0.y];
+        var l1 = Math.hypot(v1[0], v1[1]), l2 = Math.hypot(v2[0], v2[1]);
+        if (l1 < 6 * uMean || l2 < 6 * uMean) continue;
+        if (Math.max(l1, l2) / Math.min(l1, l2) > 1.35) continue;
+        var cosang = (v1[0] * v2[0] + v1[1] * v2[1]) / (l1 * l2);
+        if (Math.abs(cosang) > 0.30) continue;
+        // Arm length should be ~0.72 fiducial widths; unit ~ width/25 → arms/unit ≈ 18.
+        var armUnits = ((l1 + l2) / 2) / uMean;
+        if (armUnits < 12 || armUnits > 26) continue;
+        var score = Math.abs(cosang) + Math.abs(l1 - l2) / (l1 + l2);
+        if (!best || score < best.score) best = { corner: P0, p1: P1, p2: P2, score: score };
+      }
+      if (best) out.push(best);
+    }
+    out.sort(function (a, b) { return a.score - b.score; });
+    var final = [];
+    for (var o = 0; o < out.length; o++) {
+      var tr = out[o];
+      var key = [tr.corner, tr.p1, tr.p2].map(function (p) { return Math.round(p.x) + "," + Math.round(p.y); }).sort().join("|");
+      var members = [tr.corner, tr.p1, tr.p2];
+      var clash = members.some(function (p) { return used[Math.round(p.x) + "," + Math.round(p.y)]; });
+      if (clash) continue;
+      members.forEach(function (p) { used[Math.round(p.x) + "," + Math.round(p.y)] = true; });
+      final.push(tr);
+      void key;
+    }
+    return final;
+  }
+
+  /* Orient a triple and build the canonical→image homography (affine; the 4th corner
+     is parallelogram-completed — adequate near-frontal, refine later for steep warp). */
+  function emitterFromTriple(tr) {
+    var A = tr.corner, P1 = tr.p1, P2 = tr.p2;
+    var cross = (P1.x - A.x) * (P2.y - A.y) - (P1.y - A.y) * (P2.x - A.x);
+    var TR2 = cross > 0 ? P1 : P2;  // canonical (y down): TL→TR × TL→BL has positive cross
+    var BL = cross > 0 ? P2 : P1;
+    var chirality = 1;
+    // (If both assignments were negative the frame is mirrored — registration still
+    // returns a homography; C9 says the flip is CONFIG, never auto-detected. The
+    // pipeline flips the frame before registration when mirror.receive is set.)
+    var D = { x: TR2.x + BL.x - A.x, y: TR2.y + BL.y - A.y };
+    var H = G().homographyFromPoints(
+      [[-FC, -FC], [FC, -FC], [-FC, FC], [FC, FC]],
+      [[A.x, A.y], [TR2.x, TR2.y], [BL.x, BL.y], [D.x, D.y]]
+    );
+    if (!H) return null;
+    var unit = (A.unit + TR2.unit + BL.unit) / 3;
+    return { H: H, moduleSizePx: unit, fiducialWidthPx: unit * 25, chirality: chirality, corners: { TL: A, TR: TR2, BL: BL } };
+  }
+
+  /* The stage-2 entry point: all emitters in the frame. */
+  function registerAll(img, opts) {
+    var cands = findFinderCandidates(img, opts);
+    var triples = groupTriples(cands);
+    var emitters = [];
+    for (var i = 0; i < triples.length; i++) {
+      var e = emitterFromTriple(triples[i]);
+      if (e) emitters.push(e);
+    }
+    return { emitters: emitters, candidates: cands };
+  }
+
+  var API = { registerAll: registerAll, findFinderCandidates: findFinderCandidates, groupTriples: groupTriples, threshold: threshold, FC: FC };
+  if (typeof module !== "undefined" && module.exports) module.exports = API;
+  global.OC = global.OC || {}; global.OC.register = API;
+})(typeof window !== "undefined" ? window : globalThis);
+
+</script>
+<script>
+/* inlined: sample.js */
+/* sample.js — stages 4–5: per-annulus radial profiles → boundary contour r(θ).
+   No edge detection, no contour tracing (spec §9): sample radially through the
+   homography, SELF-NORMALIZE the profile (review F9: an absolute threshold would
+   quietly reintroduce intensity dependence), and locate the 0.5 crossing subpixel.
+   Each angle also records its source ROW — the rolling-shutter timestamp hook
+   (review F2): carried now, corrected when Phase 0 shows it matters. */
+(function (global) {
+  "use strict";
+
+  function G() { return (typeof module !== "undefined" && module.exports) ? require("./geom.js") : global.OC.geom; }
+  function PR() { return (typeof module !== "undefined" && module.exports) ? require("./profile.js") : global.OC.profile; }
+
+  var TAU = Math.PI * 2;
+
+  /* Pixels per canonical unit, measured from H itself. */
+  function unitScale(H) {
+    var g = G();
+    var o = g.applyH(H, 0, 0), ux = g.applyH(H, 1, 0), uy = g.applyH(H, 0, 1);
+    return (Math.hypot(ux[0] - o[0], ux[1] - o[1]) + Math.hypot(uy[0] - o[0], uy[1] - o[1])) / 2;
+  }
+
+  /* Sample one annulus's outer boundary at N angles.
+     Returns { r: Float64Array(N) (NaN where no edge), found, contrast, rowMin, rowMax }. */
+  function sampleBoundary(img, H, annulus, opts) {
+    opts = opts || {};
+    var g = G();
+    var N = opts.N || 256;
+    var win = PR().sampleWindow(annulus);
+    var scalePx = opts.scalePx || unitScale(H);
+    var drUnits = Math.max(0.35 / scalePx, (win.hi - win.lo) / 240);
+    var S = Math.max(12, Math.ceil((win.hi - win.lo) / drUnits) + 1);
+
+    var r = new Float64Array(N);
+    var found = 0, contrastSum = 0, rowMin = Infinity, rowMax = -Infinity;
+    var prof = new Float64Array(S);
+    var valScale = img.norm || 1; // Uint8 camera frames carry norm:255; synthetic Float32 default 1
+
+    for (var i = 0; i < N; i++) {
+      var th = TAU * i / N;
+      var cx = Math.cos(th), sy = Math.sin(th);
+      var lo = Infinity, hi = -Infinity;
+      for (var s = 0; s < S; s++) {
+        var rr = win.lo + s * drUnits;
+        var pt = g.applyH(H, rr * cx, rr * sy);
+        var v = g.bilinear(img, pt[0], pt[1]);
+        prof[s] = v;
+        if (v < lo) lo = v; if (v > hi) hi = v;
+      }
+      var contrast = (hi - lo) / valScale;
+      contrastSum += contrast;
+      if (contrast < 0.03) { r[i] = NaN; continue; }
+
+      // Light 3-tap smooth, then normalized upward crossing with the strongest slope.
+      var bestIdx = -1, bestSlope = 0;
+      var qPrev = norm(prof, 0, lo, hi);
+      for (var s2 = 1; s2 < S; s2++) {
+        var q = norm(prof, s2, lo, hi);
+        if (qPrev < 0.5 && q >= 0.5) {
+          var slope = q - qPrev;
+          if (slope > bestSlope) { bestSlope = slope; bestIdx = s2; }
+        }
+        qPrev = q;
+      }
+      if (bestIdx < 0) { r[i] = NaN; continue; }
+      var q0 = norm(prof, bestIdx - 1, lo, hi), q1 = norm(prof, bestIdx, lo, hi);
+      var frac = (0.5 - q0) / (q1 - q0);
+      var rEdge = win.lo + (bestIdx - 1 + frac) * drUnits;
+      r[i] = rEdge;
+      found++;
+      var ptE = g.applyH(H, rEdge * cx, rEdge * sy);
+      if (ptE[1] < rowMin) rowMin = ptE[1];
+      if (ptE[1] > rowMax) rowMax = ptE[1];
+    }
+
+    return { r: r, found: found, N: N, contrast: contrastSum / N, rowMin: rowMin, rowMax: rowMax };
+  }
+
+  function norm(prof, s, lo, hi) {
+    var a = prof[Math.max(0, s - 1)], b = prof[s], c = prof[Math.min(prof.length - 1, s + 1)];
+    return (((a + 2 * b + c) / 4) - lo) / (hi - lo);
+  }
+
+  /* Fill NaN gaps by circular linear interpolation; returns fraction filled or -1 if hopeless. */
+  function fillGaps(r) {
+    var N = r.length, nan = 0;
+    for (var i = 0; i < N; i++) if (isNaN(r[i])) nan++;
+    if (nan === 0) return 0;
+    if (nan > N * 0.2) return -1;
+    for (var j = 0; j < N; j++) {
+      if (!isNaN(r[j])) continue;
+      var a = j, b = j;
+      var guard = 0;
+      while (isNaN(r[(a + N - 1) % N]) && guard++ < N) a = (a + N - 1) % N;
+      guard = 0;
+      while (isNaN(r[(b + 1) % N]) && guard++ < N) b = (b + 1) % N;
+      var pa = (a + N - 1) % N, pb = (b + 1) % N;
+      var span = ((b - a + N) % N) + 2;
+      var t = ((j - a + N) % N) + 1;
+      r[j] = r[pa] + (r[pb] - r[pa]) * (t / span);
+    }
+    return nan / N;
+  }
+
+  var API = { sampleBoundary: sampleBoundary, fillGaps: fillGaps, unitScale: unitScale };
+  if (typeof module !== "undefined" && module.exports) module.exports = API;
+  global.OC = global.OC || {}; global.OC.sample = API;
+})(typeof window !== "undefined" ? window : globalThis);
+
+</script>
+<script>
+/* inlined: transform.js */
+/* transform.js — stage 6: contour r(θ) → Fourier coefficients c_k.
+   Direct DFT at the harmonics of interest (plus noise bins), e^{−ikθ} convention
+   scaled 2/N, so |c_k| estimates the emitted amplitude a_k and
+   arg(c_k) = ψ_k − k·φ (see emission.js conventions). */
+(function (global) {
+  "use strict";
+
+  var tables = {};
+  function tab(N) {
+    if (tables[N]) return tables[N];
+    var c = new Float64Array(N), s = new Float64Array(N);
+    for (var i = 0; i < N; i++) { var th = 2 * Math.PI * i / N; c[i] = Math.cos(th); s[i] = Math.sin(th); }
+    tables[N] = { c: c, s: s };
+    return tables[N];
+  }
+
+  /* dft(r, kmax) -> { r0m, mag[k], arg[k] } for k in 1..kmax (index 0 unused). */
+  function dft(r, kmax) {
+    var N = r.length, t = tab(N);
+    var mean = 0;
+    for (var i = 0; i < N; i++) mean += r[i];
+    mean /= N;
+    var mag = new Float64Array(kmax + 1), arg = new Float64Array(kmax + 1);
+    for (var k = 1; k <= kmax; k++) {
+      var re = 0, im = 0;
+      for (var n = 0; n < N; n++) {
+        var idx = (k * n) % N;
+        var v = r[n] - mean;
+        re += v * t.c[idx];
+        im -= v * t.s[idx];
+      }
+      re *= 2 / N; im *= 2 / N;
+      mag[k] = Math.hypot(re, im);
+      arg[k] = Math.atan2(im, re);
+    }
+    return { r0m: mean, mag: mag, arg: arg };
+  }
+
+  /* Residual noise sigma after removing the active harmonics: read it off the
+     inactive bins (median of magnitudes at k not in `active`, 1..kmax). */
+  function noiseSigma(spec, active, kmax) {
+    var inactive = [];
+    for (var k = 1; k <= kmax; k++) if (active.indexOf(k) < 0) inactive.push(spec.mag[k]);
+    if (!inactive.length) return 0;
+    inactive.sort(function (a, b) { return a - b; });
+    return inactive[Math.floor(inactive.length / 2)];
+  }
+
+  var API = { dft: dft, noiseSigma: noiseSigma };
+  if (typeof module !== "undefined" && module.exports) module.exports = API;
+  global.OC = global.OC || {}; global.OC.transform = API;
+})(typeof window !== "undefined" ? window : globalThis);
+
+</script>
+<script>
+/* inlined: separate.js */
+/* separate.js — stage 7: rotation φ from coefficient phases, data from magnitudes.
+   arg(c_k) = ψ_k − k·φ, so each harmonic votes for φ with a 2π/k ambiguity.
+   The LADDER (review F5b/F5c executable): k=1 anchors the branch (its vote is
+   unambiguous over a full turn — and it is treated as an ANCHOR, not a precision
+   source, because k=1 is degenerate with registration error); higher k are then
+   branch-resolved near the running estimate and dominate precision with weight
+   (k·|c_k|)². Frame-to-frame prediction (previous φ + nominal advance) keeps the
+   track unwrapped; gaps are bridged by nominal only and flagged, so symbols that
+   span a gap become erasures downstream, not silent errors. */
+(function (global) {
+  "use strict";
+
+  var TAU = Math.PI * 2;
+
+  function wrap(x) { x = x % TAU; if (x > Math.PI) x -= TAU; if (x <= -Math.PI) x += TAU; return x; }
+
+  /* Absolute anchor for the first frame WITHOUT k=1: enumerate the lowest usable
+     harmonic's branch candidates over one turn and pick the one the next harmonic
+     agrees with (a coprime pair, e.g. k=2 & k=3, is unambiguous over the full
+     turn). The absolute offset only has to be self-consistent — differential
+     decoding absorbs any constant. Falls back to k=1 when nothing else exists. */
+  function initialAnchor(spec, ks, psis) {
+    var iA = -1, iB = -1;
+    for (var j = 0; j < ks.length; j++) {
+      if (ks[j] < 2 || spec.mag[ks[j]] <= 0) continue;
+      if (iA < 0) iA = j;
+      else if (iB < 0) { iB = j; break; }
+    }
+    if (iA < 0) {
+      var j1 = ks.indexOf(1);
+      return j1 >= 0 ? wrap(psis[j1] - spec.arg[1]) : 0;
+    }
+    var kA = ks[iA], tA = psis[iA] - spec.arg[kA];
+    if (iB < 0) return wrap((tA) / kA);
+    var kB = ks[iB], tB = psis[iB] - spec.arg[kB];
+    var best = null;
+    for (var m = 0; m < kA; m++) {
+      var cand = (tA + TAU * m) / kA;
+      var mB = Math.round((kB * cand - tB) / TAU);
+      var candB = (tB + TAU * mB) / kB;
+      var err = Math.abs(wrap(candB - cand));
+      if (!best || err < best.err) best = { cand: cand, err: err };
+    }
+    return wrap(best.cand);
+  }
+
+  /* series: array of { f, spec } (spec from transform.dft; null for invalid frames)
+     Returns { phi: Float64Array indexed by frame (NaN where unknown), gapAfter: Set,
+               meanMag[k], quality[] } */
+  function trackPhase(series, annulus, profile) {
+    var fps = profile.frame_rate_hz;
+    var omega = TAU * annulus.rotation.nominal_hz;
+    var ks = annulus.boundary.harmonics;
+    var psis = annulus.boundary.phases_deg.map(function (d) { return d * Math.PI / 180; });
+
+    var maxF = 0;
+    for (var i = 0; i < series.length; i++) if (series[i] && series[i].f > maxF) maxF = series[i].f;
+    var phi = new Float64Array(maxF + 1);
+    for (var z = 0; z <= maxF; z++) phi[z] = NaN;
+
+    var gapAfter = {};
+    var magSum = {}, magN = 0;
+    var prevF = -1, prevPhi = 0;
+    var firstValid = -1;
+
+    for (var s = 0; s < series.length; s++) {
+      var fr = series[s];
+      if (!fr || !fr.spec) continue;
+      var f = fr.f, spec = fr.spec;
+      if (firstValid < 0) firstValid = f;
+      var pred;
+      if (prevF < 0) {
+        pred = initialAnchor(spec, ks, psis);
+      } else if (f - prevF > 1) {
+        gapAfter[prevF] = f - prevF;
+        // Post-gap re-acquisition: nominal-only continuity carries up to 45°·gap of
+        // deviation surprise — at gap 2 that is k=2's whole branch window. Re-anchor
+        // absolutely (joint k≥2 vote), keeping only the turn count from continuity.
+        var cont = prevPhi + omega * (f - prevF) / fps;
+        var anch = initialAnchor(spec, ks, psis);
+        pred = anch + TAU * Math.round((cont - anch) / TAU);
+      } else {
+        pred = prevPhi + omega * (f - prevF) / fps;
+      }
+      // Ladder: PREDICTION anchors (worst per-frame surprise is the deviation,
+      // |Δ|max/F = 45° < k=2's ±90° branch window); then ascending k ≥ 2 blended
+      // by (k·|c_k|)². k=1 is EXCLUDED from estimation — field-validated F5b:
+      // on real footage the k=1 coefficient is the vector sum of the emitted
+      // harmonic and the wandering centering error (handheld sway, affine
+      // residual), and as an anchor it poisons every branch above it. It stays
+      // measured (meanMag) as the centering-error diagnostic.
+      var est = pred, W = 0.0001 /* tiny prior on the prediction */;
+      var estAcc = est * W;
+      var usable = 0;
+      for (var j = 0; j < ks.length; j++) {
+        var k = ks[j], mag = spec.mag[k];
+        if (k === 1 || mag <= 0) continue;
+        var target = psis[j] - spec.arg[k]; // = k·φ + 2π·m
+        var cur = estAcc / W;
+        var m = Math.round((k * cur - target) / TAU);
+        var cand = (target + TAU * m) / k;
+        var w = Math.pow(k * mag, 2);
+        estAcc += cand * w; W += w; usable++;
+      }
+      if (!usable) { // harmonics-[1]-only profile: k=1 is all there is
+        var j1 = ks.indexOf(1);
+        if (j1 >= 0 && spec.mag[1] > 0) {
+          var t1 = psis[j1] - spec.arg[1];
+          var m1 = Math.round((est - t1) / TAU);
+          estAcc += (t1 + TAU * m1) * Math.pow(spec.mag[1], 2); W += Math.pow(spec.mag[1], 2);
+        }
+      }
+      est = estAcc / W;
+      phi[f] = est;
+      prevF = f; prevPhi = est;
+
+      for (var j2 = 0; j2 < ks.length; j2++) {
+        magSum[ks[j2]] = (magSum[ks[j2]] || 0) + spec.mag[ks[j2]];
+      }
+      magN++;
+    }
+
+    var meanMag = {};
+    for (var k2 in magSum) meanMag[k2] = magSum[k2] / Math.max(1, magN);
+    return { phi: phi, gapAfter: gapAfter, meanMag: meanMag, frames: magN, maxF: maxF, firstValid: firstValid < 0 ? 0 : firstValid };
+  }
+
+  var API = { trackPhase: trackPhase, wrap: wrap };
+  if (typeof module !== "undefined" && module.exports) module.exports = API;
+  global.OC = global.OC || {}; global.OC.separate = API;
+})(typeof window !== "undefined" ? window : globalThis);
+
+</script>
+<script>
+/* inlined: demap.js */
+/* demap.js — stage 8: phase track → differential symbols.
+   θ_data(f) = φ(f) − ω·f/fps; a symbol is the wrapped Δθ between consecutive
+   boundary frames (offset + i·frames_per_symbol). Erasure, not error, when a
+   boundary is unobserved, when a long gap undermines the bridge, or when the
+   decision is low-confidence (>0.35 step residual) — erasures feed the fountain
+   layer's accounting (spec C4; review F7 posture). Alignment: correlate against
+   the known preamble (spec §7.3.1's fixed-rate-header move). */
+(function (global) {
+  "use strict";
+
+  var TAU = Math.PI * 2;
+  function wrap(x) { x = x % TAU; if (x > Math.PI) x -= TAU; if (x <= -Math.PI) x += TAU; return x; }
+
+  function thetaData(track, annulus, profile, f) {
+    var omega = TAU * annulus.rotation.nominal_hz;
+    return track.phi[f] - omega * f / profile.frame_rate_hz;
+  }
+
+  function gapIntersects(track, f0, f1, minLen) {
+    for (var g in track.gapAfter) {
+      var gs = +g, ge = gs + track.gapAfter[g];
+      if (track.gapAfter[g] >= minLen && gs < f1 && ge > f0) return true;
+    }
+    return false;
+  }
+
+  /* decode at a frame offset → [{ i, s (null=erasure), resid }].
+     The within-symbol CPM sweep is LINEAR, so the symbol is the chord slope of
+     θ_data across all F+1 frames of the symbol — a least-squares fit, not an
+     endpoint difference. Identical on clean frames; on real footage it averages
+     the per-frame time jitter (VFR capture, seek-nearest sampling) that an
+     endpoint read eats whole. */
+  function decode(track, annulus, profile, offset) {
+    var F = annulus.rotation.frames_per_symbol, M = annulus.rotation.M;
+    var step = TAU / M;
+    var out = [];
+    var maxF = track.maxF;
+    for (var i = 0; ; i++) {
+      var f0 = offset + i * F, f1 = offset + (i + 1) * F;
+      if (f1 > maxF) break;
+      if (gapIntersects(track, f0, f1, Math.max(2, F / 2))) {
+        out.push({ i: i, s: null, resid: null });
+        continue;
+      }
+      var sx = 0, sy = 0, sxx = 0, sxy = 0, n = 0;
+      var haveEnds = !isNaN(track.phi[f0]) && !isNaN(track.phi[f1]);
+      for (var f = f0; f <= f1; f++) {
+        if (isNaN(track.phi[f])) continue;
+        var x = f - f0;
+        var y = thetaData(track, annulus, profile, f);
+        sx += x; sy += y; sxx += x * x; sxy += x * y; n++;
+      }
+      if (n < 3 || !haveEnds) { out.push({ i: i, s: null, resid: null }); continue; }
+      var slope = (n * sxy - sx * sy) / (n * sxx - sx * sx);
+      var delta = slope * F;
+      var sRaw = Math.round(delta / step);
+      var resid = Math.abs(delta - sRaw * step);
+      var s = ((sRaw % M) + M) % M;
+      if (resid > 0.35 * step) out.push({ i: i, s: null, resid: resid });
+      else out.push({ i: i, s: s, resid: resid });
+    }
+    return out;
+  }
+
+  /* Find symbol-boundary alignment. Two unknowns (a capture that starts mid-stream
+     conflates them — the T8 lesson): the sub-symbol FRAME offset o ∈ [0, F), and the
+     whole-symbol LAG λ (how many emission symbols were missed before capture).
+     Correlate the known preamble (alternating s=1, s=M−1) at every (o, λ);
+     decoded[i] is hypothesised to be emission symbol i+λ.
+     Returns { offset, lag, score, max } or null. */
+  function findAlignment(track, annulus, profile) {
+    var F = annulus.rotation.frames_per_symbol, M = annulus.rotation.M;
+    var P = profile.preamble_symbols;
+    var best = null;
+    // Base the search at the first frame the annulus was actually observed — a
+    // capture that starts on the emitter's countdown freeze has a dead prefix,
+    // and the emission (preamble first) begins where observation begins.
+    var base = track.firstValid || 0;
+    for (var off = base; off < base + F; off++) {
+      var syms = decode(track, annulus, profile, off);
+      // ≥4 preamble symbols must be visible — a 2-symbol window false-locks on
+      // data (T11's lesson); shorter overlaps fall through to stream correlation.
+      for (var lag = 0; lag <= P - 4; lag++) {
+        var span = P - lag, score = 0;
+        for (var i = 0; i < span && i < syms.length; i++) {
+          var j = i + lag;
+          var expect = (j % 2 === 0) ? 1 : M - 1;
+          if (syms[i].s === expect) score++;
+        }
+        var need = Math.max(3, Math.ceil(0.75 * span));
+        if (score >= need) {
+          var cand = { offset: off, lag: lag, score: score, max: span };
+          // Prefer more preamble evidence (smaller lag), then higher score.
+          if (!best || lag < best.lag || (lag === best.lag && score > best.score)) best = cand;
+        }
+      }
+    }
+    return best;
+  }
+
+  /* Preamble-independent alignment: correlate decoded symbols against the KNOWN
+     seeded stream at every whole-symbol lag (the data itself is the sync pattern —
+     a capture that starts mid-loop missed the preamble but not the stream).
+     Harness-legitimate: emitter and receiver share the profile's seeds. */
+  function correlateStream(track, annulus, profile, maxLagSymbols) {
+    var P2 = (typeof module !== "undefined" && module.exports) ? require("./prng.js") : global.OC.prng;
+    var F = annulus.rotation.frames_per_symbol, M = annulus.rotation.M;
+    var Pn = profile.preamble_symbols;
+    var maxLag = Math.max(4, maxLagSymbols || 480);
+    var stream = P2.symbolStream(annulus.rotation.seed, maxLag + 600, M);
+    function ref(j) { return j < Pn ? ((j % 2 === 0) ? 1 : M - 1) : stream[j - Pn]; }
+    var base = track.firstValid || 0;
+    var best = null;
+    for (var off = base; off < base + F; off++) {
+      var syms = decode(track, annulus, profile, off);
+      for (var lag = 0; lag <= maxLag; lag++) {
+        var matches = 0, compared = 0;
+        for (var i = 0; i < syms.length; i++) {
+          if (syms[i].s === null) continue;
+          compared++;
+          if (syms[i].s === ref(i + lag)) matches++;
+        }
+        if (compared < 12) continue;
+        var frac = matches / compared;
+        if (frac < 0.75) continue;
+        // Tie-break on compared count: a mis-framed offset can score a perfect
+        // fraction over FEWER symbols (chord-rounding erases the hard ones) —
+        // the true framing compares more symbols at the same fraction.
+        if (!best || frac > best.matchFrac + 1e-9 ||
+            (Math.abs(frac - best.matchFrac) < 1e-9 && matches > best.score))
+          best = { offset: off, lag: lag, score: matches, max: compared, matchFrac: Math.round(frac * 1000) / 1000, method: "stream" };
+      }
+    }
+    return best;
+  }
+
+  var API = { decode: decode, findAlignment: findAlignment, correlateStream: correlateStream, thetaData: thetaData, wrap: wrap };
+  if (typeof module !== "undefined" && module.exports) module.exports = API;
+  global.OC = global.OC || {}; global.OC.demap = API;
+})(typeof window !== "undefined" ? window : globalThis);
+
+</script>
+<script>
+/* inlined: ser.js */
+/* ser.js — stage-9 stand-in for Phase 0: score decoded symbols against the known
+   seeded reference. The harness measures SER/erasure-rate per layer; the fountain
+   layer proper is deferred (measurement needs no payload framing). */
+(function (global) {
+  "use strict";
+
+  function P() { return (typeof module !== "undefined" && module.exports) ? require("./prng.js") : global.OC.prng; }
+
+  /* decoded: [{i, s|null}] where i counts from the alignment offset; `lag` is the
+     whole-symbol lag from findAlignment (decoded[i] ↔ emission symbol i+lag).
+     Reference: preamble (P symbols) then seeded data stream. */
+  function evaluate(decoded, annulus, profile, lag) {
+    lag = lag || 0;
+    var M = annulus.rotation.M, Pn = profile.preamble_symbols;
+    var nData = Math.max(0, decoded.length + lag - Pn);
+    var ref = P().symbolStream(annulus.rotation.seed, nData + 8, M);
+    var errors = 0, compared = 0, erasures = 0, preambleMiss = 0;
+    for (var idx = 0; idx < decoded.length; idx++) {
+      var d = decoded[idx];
+      var j = d.i + lag; // emission symbol index
+      if (j < Pn) {
+        var expect = (j % 2 === 0) ? 1 : M - 1;
+        if (d.s !== null && d.s !== expect) preambleMiss++;
+        continue;
+      }
+      var r = ref[j - Pn];
+      if (d.s === null) { erasures++; continue; }
+      compared++;
+      if (d.s !== r) errors++;
+    }
+    var total = compared + erasures;
+    return {
+      ser: compared ? errors / compared : (total ? 1 : NaN),
+      errors: errors, compared: compared,
+      erasures: erasures, erasureRate: total ? erasures / total : 0,
+      dataSymbols: total, preambleMiss: preambleMiss,
+      ok: compared > 0 && (errors / compared) < 0.05
+    };
+  }
+
+  var API = { evaluate: evaluate };
+  if (typeof module !== "undefined" && module.exports) module.exports = API;
+  global.OC = global.OC || {}; global.OC.ser = API;
+})(typeof window !== "undefined" ? window : globalThis);
+
+</script>
+<script>
+/* inlined: degrade.js */
+/* degrade.js — the degradation suite's transforms (spec §10.2), applied to clean
+   frames: blur, noise, flip, rotation, exposure/white-balance ramps, resampling,
+   composites for multi-emitter frames. All pure functions on {w,h,data}. */
+(function (global) {
+  "use strict";
+
+  function P() { return (typeof module !== "undefined" && module.exports) ? require("./prng.js") : global.OC.prng; }
+  function G() { return (typeof module !== "undefined" && module.exports) ? require("./geom.js") : global.OC.geom; }
+
+  function clone(img) { return { w: img.w, h: img.h, data: new Float32Array(img.data) }; }
+
+  function gaussianKernel(sigma) {
+    var half = Math.max(1, Math.ceil(3 * sigma));
+    var k = new Float64Array(2 * half + 1), sum = 0;
+    for (var i = -half; i <= half; i++) { var v = Math.exp(-(i * i) / (2 * sigma * sigma)); k[i + half] = v; sum += v; }
+    for (var j = 0; j < k.length; j++) k[j] /= sum;
+    return { k: k, half: half };
+  }
+
+  function blur(img, sigma) {
+    if (sigma <= 0) return clone(img);
+    var kk = gaussianKernel(sigma), k = kk.k, half = kk.half;
+    var w = img.w, h = img.h;
+    var tmp = new Float32Array(w * h), out = { w: w, h: h, data: new Float32Array(w * h) };
+    for (var y = 0; y < h; y++) for (var x = 0; x < w; x++) {
+      var acc = 0;
+      for (var t = -half; t <= half; t++) {
+        var xx = Math.min(w - 1, Math.max(0, x + t));
+        acc += img.data[y * w + xx] * k[t + half];
+      }
+      tmp[y * w + x] = acc;
+    }
+    for (var y2 = 0; y2 < h; y2++) for (var x2 = 0; x2 < w; x2++) {
+      var acc2 = 0;
+      for (var t2 = -half; t2 <= half; t2++) {
+        var yy = Math.min(h - 1, Math.max(0, y2 + t2));
+        acc2 += tmp[yy * w + x2] * k[t2 + half];
+      }
+      out.data[y2 * w + x2] = acc2;
+    }
+    return out;
+  }
+
+  function addNoise(img, sigma, seed) {
+    var out = clone(img);
+    var g = P().gaussian(P().mulberry32(seed >>> 0));
+    for (var i = 0; i < out.data.length; i++) {
+      var v = out.data[i] + sigma * g();
+      out.data[i] = v < 0 ? 0 : (v > 1 ? 1 : v);
+    }
+    return out;
+  }
+
+  function flipH(img) {
+    var out = { w: img.w, h: img.h, data: new Float32Array(img.w * img.h) };
+    for (var y = 0; y < img.h; y++)
+      for (var x = 0; x < img.w; x++)
+        out.data[y * img.w + x] = img.data[y * img.w + (img.w - 1 - x)];
+    return out;
+  }
+
+  function rotate(img, deg) {
+    var th = deg * Math.PI / 180, c = Math.cos(th), s = Math.sin(th);
+    var cx = img.w / 2, cy = img.h / 2;
+    var out = { w: img.w, h: img.h, data: new Float32Array(img.w * img.h) };
+    var g = G();
+    for (var y = 0; y < img.h; y++) for (var x = 0; x < img.w; x++) {
+      var dx = x + 0.5 - cx, dy = y + 0.5 - cy;
+      var sx = cx + c * dx + s * dy - 0.5, sy2 = cy - s * dx + c * dy - 0.5;
+      out.data[y * img.w + x] = (sx < 0 || sy2 < 0 || sx > img.w - 1 || sy2 > img.h - 1) ? img.data[0] : g.bilinear(img, sx, sy2);
+    }
+    return out;
+  }
+
+  /* Exposure/white-balance ramp: gain and offset (C2 witness — must have no effect). */
+  function exposure(img, gain, offset) {
+    var out = clone(img);
+    for (var i = 0; i < out.data.length; i++) {
+      var v = out.data[i] * gain + offset;
+      out.data[i] = v < 0 ? 0 : (v > 1 ? 1 : v);
+    }
+    return out;
+  }
+
+  function resample(img, scale) {
+    var w = Math.round(img.w * scale), h = Math.round(img.h * scale);
+    var out = { w: w, h: h, data: new Float32Array(w * h) };
+    var g = G();
+    for (var y = 0; y < h; y++) for (var x = 0; x < w; x++)
+      out.data[y * w + x] = g.bilinear(img, (x + 0.5) / scale - 0.5, (y + 0.5) / scale - 0.5);
+    return out;
+  }
+
+  /* Two-emitter composite: A at left, B (scaled) at right, on a light ground. */
+  function composite2(imgA, imgB, scaleB, bgVal) {
+    var b = resample(imgB, scaleB);
+    var w = imgA.w + b.w + 24, h = Math.max(imgA.h, b.h);
+    var out = { w: w, h: h, data: new Float32Array(w * h) };
+    out.data.fill(bgVal);
+    blit(out, imgA, 0, Math.floor((h - imgA.h) / 2));
+    blit(out, b, imgA.w + 24, Math.floor((h - b.h) / 2));
+    return out;
+  }
+
+  /* Rolling-shutter/refresh tear: top rows from A (earlier instant), bottom rows
+     from B (later instant) — the temporal composite field-clip-2 photographed. */
+  function tearComposite(imgA, imgB, splitRow) {
+    var out = clone(imgA);
+    for (var y = splitRow; y < imgB.h; y++)
+      for (var x = 0; x < imgB.w; x++)
+        out.data[y * out.w + x] = imgB.data[y * imgB.w + x];
+    return out;
+  }
+
+  function blit(dst, src, ox, oy) {
+    for (var y = 0; y < src.h; y++)
+      for (var x = 0; x < src.w; x++)
+        dst.data[(oy + y) * dst.w + (ox + x)] = src.data[y * src.w + x];
+  }
+
+  function dropSet(nFrames, frac, seed) {
+    var rng = P().mulberry32(seed >>> 0), s = {};
+    for (var f = 0; f < nFrames; f++) if (rng() < frac) s[f] = true;
+    return s;
+  }
+
+  var API = { clone: clone, blur: blur, addNoise: addNoise, flipH: flipH, rotate: rotate, exposure: exposure, resample: resample, composite2: composite2, tearComposite: tearComposite, dropSet: dropSet };
+  if (typeof module !== "undefined" && module.exports) module.exports = API;
+  global.OC = global.OC || {}; global.OC.degrade = API;
+})(typeof window !== "undefined" ? window : globalThis);
+
+</script>
+<script>
+/* inlined: pipeline.js */
+/* pipeline.js — the decoder pipeline (spec §9), stages 1–8 + scoring, per emitter.
+   Multi-emitter is structural (spec §5.1): registration returns a LIST and the
+   pipeline decodes each. Mirror parity is applied ONCE, to the frame, before
+   registration (C9 — config flag, never auto-detected). */
+(function (global) {
+  "use strict";
+
+  function dep(n) { return (typeof module !== "undefined" && module.exports) ? require("./" + n + ".js") : global.OC[n]; }
+
+  /* frames: [{ f, img }] — f is the capture/emission frame index.
+     opts: { mirror: {receive}, aligned, staticCamera (default true), maxEmitters } */
+  function decodeSequence(frames, profile, opts) {
+    opts = opts || {};
+    var register = dep("register"), sample = dep("sample"), transform = dep("transform"),
+        separate = dep("separate"), demap = dep("demap"), serM = dep("ser"), degrade = dep("degrade");
+
+    var work = frames;
+    if (opts.mirror && opts.mirror.receive)
+      work = frames.map(function (fr) { return { f: fr.f, img: degrade.flipH(fr.img) }; });
+
+    // Group capture frames by EMISSION index f. A 30 fps capture of the 15 fps
+    // emission delivers ~2 candidates per emission frame; the tear (field-clip-2)
+    // corrupts at most one of them, and each annulus later SELECTS its cleanest
+    // candidate by spectral residual. Cap 3 candidates (60 fps recordings).
+    var groups = [], byF = {};
+    for (var wi = 0; wi < work.length; wi++) {
+      var fr2 = work[wi];
+      var g = byF[fr2.f];
+      if (!g) { g = { f: fr2.f, imgs: [] }; byF[fr2.f] = g; groups.push(g); }
+      if (g.imgs.length < 3) g.imgs.push(fr2.img);
+    }
+
+    // Registration anchors at the FIRST group where it succeeds — captures routinely
+    // begin on a dead screen (the emitter's countdown freeze, or pre-framing wobble).
+    // opts.registerOn: an alternate (already parity-corrected) frame to register on —
+    // harness-only isolation of annulus degradation from registration death.
+    var reg = null, regFrame = 0;
+    if (opts.registerOn) {
+      reg = register.registerAll(opts.registerOn);
+    } else {
+      for (var rf = 0; rf < groups.length; rf++) {
+        var rTry = register.registerAll(groups[rf].imgs[0]);
+        if (rTry.emitters.length) { reg = rTry; regFrame = rf; break; }
+      }
+    }
+    if (!reg || !reg.emitters.length)
+      return { error: "no emitter found in any frame", frames: work.length, emitters: [] };
+    var emitters = reg.emitters.slice(0, opts.maxEmitters || 4);
+
+    // Per-frame homographies: static camera reuses H; handheld re-registers every
+    // frame and tracks each emitter by fiducial-centre proximity (falls back to the
+    // previous H on a missed frame — a wobble costs nothing downstream but noise).
+    var geom = dep("geom");
+    var tracksH = emitters.map(function (em) {
+      var hs = new Array(groups.length);
+      for (var z = 0; z <= regFrame && z < groups.length; z++) hs[z] = em.H;
+      return { Hs: hs };
+    });
+    if (opts.handheld) {
+      var prev = emitters.map(function (em) { return geom.applyH(em.H, 0, 0); });
+      for (var fi = regFrame + 1; fi < groups.length; fi++) {
+        var reg2 = register.registerAll(groups[fi].imgs[0]);
+        for (var ei = 0; ei < tracksH.length; ei++) {
+          var best = null, bd = Infinity;
+          for (var c2 = 0; c2 < reg2.emitters.length; c2++) {
+            var cc = geom.applyH(reg2.emitters[c2].H, 0, 0);
+            var dd = Math.hypot(cc[0] - prev[ei][0], cc[1] - prev[ei][1]);
+            if (dd < bd) { bd = dd; best = reg2.emitters[c2]; }
+          }
+          if (best && bd < emitters[ei].fiducialWidthPx * 0.8) {
+            tracksH[ei].Hs[fi] = best.H;
+            prev[ei] = geom.applyH(best.H, 0, 0);
+          } else tracksH[ei].Hs[fi] = tracksH[ei].Hs[fi - 1];
+        }
+      }
+    } else {
+      for (var fj = regFrame + 1; fj < groups.length; fj++)
+        for (var ej = 0; ej < tracksH.length; ej++) tracksH[ej].Hs[fj] = emitters[ej].H;
+    }
+
+    var results = emitters.map(function (em, emIdx) {
+      var annuli = profile.annuli.map(function (a) {
+        var kmax = Math.max.apply(null, a.boundary.harmonics) + 4;
+        // Presence is judged over the ACTIVE span (first valid frame onward) — a
+        // capture that starts on the countdown freeze has honest dead frames first.
+        var series = [], contrastAct = 0, valid = 0, firstValidIdx = -1, tornRejected = 0;
+        var candsPerGroup = new Array(groups.length);
+        for (var i = 0; i < groups.length; i++) {
+          // Candidate selection, pass 1 (spatial): sample every capture of this
+          // emission frame; keep the lowest inactive-bin residual — a torn frame's
+          // r(θ) step splashes broadband energy the clean duplicate doesn't have.
+          var cands = [];
+          for (var ci = 0; ci < groups[i].imgs.length; ci++) {
+            var s = sample.sampleBoundary(groups[i].imgs[ci], tracksH[emIdx].Hs[i], a);
+            var gapFrac = sample.fillGaps(s.r);
+            if (gapFrac < 0 || s.found < s.N * 0.7) continue;
+            var spec2 = transform.dft(s.r, kmax);
+            cands.push({ spec: spec2, sigma: transform.noiseSigma(spec2, a.boundary.harmonics, kmax), contrast: s.contrast });
+          }
+          candsPerGroup[i] = cands;
+          if (!cands.length) { series.push(null); continue; }
+          var best = cands[0];
+          for (var c4 = 1; c4 < cands.length; c4++) if (cands[c4].sigma < best.sigma) best = cands[c4];
+          if (cands.length > 1) tornRejected += cands.length - 1;
+          if (firstValidIdx < 0) firstValidIdx = i;
+          valid++;
+          contrastAct += best.contrast;
+          series.push({ f: groups[i].f, spec: best.spec });
+        }
+        var activeN = firstValidIdx >= 0 ? groups.length - firstValidIdx : 0;
+        var meanContrast = valid ? contrastAct / valid : 0;
+        var present = firstValidIdx >= 0 && valid >= activeN * 0.6 && meanContrast > 0.02;
+        if (!present)
+          return { annulus: a.index, layer: a.layer, present: false, contrast: round3(meanContrast), validFrames: valid };
+
+        var track = separate.trackPhase(series, a, profile);
+        // NOTE on the residual tear class: a seam that MISSES this annulus's band
+        // yields a clean-looking ring at the wrong instant — invisible to the
+        // spatial residual, worth ~1 symbol error per ~13 under 100%-torn
+        // pollution (T12). A neighbor-midpoint temporal adjudicator was tried and
+        // REVERTED: at symbol-boundary kinks the midpoint is itself a temporal
+        // blend and sides with the torn candidate. The principled fix is F2
+        // row-time regression — each sample's row says which instant it belongs to.
+
+        // Carrier check BEFORE symbol work: is the pattern actually rotating?
+        // Expected per-frame advance = nominal + mean data drift (uniform symbols
+        // are NOT zero-mean: mean delta = π/M per symbol = π/(M·F) per frame).
+        // ratio ≈ 1 → healthy; ≈ 0 → static (emitter stalled); else clock mismatch.
+        var omega = 2 * Math.PI * a.rotation.nominal_hz;
+        var nomStep = omega / profile.frame_rate_hz + Math.PI / (a.rotation.M * a.rotation.frames_per_symbol);
+        var stepSum = 0, stepN = 0, pF = null, pPhi = null;
+        for (var ff = 0; ff <= track.maxF; ff++) {
+          if (isNaN(track.phi[ff])) continue;
+          if (pF !== null && ff - pF === 1) { stepSum += track.phi[ff] - pPhi; stepN++; }
+          pF = ff; pPhi = track.phi[ff];
+        }
+        var carrierRatio = stepN ? round3((stepSum / stepN) / nomStep) : null;
+        // Gate only on low-M annuli (M ≤ 4): short seeded streams have large drift
+        // variance, so static-vs-running is statistically separable only where the
+        // nominal advance dominates — and a stalled canvas stalls ALL annuli, so
+        // annulus 0's verdict covers the emission. Higher-M rows report, never gate.
+        if (carrierRatio !== null && a.rotation.M <= 4 && Math.abs(carrierRatio) < 0.4)
+          return { annulus: a.index, layer: a.layer, present: true, contrast: round3(meanContrast), validFrames: valid,
+                   carrierRatio: carrierRatio,
+                   error: "STATIC PATTERN — annulus present but not rotating (" + carrierRatio + "× expected). The emitter's rendering was stalled (browser throttling / battery saver): re-film with the emitter animating; keep its window focused, plug in power, use Fullscreen." };
+        if (carrierRatio !== null && a.rotation.M <= 4 && (carrierRatio < 0.4 || carrierRatio > 1.8))
+          return { annulus: a.index, layer: a.layer, present: true, contrast: round3(meanContrast), validFrames: valid,
+                   carrierRatio: carrierRatio,
+                   error: "CLOCK MISMATCH — rotation at " + carrierRatio + "× expected. Emitter stalling intermittently, or capture fps ≠ profile fps." };
+
+        var align = opts.aligned ? { offset: 0, lag: 0, score: null, method: "aligned" } : demap.findAlignment(track, a, profile);
+        if (align && !align.method) align.method = "preamble";
+        if (!align) {
+          var maxLagSym = Math.ceil(((opts.loopSeconds || 60) * profile.frame_rate_hz) / a.rotation.frames_per_symbol) + profile.preamble_symbols;
+          align = demap.correlateStream(track, a, profile, maxLagSym);
+        }
+        if (!align)
+          return { annulus: a.index, layer: a.layer, present: true, contrast: round3(meanContrast), validFrames: valid,
+                   carrierRatio: carrierRatio,
+                   error: "no lock — symbols match neither preamble nor stream at any lag (carrier " + carrierRatio + "× expected" + (carrierRatio !== null && carrierRatio < 0.5 ? "; low carrier — see the layer-0 row" : "") + ")" };
+        var decoded = demap.decode(track, a, profile, align.offset);
+        var score = serM.evaluate(decoded, a, profile, align.lag);
+
+        var sigma = averageNoise(series, a, kmax, transform);
+        var snr = {};
+        a.boundary.harmonics.forEach(function (k) {
+          snr[k] = round1(20 * Math.log10((track.meanMag[k] || 1e-9) / (sigma + 1e-9)));
+        });
+
+        return {
+          annulus: a.index, layer: a.layer, present: true,
+          contrast: round3(meanContrast), validFrames: valid, firstValidFrame: firstValidIdx >= 0 ? groups[firstValidIdx].f : null,
+          duplicatesSeen: work.length - groups.length,
+          carrierRatio: carrierRatio, alignMethod: align.method, alignMatchFrac: align.matchFrac,
+          alignOffset: align.offset, alignLag: align.lag, alignScore: align.score,
+          ser: round3(score.ser), errors: score.errors, compared: score.compared,
+          erasures: score.erasures, erasureRate: round3(score.erasureRate),
+          preambleMiss: score.preambleMiss, ok: score.ok, snr_db: snr
+        };
+      });
+      return { fiducialWidthPx: Math.round(em.fiducialWidthPx * 10) / 10, annuli: annuli };
+    });
+
+    return { emitters: results, emitterCount: emitters.length, regFrame: regFrame };
+  }
+
+  function averageNoise(series, a, kmax, transform) {
+    var sum = 0, n = 0;
+    for (var i = 0; i < series.length; i++) {
+      if (!series[i]) continue;
+      sum += transform.noiseSigma(series[i].spec, a.boundary.harmonics, kmax);
+      n++;
+    }
+    return n ? sum / n : 0;
+  }
+
+  function round3(x) { return Math.round(x * 1000) / 1000; }
+  function round1(x) { return Math.round(x * 10) / 10; }
+
+  var API = { decodeSequence: decodeSequence };
+  if (typeof module !== "undefined" && module.exports) module.exports = API;
+  global.OC = global.OC || {}; global.OC.pipeline = API;
+})(typeof window !== "undefined" ? window : globalThis);
+
+</script>
+<script>
+"use strict";
+const OC = window.OC;
+const $ = id => document.getElementById(id);
+const profile = OC.profile.defaultProfile(); // field profile — must match the emitter's
+const rows = [];
+let stream = null, capturing = false, camFrames = [], frameCounter = 0;
+
+$("caps").textContent =
+  "capabilities: secureContext=" + window.isSecureContext +
+  " · getUserMedia=" + !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia) +
+  " · origin=" + location.protocol + " — file-input decode needs NO camera and NO secure context (§9.1); " +
+  "this page is the sneakernet artifact: it must keep working from file://.";
+
+function setStatus(t, cls) { $("status").textContent = t; $("status").className = cls || ""; }
+
+function toLumFromCanvas(ctx, w, h) {
+  const id = ctx.getImageData(0, 0, w, h).data;
+  const out = new Uint8Array(w * h);
+  for (let i = 0, j = 0; i < out.length; i++, j += 4)
+    out[i] = (id[j] * 77 + id[j + 1] * 150 + id[j + 2] * 29) >> 8;
+  return { w, h, data: out, norm: 255 };
+}
+
+function layerSummary(res) {
+  if (res.error) return "<span class='bad'>" + res.error + "</span>";
+  let html = "";
+  res.emitters.forEach((em, ei) => {
+    html += "<table><tr><th colspan='10'>emitter " + ei + " — fiducial " + em.fiducialWidthPx + "px</th></tr>" +
+      "<tr><th>annulus</th><th>layer</th><th>present</th><th>carrier</th><th>SER</th><th>erasures</th><th>lock</th><th>contrast</th><th>SNR/harmonic (dB)</th><th>verdict</th></tr>";
+    em.annuli.forEach(a => {
+      const snr = a.snr_db ? Object.entries(a.snr_db).map(([k, v]) => "k" + k + ":" + v).join(" ") : "—";
+      const lock = a.alignMethod ? (a.alignMethod + " lag " + a.alignLag + (a.alignMatchFrac ? " (" + a.alignMatchFrac + ")" : "")) : "—";
+      const verdict = !a.present ? "<span class='dim'>unresolved</span>" :
+        a.error ? "<span class='bad'>" + a.error + "</span>" :
+        a.ok ? "<span class='ok'>DECODES</span>" : "<span class='warn'>degraded</span>";
+      html += "<tr><td>" + a.annulus + "</td><td>" + a.layer + "</td><td>" + (a.present ? "yes" : "no") +
+        "</td><td>" + (a.carrierRatio ?? "—") + "×</td><td>" + (a.ser ?? "—") + "</td><td>" + (a.erasures ?? "—") + "</td><td>" + lock +
+        "</td><td>" + (a.contrast ?? "—") + "</td><td>" + snr + "</td><td>" + verdict + "</td></tr>";
+    });
+    html += "</table>";
+  });
+  return html;
+}
+
+function logRow(res, source, fpsMeasured, nFrames) {
+  const em = res.emitters && res.emitters[0];
+  const row = {
+    ts: new Date().toISOString(),
+    range_m: $("m_range").value || "", lighting: $("m_light").value,
+    tx_type: $("m_tx").value, tx_size_m: $("m_txsize").value,
+    rx_device: $("m_rx").value || "", camera: $("m_cam").value,
+    handheld: $("m_hand").checked, source, fps_measured: fpsMeasured, frames: nFrames,
+    notes: $("m_notes").value || ""
+  };
+  for (let a = 0; a < 3; a++) {
+    const A = em && em.annuli[a] || {};
+    row["a" + a + "_present"] = A.present ?? false;
+    row["a" + a + "_ser"] = A.ser ?? "";
+    row["a" + a + "_erasure_rate"] = A.erasureRate ?? "";
+    row["a" + a + "_ok"] = A.ok ?? false;
+    row["a" + a + "_contrast"] = A.contrast ?? "";
+    row["a" + a + "_snr"] = A.snr_db ? Object.entries(A.snr_db).map(([k, v]) => k + ":" + v).join("|") : "";
+  }
+  rows.push(row);
+  $("rowsN").textContent = rows.length + " rows";
+  drawPlot();
+}
+
+function decodeFrames(frames, source, fpsMeasured) {
+  setStatus("decoding " + frames.length + " frames…", "warn");
+  setTimeout(() => {
+    try {
+      const res = OC.pipeline.decodeSequence(frames, profile, {
+        aligned: false, handheld: $("m_hand").checked,
+        loopSeconds: +$("m_loop").value || 60,
+        mirror: { receive: false }, maxEmitters: 4
+      });
+      $("results").innerHTML = layerSummary(res);
+      logRow(res, source, fpsMeasured, frames.length);
+      setStatus(res.error ? "decode failed: " + res.error : "decode complete", res.error ? "bad" : "ok");
+    } catch (e) { setStatus("decode error: " + e.message, "bad"); console.error(e); }
+  }, 30);
+}
+
+/* ---------- self-test: render → decode entirely in-page ---------- */
+$("selftestBtn").onclick = () => {
+  setStatus("self-test: rendering 64 synthetic frames…", "warn");
+  setTimeout(() => {
+    const p = OC.profile.defaultProfile({ render: { size_px: 512, scale_px_per_unit: 82 }, preamble_symbols: 4 });
+    const seq = OC.emission.renderSequence(p, 64, {});
+    const res = OC.pipeline.decodeSequence(seq.frames, p, { aligned: true });
+    $("results").innerHTML = layerSummary(res);
+    const a0 = res.emitters && res.emitters[0].annuli[0];
+    setStatus(a0 && a0.ser === 0 ? "self-test PASS — install works; decoder closes the loop" : "self-test FAIL", a0 && a0.ser === 0 ? "ok" : "bad");
+  }, 30);
+};
+
+/* ---------- live camera (C1: needs secure context) ---------- */
+$("camBtn").onclick = async () => {
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: $("m_cam").value === "front" ? "user" : "environment", width: { ideal: 1280 }, frameRate: { ideal: 30 } }
+    });
+    const v = $("vid"); v.srcObject = stream; v.style.display = ""; await v.play();
+    $("capBtn").disabled = false;
+    setStatus("camera live — frame the emitter, prop the phone (or tick handheld), then Capture", "ok");
+  } catch (e) { setStatus("camera failed: " + e.message + " (C1: HTTPS or localhost only — use the file path instead)", "bad"); }
+};
+
+$("capBtn").onclick = () => {
+  const v = $("vid");
+  const secs = Math.max(3, +$("capSecs").value || 8);
+  const W = 800, H = Math.round(800 * v.videoHeight / v.videoWidth) || 450;
+  const c = document.createElement("canvas"); c.width = W; c.height = H;
+  const ctx = c.getContext("2d", { willReadFrequently: true });
+  camFrames = []; capturing = true;
+  const fps = profile.frame_rate_hz;
+  const perIdx = {};
+  const tEnd = performance.now() + secs * 1000;
+  const t0Wall = performance.now();
+  const times = [];
+  setStatus("capturing " + secs + " s…", "warn");
+  // Duplicates are DELIBERATE: the camera runs faster than the 15 fps emission,
+  // so each emission frame gets ≥2 looks and the decoder keeps the tear-free one.
+  function grab(now, meta) {
+    if (!capturing) return;
+    if (now >= tEnd) {
+      capturing = false;
+      const fpsMeas = times.length > 1 ? (1000 * (times.length - 1) / (times[times.length - 1] - times[0])).toFixed(1) : "?";
+      decodeFrames(camFrames, "camera-live", fpsMeas);
+      return;
+    }
+    const t = meta ? meta.mediaTime : (now - t0Wall) / 1000;
+    const idx = Math.round(t * fps);
+    if ((perIdx[idx] || 0) < 3) {
+      ctx.drawImage(v, 0, 0, W, H);
+      camFrames.push({ f: idx, img: toLumFromCanvas(ctx, W, H) });
+      perIdx[idx] = (perIdx[idx] || 0) + 1;
+    }
+    times.push(now);
+    if ("requestVideoFrameCallback" in v) v.requestVideoFrameCallback(grab);
+    else requestAnimationFrame(grab);
+  }
+  if ("requestVideoFrameCallback" in v) v.requestVideoFrameCallback(grab);
+  else requestAnimationFrame(grab);
+};
+
+/* ---------- recorded input (§9.1 — first-class, works without camera/secure ctx) ----------
+   Seek-stepped, crop-at-native-resolution. Browser-agnostic by construction: no
+   rVFC dependence (Firefox lacks it — its rAF fallback jittered frame timing),
+   and no 800 px downscale (which cost the phase margin that made laptop decodes
+   work at 1200). Pre-scan finds the emitter; capture crops around it at source
+   resolution (≤1280 wide), stepping exact 1/30 s seeks mapped to the 15 fps
+   emission clock with duplicates kept (tear defense). */
+$("fileIn").onchange = async () => {
+  const file = $("fileIn").files[0];
+  if (!file) return;
+  const v = $("vid");
+  v.srcObject = null; v.src = URL.createObjectURL(file); v.style.display = ""; v.muted = true;
+  const fps = profile.frame_rate_hz;
+  const seek = t => new Promise(r => { v.onseeked = () => r(); v.currentTime = t; });
+  try {
+    await new Promise((r, j) => { v.onloadedmetadata = () => r(); v.onerror = () => j(new Error("video failed to load")); });
+    // Pre-scan: find the emitter's crop box at a few probe times (800 px is fine
+    // for FINDING it; the capture itself then uses native resolution).
+    setStatus("pre-scan: locating emitter…", "warn");
+    const pc = document.createElement("canvas");
+    const pctx = pc.getContext("2d", { willReadFrequently: true });
+    const PW = 800, PH = Math.round(PW * v.videoHeight / v.videoWidth);
+    pc.width = PW; pc.height = PH;
+    // Union the emitter's position across ALL probe frames — handheld sway moves
+    // it, and a crop fit to one instant silently clips boundary sectors later
+    // (bilinear clamps at edges; no error, just poisoned samples). Margin 4.2
+    // fiducial widths beyond the outermost annulus's ~3.0.
+    let hits = [];
+    for (const t of [0.5, v.duration * 0.3, v.duration * 0.6, Math.max(0.5, v.duration - 1)]) {
+      await seek(Math.min(t, v.duration - 0.1));
+      pctx.drawImage(v, 0, 0, PW, PH);
+      const reg = OC.register.registerAll(toLumFromCanvas(pctx, PW, PH));
+      if (reg.emitters.length) {
+        const em = reg.emitters[0];
+        const sc = v.videoWidth / PW;
+        hits.push({
+          cx: ((em.corners.TL.x + em.corners.TR.x + em.corners.BL.x) / 3 + em.fiducialWidthPx * 0.14) * sc,
+          cy: ((em.corners.TL.y + em.corners.TR.y + em.corners.BL.y) / 3 + em.fiducialWidthPx * 0.14) * sc,
+          fid: em.fiducialWidthPx * sc
+        });
+      }
+    }
+    let box = null;
+    if (hits.length) {
+      const fidMax = Math.max(...hits.map(h => h.fid));
+      const half = fidMax * 4.2;
+      const x0 = Math.min(...hits.map(h => h.cx)) - half, x1 = Math.max(...hits.map(h => h.cx)) + half;
+      const y0 = Math.min(...hits.map(h => h.cy)) - half, y1 = Math.max(...hits.map(h => h.cy)) + half;
+      const sx = Math.max(0, Math.round(x0)), sy = Math.max(0, Math.round(y0));
+      box = { sx, sy, sw: Math.min(v.videoWidth - sx, Math.round(x1 - x0)), sh: Math.min(v.videoHeight - sy, Math.round(y1 - y0)) };
+    }
+    const c = document.createElement("canvas");
+    const ctx = c.getContext("2d", { willReadFrequently: true });
+    let sx = 0, sy = 0, sw = v.videoWidth, sh = v.videoHeight;
+    if (box) ({ sx, sy, sw, sh } = box);
+    const W = Math.min(1024, sw), H = Math.round(sh * W / sw);
+    c.width = W; c.height = H;
+    setStatus(box ? ("emitter found — cropping " + sw + "×" + sh + " at native res, seek-stepping…")
+                  : "no emitter in pre-scan — capturing uncropped (decode may still find it)…", "warn");
+    const frames = []; const perIdx = {};
+    let steps = 0;
+    for (let i = 0; ; i++) {
+      const t = i / 30;
+      if (t >= v.duration - 0.05) break;
+      await seek(t);
+      const idx = Math.round(t * fps);
+      if ((perIdx[idx] || 0) < 2) {
+        ctx.drawImage(v, sx, sy, sw, sh, 0, 0, W, H);
+        frames.push({ f: idx, img: toLumFromCanvas(ctx, W, H) });
+        perIdx[idx] = (perIdx[idx] || 0) + 1;
+      }
+      if (++steps % 60 === 0) {
+        setStatus("seek-capture " + t.toFixed(1) + "/" + v.duration.toFixed(1) + " s…", "warn");
+        await new Promise(r => setTimeout(r, 0));
+      }
+    }
+    decodeFrames(frames, "video-file-seek(" + file.name + ")", "seek30" + (box ? "-crop" : ""));
+  } catch (e) { setStatus("file decode failed: " + e.message, "bad"); console.error(e); }
+};
+
+/* ---------- CSV + plot ---------- */
+$("csvBtn").onclick = () => {
+  if (!rows.length) { setStatus("no rows to export", "warn"); return; }
+  const cols = Object.keys(rows[0]);
+  const esc = s => '"' + String(s).replace(/"/g, '""') + '"';
+  const csv = cols.join(",") + "\n" + rows.map(r => cols.map(cn => esc(r[cn])).join(",")).join("\n");
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+  a.download = "acuity-" + Date.now() + ".csv";
+  a.click();
+};
+
+function drawPlot() {
+  const c = $("plot"), ctx = c.getContext("2d");
+  ctx.fillStyle = "#0d0f12"; ctx.fillRect(0, 0, c.width, c.height);
+  ctx.strokeStyle = "#444"; ctx.strokeRect(40, 10, c.width - 60, c.height - 40);
+  ctx.fillStyle = "#9aa3ad"; ctx.font = "11px monospace";
+  ctx.fillText("highest decoding layer vs range (m) — the acuity curve", 44, c.height - 8);
+  const withRange = rows.filter(r => r.range_m !== "");
+  if (!withRange.length) return;
+  const maxR = Math.max(5, ...withRange.map(r => +r.range_m));
+  for (let l = 0; l <= 3; l++) {
+    const y = 10 + (c.height - 50) * (1 - l / 3);
+    ctx.fillText(l === 3 ? "" : "L" + l, 20, y + 4);
+  }
+  withRange.forEach(r => {
+    let top = -1;
+    for (let a = 0; a < 3; a++) if (r["a" + a + "_ok"]) top = a;
+    const x = 40 + (c.width - 60) * (+r.range_m / maxR);
+    const y = 10 + (c.height - 50) * (1 - Math.max(top, 0) / 3);
+    ctx.fillStyle = top < 0 ? "#ff8b8b" : "#7ce38b";
+    ctx.beginPath(); ctx.arc(x, y, 4, 0, 7); ctx.fill();
+    ctx.fillStyle = "#9aa3ad";
+    ctx.fillText(String(+r.range_m), x - 6, c.height - 22);
+  });
+}
+drawPlot();
+</script>
+</body>
+</html>

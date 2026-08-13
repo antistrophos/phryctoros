@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>optical-carriage — emitter</title>
+<style>
+  body { font: 14px/1.45 system-ui, sans-serif; margin: 1rem; background: #14161a; color: #d8dce2; }
+  h1 { font-size: 1.1rem; }
+  button { font-size: 15px; padding: .45rem 1rem; margin: .2rem .4rem .2rem 0; cursor: pointer; }
+  #warning { border: 1px solid #b58f2f; background: #2a2410; padding: .8rem 1rem; max-width: 46rem; }
+  textarea { width: 100%; max-width: 46rem; height: 180px; background: #0d0f12; color: #cfd6df; font: 12px/1.4 monospace; }
+  table { border-collapse: collapse; } td, th { border: 1px solid #333; padding: .15rem .5rem; font-size: 12.5px; }
+  .band { color: #ffb86b; } .ok { color: #7ce38b; } .err { color: #ff8b8b; }
+  #stage { text-align: center; background: #000; margin-top: .6rem; }
+  canvas { max-width: 100%; }
+  #hud { font: 12px monospace; color: #9aa3ad; }
+</style>
+</head>
+<body>
+<h1>Emitter — Phase 0 over-provisioned test emission</h1>
+
+<div id="warning">
+  <b>Photosensitivity notice (spec §7.7 / review F1).</b> This emission is a rotating
+  concentric pattern. Effective local flicker is <b>k·f<sub>rot</sub></b> per harmonic —
+  the table below shows which harmonics reach the 3–60&nbsp;Hz band at the current
+  parameters, mitigated here by low contrast and thin bands. Nobody needs to watch the
+  screen for the link to work: the receiver is a camera. Do not use the projector-on-wall
+  arrangement near people without dropping contrast further. Emission starts only when
+  you press Start.
+</div>
+
+<p>
+  <button id="applyBtn">Validate profile</button>
+  <button id="startBtn" disabled>Start emission</button>
+  <button id="stopBtn" disabled>Stop</button>
+  <button id="fsBtn" disabled>Fullscreen</button>
+  loop <input id="loopSecs" type="number" value="60" min="10" style="width:4rem"> s
+  <label style="margin-left:.8rem"><input id="freezeChk" type="checkbox" checked> freeze between loops,
+    <input id="cdSecs" type="number" value="3" min="1" max="10" style="width:3rem"> s countdown</label>
+</p>
+<details open><summary>Emission profile (JSON, editable)</summary>
+  <textarea id="profileTxt"></textarea>
+</details>
+<div id="valOut"></div>
+<div id="flickOut"></div>
+
+<div id="stage"><canvas id="cv" width="1024" height="1024" style="display:none"></canvas></div>
+<div id="hud"></div>
+
+<script src="../src/prng.js"></script>
+<script src="../src/dtrig.js"></script>
+<script src="../src/geom.js"></script>
+<script src="../src/flicker.js"></script>
+<script src="../src/profile.js"></script>
+<script src="../src/emission.js"></script>
+<script>
+"use strict";
+const OC = window.OC;
+const $ = id => document.getElementById(id);
+let profile = OC.profile.defaultProfile();
+$("profileTxt").value = JSON.stringify(profile, null, 2);
+let running = false, schedules = null, loopFrames = 0, t0 = 0, lastF = -1, fidCanvas = null;
+let drawn = 0, fpsWindow = [], ticker = null;
+
+function gray(v) { const g = Math.round(v * 255); return "rgb(" + g + "," + g + "," + g + ")"; }
+
+function validate() {
+  try { profile = JSON.parse($("profileTxt").value); }
+  catch (e) { $("valOut").innerHTML = "<p class='err'>JSON parse error: " + e.message + "</p>"; return false; }
+  const v = OC.profile.validate(profile);
+  let html = v.ok ? "<p class='ok'>profile OK</p>" : "<p class='err'>ERRORS:<br>" + v.errors.join("<br>") + "</p>";
+  if (v.warnings.length) html += "<p class='band'>warnings:<br>" + v.warnings.join("<br>") + "</p>";
+  $("valOut").innerHTML = html;
+  const f = v.flicker;
+  let t = "<table><tr><th>annulus</th><th>k</th><th>f nominal (Hz)</th><th>f worst (Hz)</th><th>3–60 band</th><th>15–25 peak</th></tr>";
+  f.rows.forEach(r => {
+    t += "<tr><td>" + r.annulus + "</td><td>" + r.k + "</td><td>" + r.f_nominal_hz + "</td><td>" + r.f_worst_hz +
+         "</td><td class='" + (r.in_band_3_60 ? "band" : "ok") + "'>" + r.in_band_3_60 +
+         "</td><td class='" + (r.in_peak_15_25 ? "err" : "ok") + "'>" + r.in_peak_15_25 + "</td></tr>";
+  });
+  t += "</table><p>contrast " + f.contrast + " — " + f.advice.join(" ") + "</p>";
+  $("flickOut").innerHTML = t;
+  $("startBtn").disabled = !v.ok;
+  return v.ok;
+}
+
+function buildFiducialCanvas() {
+  const R = profile.render, scale = R.scale_px_per_unit, fid = profile.fiducial;
+  const modPx = scale / fid.modules;
+  const quietPx = fid.quiet_modules * modPx;
+  const w = Math.ceil(scale + 2 * quietPx);
+  const c = document.createElement("canvas"); c.width = w; c.height = w;
+  const ctx = c.getContext("2d");
+  ctx.fillStyle = gray(fid.light); ctx.fillRect(0, 0, w, w);
+  const mods = OC.emission.fiducialModules(fid);
+  for (let my = 0; my < fid.modules; my++)
+    for (let mx = 0; mx < fid.modules; mx++)
+      if (mods[my * fid.modules + mx]) {
+        ctx.fillStyle = gray(fid.dark);
+        ctx.fillRect(quietPx + mx * modPx, quietPx + my * modPx, modPx + 0.5, modPx + 0.5);
+      }
+  return c;
+}
+
+/* Live renderer: canvas paths (fast). The analytic per-pixel renderer stays the
+   reference for golden vectors; camera blur dwarfs the AA differences. */
+function drawFrame(f) {
+  const cv = $("cv"), ctx = cv.getContext("2d");
+  const R = profile.render, size = R.size_px, scale = R.scale_px_per_unit, half = size / 2;
+  ctx.fillStyle = gray(R.background); ctx.fillRect(0, 0, size, size);
+  profile.annuli.forEach((a, ai) => {
+    const phi = OC.emission.phaseAt(a, schedules[ai], profile.frame_rate_hz, f % loopFrames);
+    const path = new Path2D();
+    const N = 512;
+    for (let i = 0; i <= N; i++) {
+      const th = 2 * Math.PI * i / N;
+      let r = a.r0;
+      for (let j = 0; j < a.boundary.harmonics.length; j++) {
+        const k = a.boundary.harmonics[j];
+        r += a.boundary.amplitudes[j] * Math.cos(k * (th - phi) + a.boundary.phases_deg[j] * Math.PI / 180);
+      }
+      const x = half + r * scale * Math.cos(th), y = half + r * scale * Math.sin(th);
+      if (i === 0) path.moveTo(x, y); else path.lineTo(x, y);
+    }
+    path.closePath();
+    path.arc(half, half, a.r_inner * scale, 0, 2 * Math.PI);
+    ctx.fillStyle = gray(R.fill);
+    ctx.fill(path, "evenodd");
+  });
+  ctx.drawImage(fidCanvas, half - fidCanvas.width / 2, half - fidCanvas.height / 2);
+  // Loop-start indicator (first second of each loop): a thin frame so the operator
+  // knows a clean capture window just opened. Outside every annulus's sample window.
+  if ((f % loopFrames) < profile.frame_rate_hz) {
+    ctx.strokeStyle = "#3a6ea5"; ctx.lineWidth = 6;
+    ctx.strokeRect(3, 3, size - 6, size - 6);
+  }
+}
+
+/* Freeze screen: static background + one huge digit. Static content only — no
+   photosensitivity concern, and it gives the operator an unmissable start cue.
+   The receiver anchors registration past dead frames, so filming during the
+   freeze is the RECOMMENDED start: the capture then contains the emission's
+   preamble from frame 0. */
+function drawCountdown(n) {
+  const cv = $("cv"), ctx = cv.getContext("2d");
+  const size = profile.render.size_px, half = size / 2;
+  ctx.fillStyle = gray(profile.render.background); ctx.fillRect(0, 0, size, size);
+  ctx.fillStyle = gray(profile.render.fill);
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.font = "700 " + Math.round(size * 0.55) + "px system-ui, sans-serif";
+  ctx.fillText(String(n), half, half);
+  ctx.font = Math.round(size * 0.045) + "px system-ui, sans-serif";
+  ctx.fillText("start filming now — emission begins at 0", half, size * 0.92);
+}
+
+function loop(now) {
+  if (!running) return;
+  const fps = profile.frame_rate_hz;
+  const freeze = $("freezeChk").checked;
+  const cdFrames = freeze ? Math.max(1, Math.round((+$("cdSecs").value || 3) * fps)) : 0;
+  const cycle = cdFrames + loopFrames;
+  const fTot = Math.floor((now - t0) / 1000 * fps);
+  const ph = fTot % cycle;
+  if (ph !== lastF) {
+    lastF = ph; drawn++;
+    fpsWindow.push(now);
+    while (fpsWindow.length && now - fpsWindow[0] > 2000) fpsWindow.shift();
+    if (ph < cdFrames) {
+      drawCountdown(Math.ceil((cdFrames - ph) / fps));
+      $("hud").textContent = "FROZEN — capture starts in " + Math.ceil((cdFrames - ph) / fps) +
+        "  |  loop " + Math.floor(fTot / cycle);
+    } else {
+      const f = ph - cdFrames;
+      drawFrame(f);
+      const rfps = fpsWindow.length / 2;
+      // STALL DEFENSE: a throttled renderer freezes the pattern while the clock
+      // runs — the exact failure the first field clip recorded (static annuli,
+      // healthy geometry). Paint the warning INTO the canvas so it is visible on
+      // the emitting screen, on the wall, and inside any clip filmed of it.
+      if (fpsWindow.length >= 4 && rfps < fps * 0.7) {
+        const cv = $("cv"), ctx = cv.getContext("2d");
+        ctx.fillStyle = "#8b1a1a";
+        ctx.fillRect(0, 0, cv.width, Math.round(cv.height * 0.07));
+        ctx.fillStyle = "#fff";
+        ctx.textAlign = "center"; ctx.textBaseline = "middle";
+        ctx.font = "600 " + Math.round(cv.height * 0.032) + "px system-ui, sans-serif";
+        ctx.fillText("⚠ RENDERING STALLED (" + rfps.toFixed(0) + "/" + fps + " fps) — click this window · plug in power · disable battery saver · use Fullscreen", cv.width / 2, Math.round(cv.height * 0.035));
+      }
+      $("hud").textContent = "frame " + f + "/" + loopFrames +
+        "  |  rendered fps ≈ " + rfps.toFixed(1) +
+        "  |  loop " + Math.floor(fTot / cycle) +
+        (rfps < fps * 0.7 && fpsWindow.length >= 4 ? "  |  ⚠ STALLED — do not film" : (f < fps ? "  |  ── EMISSION JUST STARTED ──" : ""));
+    }
+  }
+  requestAnimationFrame(loop);
+}
+
+$("applyBtn").onclick = validate;
+$("startBtn").onclick = () => {
+  if (!validate()) return;
+  const secs = Math.max(10, +$("loopSecs").value || 60);
+  loopFrames = secs * profile.frame_rate_hz;
+  schedules = OC.emission.buildSchedules(profile, loopFrames);
+  fidCanvas = buildFiducialCanvas();
+  const cv = $("cv");
+  cv.width = profile.render.size_px; cv.height = profile.render.size_px;
+  cv.style.display = "";
+  running = true; t0 = performance.now(); lastF = -1;
+  $("stopBtn").disabled = false; $("fsBtn").disabled = false;
+  requestAnimationFrame(loop);
+  // Timer fallback: browsers throttle rAF (battery saver, unfocused windows) but
+  // visible-tab timers less so — the emission keeps beating on whichever fires.
+  if (ticker) clearInterval(ticker);
+  ticker = setInterval(() => loop(performance.now()), Math.floor(1000 / profile.frame_rate_hz));
+};
+$("stopBtn").onclick = () => { running = false; if (ticker) { clearInterval(ticker); ticker = null; } $("cv").style.display = "none"; $("hud").textContent = "stopped"; };
+$("fsBtn").onclick = () => { $("cv").requestFullscreen && $("cv").requestFullscreen(); };
+validate();
+</script>
+</body>
+</html>

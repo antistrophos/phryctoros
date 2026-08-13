@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>optical-carriage — Phase 0 harness</title>
+<style>
+  body { font: 15px/1.5 system-ui, sans-serif; margin: 2rem auto; max-width: 44rem; background: #14161a; color: #d8dce2; padding: 0 1rem; }
+  a { color: #9ecbff; } h1 { font-size: 1.25rem; }
+  li { margin: .4rem 0; }
+  .warn { border: 1px solid #b58f2f; background: #2a2410; padding: .7rem 1rem; }
+</style>
+</head>
+<body>
+<h1>optical-carriage — Phase 0 acuity harness</h1>
+<p>Software for the optical carriage lane's measurement phase. Spec:
+<code>technical/optical-carriage-software-spec.md</code>; first-read review:
+<code>technical/optical-carriage-spec-first-read.md</code> (both on Pharos's branch,
+thread <code>out-of-band-carriage</code>).</p>
+<ul>
+  <li><a href="emit.html">emit.html</a> — the over-provisioned test emission (explicit start; flicker report first)</li>
+  <li><a href="receive.html">receive.html</a> — camera + video-file receiver, session metadata, CSV, acuity plot. <b>This file is the sneakernet artifact</b> — it must keep working from <code>file://</code> with the <code>src/</code> folder beside it (§9.1)</li>
+  <li><a href="test.html">test.html</a> — software round-trip + degradation suite (run after any change)</li>
+  <li><a href="selfchar.html">selfchar.html</a> — §6.1 self-characterisation, v0 (latency + beat)</li>
+  <li><a href="golden.html">golden.html</a> — golden-vector manifest scaffolding (F8 conformance model)</li>
+</ul>
+<div class="warn"><b>Photosensitivity:</b> the emission is a rotating concentric pattern;
+local flicker is k·f<sub>rot</sub> per harmonic (review F1). The emitter page computes the
+flicker table before it will start, defaults to low contrast, and never autoplays.
+Nobody needs to watch the screen for the link to work.</div>
+<p>Field protocol: <code>docs/phase0-protocol.md</code> in the repo.</p>
+</body>
+</html>
