@@ -31,6 +31,11 @@ decode, at what rate. The harness logs everything; you provide legs and phones.
 
 ## The walk
 
+- **Range is really apparent size** (first walk's finding): at each range, use the
+  highest OPTICAL zoom that still frames the whole emission with margin, and log
+  the zoom in notes (1×/2×/5×). Registration needs the fiducial ≥ ~80 px in the
+  capture; at 1× on a phone, a laptop screen's fiducial drops below that wall
+  past ~2 m. **At zoom, prop the phone** — telephoto multiplies handheld sway.
 - Start at 1 m. Capture. Step back: 2, 3, 4, 6, 8, 12, 16, 24 m (double-ish steps
   once past 4 m). Capture at each.
 - Watch the per-layer table: the range where each annulus stops decoding is the

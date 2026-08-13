@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>phryctoros — batch clip autopsy (acuity rows)</title>
+<style>
+  body { font: 13px/1.45 system-ui, sans-serif; margin: 1rem; background: #14161a; color: #d8dce2; }
+  table { border-collapse: collapse; margin: .6rem 0; }
+  td, th { border: 1px solid #333; padding: .25rem .55rem; font-size: 12.5px; }
+  .ok { color: #7ce38b; } .bad { color: #ff8b8b; } .warn { color: #ffb86b; } .dim { color: #9aa3ad; }
+  pre { background: #0d0f12; padding: .6rem; max-height: 300px; overflow: auto; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h1 style="font-size:1.05rem">Batch clip autopsy — one row per capture, the acuity table</h1>
+<div id="status" class="dim">loading…</div>
+<table id="tbl"><tr>
+  <th>clip</th><th>dur</th><th>src res</th><th>pre-scan reg</th><th>fiducial px (crop)</th>
+  <th>a0 (L0)</th><th>a1 (L1)</th><th>a2 (L2)</th>
+</tr></table>
+<pre id="json">(pending)</pre>
+
+<script src="../src/prng.js"></script>
+<script src="../src/dtrig.js"></script>
+<script src="../src/geom.js"></script>
+<script src="../src/flicker.js"></script>
+<script src="../src/profile.js"></script>
+<script src="../src/emission.js"></script>
+<script src="../src/register.js"></script>
+<script src="../src/sample.js"></script>
+<script src="../src/transform.js"></script>
+<script src="../src/separate.js"></script>
+<script src="../src/demap.js"></script>
+<script src="../src/ser.js"></script>
+<script src="../src/degrade.js"></script>
+<script src="../src/pipeline.js"></script>
+<script>
+"use strict";
+const OC = window.OC;
+const $ = id => document.getElementById(id);
+const rows = [];
+
+function lumFrom(ctx, w, h) {
+  const d = ctx.getImageData(0, 0, w, h).data;
+  const o = new Uint8Array(w * h);
+  for (let i = 0, j = 0; i < o.length; i++, j += 4) o[i] = (d[j] * 77 + d[j + 1] * 150 + d[j + 2] * 29) >> 8;
+  return { w, h, data: o, norm: 255 };
+}
+
+function cell(a) {
+  if (!a) return "<td class='bad'>absent</td>";
+  if (!a.present) return "<td class='dim'>unresolved</td>";
+  if (a.error) {
+    const short = a.error.indexOf("STATIC") === 0 ? "STATIC (emitter stalled)" :
+      a.error.indexOf("CLOCK") === 0 ? ("clock " + a.carrierRatio + "×") :
+      ("no lock (carrier " + a.carrierRatio + "×)");
+    return "<td class='bad'>" + short + "</td>";
+  }
+  const cls = a.ok ? "ok" : "warn";
+  return "<td class='" + cls + "'>" + (a.ok ? "DECODES" : "SER " + a.ser) +
+    " <span class='dim'>(err " + a.errors + "/" + a.compared + ", eras " + a.erasures +
+    ", " + a.alignMethod + " lag " + a.alignLag + ", car " + a.carrierRatio + "×)</span></td>";
+}
+
+async function runClip(name) {
+  $("status").textContent = name + ": loading…";
+  const v = document.createElement("video"); v.muted = true;
+  const blob = await (await fetch("../clips/" + name)).blob();
+  v.src = URL.createObjectURL(blob);
+  await new Promise((r, j) => { v.onloadedmetadata = r; v.onerror = () => j(new Error("load failed")); });
+  const seek = t => new Promise(r => { v.onseeked = () => r(); v.currentTime = t; });
+  const row = { clip: name, dur: +v.duration.toFixed(1), res: v.videoWidth + "×" + v.videoHeight };
+
+  // Pre-scan at 800 px: registration + crop-union across probes.
+  const pc = document.createElement("canvas");
+  const pctx = pc.getContext("2d", { willReadFrequently: true });
+  const PW = 800, PH = Math.round(PW * v.videoHeight / v.videoWidth);
+  pc.width = PW; pc.height = PH;
+  const hits = [];
+  for (const t of [0.5, v.duration * 0.3, v.duration * 0.6, Math.max(0.5, v.duration - 1)]) {
+    await seek(Math.min(t, v.duration - 0.1));
+    pctx.drawImage(v, 0, 0, PW, PH);
+    const reg = OC.register.registerAll(lumFrom(pctx, PW, PH));
+    if (reg.emitters.length) {
+      const em = reg.emitters[0], sc = v.videoWidth / PW;
+      hits.push({
+        cx: ((em.corners.TL.x + em.corners.TR.x + em.corners.BL.x) / 3 + em.fiducialWidthPx * 0.14) * sc,
+        cy: ((em.corners.TL.y + em.corners.TR.y + em.corners.BL.y) / 3 + em.fiducialWidthPx * 0.14) * sc,
+        fid: em.fiducialWidthPx * sc
+      });
+    }
+  }
+  row.preScanHits = hits.length + "/4";
+  let sx = 0, sy = 0, sw = v.videoWidth, sh = v.videoHeight;
+  if (hits.length) {
+    const half = Math.max(...hits.map(h => h.fid)) * 4.2;
+    const x0 = Math.min(...hits.map(h => h.cx)) - half, x1 = Math.max(...hits.map(h => h.cx)) + half;
+    const y0 = Math.min(...hits.map(h => h.cy)) - half, y1 = Math.max(...hits.map(h => h.cy)) + half;
+    sx = Math.max(0, Math.round(x0)); sy = Math.max(0, Math.round(y0));
+    sw = Math.min(v.videoWidth - sx, Math.round(x1 - x0)); sh = Math.min(v.videoHeight - sy, Math.round(y1 - y0));
+  }
+  const c = document.createElement("canvas");
+  const ctx = c.getContext("2d", { willReadFrequently: true });
+  const W = Math.min(1024, sw), H = Math.round(sh * W / sw);
+  c.width = W; c.height = H;
+
+  const profile = OC.profile.defaultProfile();
+  const fps = profile.frame_rate_hz;
+  const frames = []; const perIdx = {};
+  for (let i = 0; ; i++) {
+    const t = i / 30;
+    if (t >= v.duration - 0.05) break;
+    await seek(t);
+    const idx = Math.round(t * fps);
+    if ((perIdx[idx] || 0) < 2) {
+      ctx.drawImage(v, sx, sy, sw, sh, 0, 0, W, H);
+      frames.push({ f: idx, img: lumFrom(ctx, W, H) });
+      perIdx[idx] = (perIdx[idx] || 0) + 1;
+    }
+    if (i % 90 === 0) { $("status").textContent = name + ": capture " + t.toFixed(0) + "/" + v.duration.toFixed(0) + " s…"; await new Promise(r => setTimeout(r, 0)); }
+  }
+  $("status").textContent = name + ": decoding " + frames.length + " frames…";
+  await new Promise(r => setTimeout(r, 10));
+  const res = OC.pipeline.decodeSequence(frames, profile, { aligned: false, loopSeconds: 60, handheld: true });
+  if (res.error) { row.error = res.error; row.annuli = null; }
+  else {
+    row.fidPx = res.emitters[0].fiducialWidthPx;
+    row.annuli = res.emitters[0].annuli.map(a => ({
+      annulus: a.annulus, present: a.present, ok: a.ok || false, ser: a.ser, errors: a.errors,
+      compared: a.compared, erasures: a.erasures, alignMethod: a.alignMethod, alignLag: a.alignLag,
+      carrierRatio: a.carrierRatio, error: a.error || null, snr: a.snr_db || null, contrast: a.contrast
+    }));
+  }
+  URL.revokeObjectURL(v.src);
+  return row;
+}
+
+async function main() {
+  const names = (new URLSearchParams(location.search).get("clips") || "").split(",").filter(Boolean);
+  for (const n of names) {
+    let row;
+    try { row = await runClip(n.trim()); }
+    catch (e) { row = { clip: n, error: String(e.message) }; }
+    rows.push(row);
+    const tr = document.createElement("tr");
+    tr.innerHTML = "<td>" + row.clip + "</td><td>" + (row.dur || "—") + "</td><td>" + (row.res || "—") +
+      "</td><td>" + (row.preScanHits || "—") + "</td><td>" + (row.fidPx ? row.fidPx : (row.error ? "<span class='bad'>" + row.error + "</span>" : "—")) + "</td>" +
+      (row.annuli ? row.annuli.map(cell).join("") : "<td colspan='3' class='bad'>" + (row.error || "no decode") + "</td>");
+    $("tbl").appendChild(tr);
+    $("json").textContent = JSON.stringify({ done: false, rows }, null, 1);
+  }
+  $("json").textContent = JSON.stringify({ done: true, rows }, null, 1);
+  $("status").textContent = "BATCH DONE — " + rows.length + " clips";
+}
+main().catch(e => { $("status").textContent = "batch error: " + (e.stack || e); });
+</script>
+</body>
+</html>
