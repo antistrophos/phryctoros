@@ -137,7 +137,43 @@
     return { phi: phi, gapAfter: gapAfter, meanMag: meanMag, frames: magN, maxF: maxF, firstValid: firstValid < 0 ? 0 : firstValid };
   }
 
-  var API = { trackPhase: trackPhase, wrap: wrap };
+  /* Motion onset: first observed frame where the phase advances at emission
+     rate over a sustained window. The emitter now FREEZES frame 0 (fiducial +
+     rings visible, static) through the countdown so AF/AE settle on the real
+     scene — the decoder must not treat frozen pseudo-symbols as stream. An
+     8-frame window separates frozen (~0°/frame) from rotating (mean ≥ ~0.4×
+     expected step) for every constellation, including M=16 whose single-frame
+     rates can legitimately pass through zero. Returns null if motion never
+     starts (the emitter-stall case — the STATIC verdict's principled trigger). */
+  function motionOnset(track, annulus, profile) {
+    var fps = profile.frame_rate_hz;
+    var step = TAU * annulus.rotation.nominal_hz / fps + Math.PI / (annulus.rotation.M * annulus.rotation.frames_per_symbol);
+    var thresh = Math.max(0.05, 0.4 * step);
+    var fs = [];
+    for (var f = 0; f <= track.maxF; f++) if (!isNaN(track.phi[f])) fs.push(f);
+    for (var i = 0; i < fs.length; i++) {
+      var acc = 0, n = 0;
+      for (var j = i; j < Math.min(i + 8, fs.length - 1); j++) {
+        if (fs[j + 1] - fs[j] === 1) { acc += Math.abs(track.phi[fs[j + 1]] - track.phi[fs[j]]); n++; }
+      }
+      if (n >= 4 && acc / n >= thresh) {
+        // Refine: the forward window smears motion up to 7 frames backward —
+        // past the F-frame offset-search span. Walk to the first moving
+        // step-PAIR (earliness ≤ 1 frame, which the offset search absorbs;
+        // lateness is absorbed by the preamble lag).
+        for (var k = i; k < fs.length - 2; k++) {
+          if (fs[k + 1] - fs[k] !== 1 || fs[k + 2] - fs[k + 1] !== 1) continue;
+          var s1 = Math.abs(track.phi[fs[k + 1]] - track.phi[fs[k]]);
+          var s2 = Math.abs(track.phi[fs[k + 2]] - track.phi[fs[k + 1]]);
+          if ((s1 + s2) / 2 >= 0.3 * step) return fs[k];
+        }
+        return fs[i];
+      }
+    }
+    return null;
+  }
+
+  var API = { trackPhase: trackPhase, motionOnset: motionOnset, wrap: wrap };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   global.OC = global.OC || {}; global.OC.separate = API;
 })(typeof window !== "undefined" ? window : globalThis);

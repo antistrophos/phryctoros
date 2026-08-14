@@ -68,14 +68,13 @@
      Correlate the known preamble (alternating s=1, s=M−1) at every (o, λ);
      decoded[i] is hypothesised to be emission symbol i+λ.
      Returns { offset, lag, score, max } or null. */
-  function findAlignment(track, annulus, profile) {
+  function findAlignment(track, annulus, profile, baseOverride) {
     var F = annulus.rotation.frames_per_symbol, M = annulus.rotation.M;
     var P = profile.preamble_symbols;
     var best = null;
-    // Base the search at the first frame the annulus was actually observed — a
-    // capture that starts on the emitter's countdown freeze has a dead prefix,
-    // and the emission (preamble first) begins where observation begins.
-    var base = track.firstValid || 0;
+    // Base the search where the emission actually STARTS: the motion onset when
+    // the capture began on the frozen-frame-0 countdown, else first observation.
+    var base = (baseOverride !== undefined && baseOverride !== null) ? baseOverride : (track.firstValid || 0);
     for (var off = base; off < base + F; off++) {
       var syms = decode(track, annulus, profile, off);
       // ≥4 preamble symbols must be visible — a 2-symbol window false-locks on
@@ -102,14 +101,14 @@
      seeded stream at every whole-symbol lag (the data itself is the sync pattern —
      a capture that starts mid-loop missed the preamble but not the stream).
      Harness-legitimate: emitter and receiver share the profile's seeds. */
-  function correlateStream(track, annulus, profile, maxLagSymbols) {
+  function correlateStream(track, annulus, profile, maxLagSymbols, baseOverride) {
     var P2 = (typeof module !== "undefined" && module.exports) ? require("./prng.js") : global.OC.prng;
     var F = annulus.rotation.frames_per_symbol, M = annulus.rotation.M;
     var Pn = profile.preamble_symbols;
     var maxLag = Math.max(4, maxLagSymbols || 480);
     var stream = P2.symbolStream(annulus.rotation.seed, maxLag + 600, M);
     function ref(j) { return j < Pn ? ((j % 2 === 0) ? 1 : M - 1) : stream[j - Pn]; }
-    var base = track.firstValid || 0;
+    var base = (baseOverride !== undefined && baseOverride !== null) ? baseOverride : (track.firstValid || 0);
     var best = null;
     for (var off = base; off < base + F; off++) {
       var syms = decode(track, annulus, profile, off);

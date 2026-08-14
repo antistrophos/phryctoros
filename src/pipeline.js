@@ -114,6 +114,10 @@
           return { annulus: a.index, layer: a.layer, present: false, contrast: round3(meanContrast), validFrames: valid };
 
         var track = separate.trackPhase(series, a, profile);
+        // Motion onset: the emitter freezes frame 0 through the countdown, so a
+        // capture may begin with valid-but-static samples. Sync bases at onset;
+        // no onset at all IS the emitter-stall case.
+        var onset = separate.motionOnset(track, a, profile);
         // NOTE on the residual tear class: a seam that MISSES this annulus's band
         // yields a clean-looking ring at the wrong instant — invisible to the
         // spatial residual, worth ~1 symbol error per ~13 under 100%-torn
@@ -129,12 +133,16 @@
         var omega = 2 * Math.PI * a.rotation.nominal_hz;
         var nomStep = omega / profile.frame_rate_hz + Math.PI / (a.rotation.M * a.rotation.frames_per_symbol);
         var stepSum = 0, stepN = 0, pF = null, pPhi = null;
-        for (var ff = 0; ff <= track.maxF; ff++) {
+        for (var ff = (onset !== null ? onset : 0); ff <= track.maxF; ff++) {
           if (isNaN(track.phi[ff])) continue;
           if (pF !== null && ff - pF === 1) { stepSum += track.phi[ff] - pPhi; stepN++; }
           pF = ff; pPhi = track.phi[ff];
         }
         var carrierRatio = stepN ? round3((stepSum / stepN) / nomStep) : null;
+        if (onset === null && a.rotation.M <= 4)
+          return { annulus: a.index, layer: a.layer, present: true, contrast: round3(meanContrast), validFrames: valid,
+                   carrierRatio: carrierRatio,
+                   error: "STATIC PATTERN — no motion onset in the whole capture (" + (carrierRatio !== null ? carrierRatio + "× expected" : "no track") + "). The emitter's rendering was stalled: re-film with the rings visibly turning; keep the emitter window focused, plugged in, Fullscreen." };
         // Gate only on low-M annuli (M ≤ 4): short seeded streams have large drift
         // variance, so static-vs-running is statistically separable only where the
         // nominal advance dominates — and a stalled canvas stalls ALL annuli, so
@@ -148,11 +156,12 @@
                    carrierRatio: carrierRatio,
                    error: "CLOCK MISMATCH — rotation at " + carrierRatio + "× expected. Emitter stalling intermittently, or capture fps ≠ profile fps." };
 
-        var align = opts.aligned ? { offset: 0, lag: 0, score: null, method: "aligned" } : demap.findAlignment(track, a, profile);
+        var syncBase = onset !== null ? onset : null;
+        var align = opts.aligned ? { offset: 0, lag: 0, score: null, method: "aligned" } : demap.findAlignment(track, a, profile, syncBase);
         if (align && !align.method) align.method = "preamble";
         if (!align) {
           var maxLagSym = Math.ceil(((opts.loopSeconds || 60) * profile.frame_rate_hz) / a.rotation.frames_per_symbol) + profile.preamble_symbols;
-          align = demap.correlateStream(track, a, profile, maxLagSym);
+          align = demap.correlateStream(track, a, profile, maxLagSym, syncBase);
         }
         if (!align)
           return { annulus: a.index, layer: a.layer, present: true, contrast: round3(meanContrast), validFrames: valid,

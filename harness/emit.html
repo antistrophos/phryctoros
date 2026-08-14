@@ -157,21 +157,22 @@ function drawFrame(f) {
   }
 }
 
-/* Freeze screen: static background + one huge digit. Static content only — no
-   photosensitivity concern, and it gives the operator an unmissable start cue.
-   The receiver anchors registration past dead frames, so filming during the
-   freeze is the RECOMMENDED start: the capture then contains the emission's
-   preamble from frame 0. */
-function drawCountdown(n) {
+/* Countdown freeze (practitioner's transition-minimizing design): hold the FULL
+   frame-0 emission — fiducial present, rings visible but frozen — with only a
+   small corner digit. AF/AE settle on the real scene and NOTHING changes at
+   emission start except that the rings begin to turn; the decoder detects the
+   motion onset and bases sync there. Digit sits in the background corner,
+   outside the outermost ring; small + mid-contrast so it cannot decoy the
+   finder scan (and triple verification would reject it regardless). */
+function overlayCountdown(n) {
   const cv = $("cv"), ctx = cv.getContext("2d");
-  const size = profile.render.size_px, half = size / 2;
-  ctx.fillStyle = gray(profile.render.background); ctx.fillRect(0, 0, size, size);
+  const size = profile.render.size_px;
   ctx.fillStyle = gray(profile.render.fill);
   ctx.textAlign = "center"; ctx.textBaseline = "middle";
-  ctx.font = "700 " + Math.round(size * 0.55) + "px system-ui, sans-serif";
-  ctx.fillText(String(n), half, half);
-  ctx.font = Math.round(size * 0.045) + "px system-ui, sans-serif";
-  ctx.fillText("start filming now — emission begins at 0", half, size * 0.92);
+  ctx.font = "700 " + Math.round(size * 0.09) + "px system-ui, sans-serif";
+  ctx.fillText(String(n), size * 0.92, size * 0.08);
+  ctx.font = Math.round(size * 0.02) + "px system-ui, sans-serif";
+  ctx.fillText("hold — rings start at 0", size * 0.885, size * 0.145);
 }
 
 function loop(now) {
@@ -187,8 +188,9 @@ function loop(now) {
     fpsWindow.push(now);
     while (fpsWindow.length && now - fpsWindow[0] > 2000) fpsWindow.shift();
     if (ph < cdFrames) {
-      drawCountdown(Math.ceil((cdFrames - ph) / fps));
-      $("hud").textContent = "FROZEN — capture starts in " + Math.ceil((cdFrames - ph) / fps) +
+      drawFrame(0);
+      overlayCountdown(Math.ceil((cdFrames - ph) / fps));
+      $("hud").textContent = "FROZEN at frame 0 — rings start in " + Math.ceil((cdFrames - ph) / fps) +
         "  |  loop " + Math.floor(fTot / cycle);
     } else {
       const f = ph - cdFrames;

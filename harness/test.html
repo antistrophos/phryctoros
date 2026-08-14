@@ -310,21 +310,19 @@ async function main() {
     }
   }
 
-  // T10 — countdown/blank-prefix capture: the emitter freezes with a 3-2-1 before
-  // each loop, so real captures BEGIN on a dead screen. Registration must anchor
-  // at the first live frame and the preamble search must base there.
-  await tick("T10: blank-prefix (countdown freeze) capture…");
+  // T10 — frozen-frame-0 countdown capture (the transition-minimizing emitter):
+  // the prefix is the FULL frame-0 emission held static — registration locks
+  // immediately (regFrame 0), the decoder detects motion onset at frame 20 and
+  // bases sync there, and the stream decodes clean.
+  await tick("T10: frozen-frame-0 (countdown) capture…");
   {
-    const w = cleanFrames[0].img.w, h = cleanFrames[0].img.h;
-    const blankData = new Float32Array(w * h); blankData.fill(0.62);
-    const blank = { w, h, data: blankData };
     const pre = [];
-    for (let i = 0; i < 20; i++) pre.push({ f: i, img: blank });
+    for (let i = 0; i < 20; i++) pre.push({ f: i, img: cleanFrames[0].img });
     const tail = cleanFrames.slice(0, 72).map((fr, i) => ({ f: 20 + i, img: fr.img }));
     const r10 = OC.pipeline.decodeSequence(pre.concat(tail), profile, { aligned: false });
     const A = r10.error ? null : layerResult(r10, 0, 0);
-    record("T10 blank-prefix: registration anchors past the freeze (regFrame 20), preamble locks (offset 20, lag 0), SER==0",
-      !r10.error && r10.regFrame === 20 && A.alignOffset === 20 && A.alignLag === 0 && A.ser === 0,
+    record("T10 frozen prefix: registration at frame 0, motion onset bases sync (offset 20, lag 0), SER==0",
+      !r10.error && r10.regFrame === 0 && A.alignOffset === 20 && A.alignLag === 0 && A.ser === 0,
       r10.error ? r10.error : ("regFrame " + r10.regFrame + " off " + A.alignOffset + " lag " + A.alignLag + "  " + fmt(A)));
   }
 
