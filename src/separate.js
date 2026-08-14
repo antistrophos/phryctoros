@@ -90,6 +90,18 @@
       // residual), and as an anchor it poisons every branch above it. It stays
       // measured (meanMag) as the centering-error diagnostic.
       var est = pred, W = 0.0001 /* tiny prior on the prediction */;
+      // k=1 as BRANCH GUIDE only — zero weight in the estimate (F5b: its
+      // centering noise poisons precision) but full-turn-unambiguous, so it
+      // safely steers branch selection when k·Δφ per frame approaches the
+      // ±180°/k window (v2's fast outer base ring exposed this: k=2 targets
+      // can move ~160°/frame at 1.5 Hz + deviation, and prediction alone
+      // under-tracks into a frozen attractor).
+      var jg = ks.indexOf(1);
+      if (jg >= 0 && spec.mag[1] > 0) {
+        var tg = psis[jg] - spec.arg[1];
+        var mg = Math.round((pred - tg) / TAU);
+        est = (pred + (tg + TAU * mg)) / 2;
+      }
       var estAcc = est * W;
       var usable = 0;
       for (var j = 0; j < ks.length; j++) {

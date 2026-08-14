@@ -34,6 +34,7 @@
   <label>camera <select id="m_cam"><option>rear</option><option>front</option></select></label>
   <label>handheld <input id="m_hand" type="checkbox" checked></label>
   <label>emitter loop (s) <input id="m_loop" type="number" value="60" style="width:4rem"></label>
+  <label>profile <select id="m_prof"><option value="v2">v2 (current)</option><option value="v1">v1 (legacy clips)</option></select></label>
   <label>notes <input id="m_notes" style="width:12rem"></label>
 </fieldset>
 
@@ -338,7 +339,13 @@
 
   function defaultProfile(overrides) {
     var p = {
-      profile_version: "phase0-v1",
+      // v2: THE LAYER SWAP (first-walk finding 3). Spec §7.1's rule and §7.6's
+      // table put layer 0 OUTERMOST; the §7.1 diagram says the opposite and v1
+      // faithfully implemented the diagram. Field physics endorsed the rule:
+      // phase noise scales as blur-px/radius-px, so the base layer belongs on
+      // the biggest ring. v1 clips decode only under profileV1() — the profile
+      // is the CONTRACT, and this swap is an emission version, not a patch.
+      profile_version: "phase0-v2",
       units: "fiducial-width",
       // 15 fps emission against 30 fps capture: every emission frame persists two
       // camera frames, so one of each pair escapes the rolling-shutter/refresh
@@ -361,15 +368,15 @@
       },
       preamble_symbols: 8,
       annuli: [
-        { index: 0, layer: 0, r_inner: 1.05, r0: 1.45,
-          rotation: { nominal_hz: 1.5, rate_tier_fps: 30, constellation: "dqpsk", M: 4, gray: true, frames_per_symbol: 4, seed: 101 },
-          boundary: { harmonics: [1, 2, 3], amplitudes: [0.030, 0.050, 0.050], phases_deg: [0, 40, 80] } },
+        { index: 0, layer: 2, r_inner: 1.05, r0: 1.45,
+          rotation: { nominal_hz: 0.75, rate_tier_fps: 15, constellation: "d16psk", M: 16, gray: true, frames_per_symbol: 4, seed: 101 },
+          boundary: { harmonics: [1, 2, 3, 5, 8, 13, 20], amplitudes: [0.030, 0.020, 0.020, 0.015, 0.015, 0.015, 0.015], phases_deg: [0, 25, 50, 75, 100, 125, 150] } },
         { index: 1, layer: 1, r_inner: 1.75, r0: 2.15,
-          rotation: { nominal_hz: 1.0, rate_tier_fps: 30, constellation: "d8psk", M: 8, gray: true, frames_per_symbol: 4, seed: 202 },
+          rotation: { nominal_hz: 1.0, rate_tier_fps: 15, constellation: "d8psk", M: 8, gray: true, frames_per_symbol: 4, seed: 202 },
           boundary: { harmonics: [1, 2, 3, 5, 8], amplitudes: [0.020, 0.030, 0.030, 0.030, 0.030], phases_deg: [0, 30, 60, 90, 120] } },
-        { index: 2, layer: 2, r_inner: 2.45, r0: 2.85,
-          rotation: { nominal_hz: 0.75, rate_tier_fps: 30, constellation: "d16psk", M: 16, gray: true, frames_per_symbol: 4, seed: 303 },
-          boundary: { harmonics: [1, 2, 3, 5, 8, 13, 20], amplitudes: [0.014, 0.018, 0.018, 0.018, 0.018, 0.018, 0.018], phases_deg: [0, 25, 50, 75, 100, 125, 150] } }
+        { index: 2, layer: 0, r_inner: 2.45, r0: 2.85,
+          rotation: { nominal_hz: 1.5, rate_tier_fps: 15, constellation: "dqpsk", M: 4, gray: true, frames_per_symbol: 4, seed: 303 },
+          boundary: { harmonics: [1, 2, 3], amplitudes: [0.030, 0.045, 0.045], phases_deg: [0, 40, 80] } }
       ],
       layers: [
         { index: 0, role: "base" },
@@ -451,7 +458,27 @@
     return { ok: errors.length === 0, errors: errors, warnings: warnings, flicker: flicker };
   }
 
-  var API = { defaultProfile: defaultProfile, validate: validate, sumAmp: sumAmp, sampleWindow: sampleWindow, deepMerge: deepMerge };
+  /* The v1 emission contract, frozen: layer 0 innermost (the §7.1-diagram
+     ordering v1 shipped with). Clips filmed under v1 decode ONLY under this. */
+  function profileV1(overrides) {
+    var p = defaultProfile();
+    p.profile_version = "phase0-v1";
+    p.annuli = [
+      { index: 0, layer: 0, r_inner: 1.05, r0: 1.45,
+        rotation: { nominal_hz: 1.5, rate_tier_fps: 30, constellation: "dqpsk", M: 4, gray: true, frames_per_symbol: 4, seed: 101 },
+        boundary: { harmonics: [1, 2, 3], amplitudes: [0.030, 0.050, 0.050], phases_deg: [0, 40, 80] } },
+      { index: 1, layer: 1, r_inner: 1.75, r0: 2.15,
+        rotation: { nominal_hz: 1.0, rate_tier_fps: 30, constellation: "d8psk", M: 8, gray: true, frames_per_symbol: 4, seed: 202 },
+        boundary: { harmonics: [1, 2, 3, 5, 8], amplitudes: [0.020, 0.030, 0.030, 0.030, 0.030], phases_deg: [0, 30, 60, 90, 120] } },
+      { index: 2, layer: 2, r_inner: 2.45, r0: 2.85,
+        rotation: { nominal_hz: 0.75, rate_tier_fps: 30, constellation: "d16psk", M: 16, gray: true, frames_per_symbol: 4, seed: 303 },
+        boundary: { harmonics: [1, 2, 3, 5, 8, 13, 20], amplitudes: [0.014, 0.018, 0.018, 0.018, 0.018, 0.018, 0.018], phases_deg: [0, 25, 50, 75, 100, 125, 150] } }
+    ];
+    if (overrides) deepMerge(p, overrides);
+    return p;
+  }
+
+  var API = { defaultProfile: defaultProfile, profileV1: profileV1, validate: validate, sumAmp: sumAmp, sampleWindow: sampleWindow, deepMerge: deepMerge };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   global.OC = global.OC || {}; global.OC.profile = API;
 })(typeof window !== "undefined" ? window : globalThis);
@@ -1079,6 +1106,18 @@
       // residual), and as an anchor it poisons every branch above it. It stays
       // measured (meanMag) as the centering-error diagnostic.
       var est = pred, W = 0.0001 /* tiny prior on the prediction */;
+      // k=1 as BRANCH GUIDE only — zero weight in the estimate (F5b: its
+      // centering noise poisons precision) but full-turn-unambiguous, so it
+      // safely steers branch selection when k·Δφ per frame approaches the
+      // ±180°/k window (v2's fast outer base ring exposed this: k=2 targets
+      // can move ~160°/frame at 1.5 Hz + deviation, and prediction alone
+      // under-tracks into a frozen attractor).
+      var jg = ks.indexOf(1);
+      if (jg >= 0 && spec.mag[1] > 0) {
+        var tg = psis[jg] - spec.arg[1];
+        var mg = Math.round((pred - tg) / TAU);
+        est = (pred + (tg + TAU * mg)) / 2;
+      }
       var estAcc = est * W;
       var usable = 0;
       for (var j = 0; j < ks.length; j++) {
@@ -1657,7 +1696,11 @@
 "use strict";
 const OC = window.OC;
 const $ = id => document.getElementById(id);
-const profile = OC.profile.defaultProfile(); // field profile — must match the emitter's
+// The profile is the CONTRACT: v2 for new emissions, v1 for clips filmed before
+// the layer swap. The selector picks which mapping decodes.
+function currentProfile() {
+  return $("m_prof") && $("m_prof").value === "v1" ? OC.profile.profileV1() : OC.profile.defaultProfile();
+}
 const rows = [];
 let stream = null, capturing = false, camFrames = [], frameCounter = 0;
 
@@ -1723,10 +1766,10 @@ function logRow(res, source, fpsMeasured, nFrames) {
 }
 
 function decodeFrames(frames, source, fpsMeasured) {
-  setStatus("decoding " + frames.length + " frames…", "warn");
+  setStatus("decoding " + frames.length + " frames (" + currentProfile().profile_version + ")…", "warn");
   setTimeout(() => {
     try {
-      const res = OC.pipeline.decodeSequence(frames, profile, {
+      const res = OC.pipeline.decodeSequence(frames, currentProfile(), {
         aligned: false, handheld: $("m_hand").checked,
         loopSeconds: +$("m_loop").value || 60,
         mirror: { receive: false }, maxEmitters: 4
@@ -1770,7 +1813,7 @@ $("capBtn").onclick = () => {
   const c = document.createElement("canvas"); c.width = W; c.height = H;
   const ctx = c.getContext("2d", { willReadFrequently: true });
   camFrames = []; capturing = true;
-  const fps = profile.frame_rate_hz;
+  const fps = currentProfile().frame_rate_hz;
   const perIdx = {};
   const tEnd = performance.now() + secs * 1000;
   const t0Wall = performance.now();
@@ -1813,7 +1856,7 @@ $("fileIn").onchange = async () => {
   if (!file) return;
   const v = $("vid");
   v.srcObject = null; v.src = URL.createObjectURL(file); v.style.display = ""; v.muted = true;
-  const fps = profile.frame_rate_hz;
+  const fps = currentProfile().frame_rate_hz;
   const seek = t => new Promise(r => { v.onseeked = () => r(); v.currentTime = t; });
   try {
     await new Promise((r, j) => { v.onloadedmetadata = () => r(); v.onerror = () => j(new Error("video failed to load")); });
@@ -1828,20 +1871,28 @@ $("fileIn").onchange = async () => {
     // it, and a crop fit to one instant silently clips boundary sectors later
     // (bilinear clamps at edges; no error, just poisoned samples). Margin 4.2
     // fiducial widths beyond the outermost annulus's ~3.0.
+    // MULTI-SCALE (first-walk lesson): a distant/zoomed emitter that is invisible
+    // at the 800 px downscale can be perfectly registrable at native resolution —
+    // escalate the pre-scan scale until something registers.
     let hits = [];
-    for (const t of [0.5, v.duration * 0.3, v.duration * 0.6, Math.max(0.5, v.duration - 1)]) {
-      await seek(Math.min(t, v.duration - 0.1));
-      pctx.drawImage(v, 0, 0, PW, PH);
-      const reg = OC.register.registerAll(toLumFromCanvas(pctx, PW, PH));
-      if (reg.emitters.length) {
-        const em = reg.emitters[0];
-        const sc = v.videoWidth / PW;
-        hits.push({
-          cx: ((em.corners.TL.x + em.corners.TR.x + em.corners.BL.x) / 3 + em.fiducialWidthPx * 0.14) * sc,
-          cy: ((em.corners.TL.y + em.corners.TR.y + em.corners.BL.y) / 3 + em.fiducialWidthPx * 0.14) * sc,
-          fid: em.fiducialWidthPx * sc
-        });
+    for (const PWs of [800, 1600, Math.min(2200, v.videoWidth)]) {
+      const PHs = Math.round(PWs * v.videoHeight / v.videoWidth);
+      pc.width = PWs; pc.height = PHs;
+      for (const t of [0.5, v.duration * 0.3, v.duration * 0.6, Math.max(0.5, v.duration - 1)]) {
+        await seek(Math.min(t, v.duration - 0.1));
+        pctx.drawImage(v, 0, 0, PWs, PHs);
+        const reg = OC.register.registerAll(toLumFromCanvas(pctx, PWs, PHs));
+        if (reg.emitters.length) {
+          const em = reg.emitters[0];
+          const sc = v.videoWidth / PWs;
+          hits.push({
+            cx: ((em.corners.TL.x + em.corners.TR.x + em.corners.BL.x) / 3 + em.fiducialWidthPx * 0.14) * sc,
+            cy: ((em.corners.TL.y + em.corners.TR.y + em.corners.BL.y) / 3 + em.fiducialWidthPx * 0.14) * sc,
+            fid: em.fiducialWidthPx * sc
+          });
+        }
       }
+      if (hits.length) break;
     }
     let box = null;
     if (hits.length) {

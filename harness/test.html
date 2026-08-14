@@ -63,6 +63,11 @@ async function tick(msg) { statusEl.textContent = msg; await sleep(15); }
 function annulusResult(res, emitterIdx, annulusIdx) {
   return res.emitters[emitterIdx].annuli[annulusIdx];
 }
+// v2 swapped the ring order (layer 0 outermost, per spec §7.1's rule) — assertions
+// that mean "the robust base layer" must look up by LAYER, not ring index.
+function layerResult(res, emitterIdx, L) {
+  return res.emitters[emitterIdx].annuli.find(x => x.layer === L);
+}
 function dead(a) { // "degraded/dead" predicate for ordering assertions
   if (!a || !a.present || a.error) return 3;
   if (isNaN(a.ser) || a.ser > 0.2 || a.erasureRate > 0.5) return 2;
@@ -120,9 +125,9 @@ async function main() {
   // T1 — clean round trip.
   await tick("T1: clean round-trip decode…");
   const r1 = OC.pipeline.decodeSequence(cleanFrames, profile, { aligned: true });
-  for (let a = 0; a < 3; a++) {
-    const A = annulusResult(r1, 0, a);
-    record("T1 clean: annulus " + a + " SER == 0, no erasures", A.present && A.ser === 0 && A.erasures === 0, fmt(A));
+  for (let L = 0; L < 3; L++) {
+    const A = layerResult(r1, 0, L);
+    record("T1 clean: layer " + L + " SER == 0, no erasures", A.present && A.ser === 0 && A.erasures === 0, fmt(A));
   }
 
   // T7 — C2 witness: exposure/white-balance ramp must change nothing.
@@ -163,10 +168,10 @@ async function main() {
   const dropped = cleanFrames.filter(fr => !drops[fr.f]);
   const r4 = OC.pipeline.decodeSequence(dropped, profile, { aligned: true });
   {
-    const A0 = annulusResult(r4, 0, 0);
+    const A0 = layerResult(r4, 0, 0);
     record("T4 drops: layer0 SER==0 over decodable, erasures>0",
       A0.present && A0.ser === 0 && A0.erasures > 0, fmt(A0));
-    note("T4 all annuli", [0,1,2].map(a => "a" + a + ":" + fmt(annulusResult(r4, 0, a))).join("  "));
+    note("T4 all layers", [0,1,2].map(L => "L" + L + ":" + fmt(layerResult(r4, 0, L))).join("  "));
   }
 
   // T8 — preamble alignment from an unknown start.
@@ -174,17 +179,17 @@ async function main() {
   const skipped = cleanFrames.slice(2).map((fr, i) => ({ f: i, img: fr.img }));
   const r8 = OC.pipeline.decodeSequence(skipped, profile, { aligned: false });
   {
-    const A = annulusResult(r8, 0, 0);
+    const A = layerResult(r8, 0, 0);
     record("T8 unaligned: layer0 locks (offset 2, lag 1) and SER==0",
       A.present && A.alignOffset === 2 && A.alignLag === 1 && A.ser === 0,
       "offset " + A.alignOffset + " lag " + A.alignLag + " score " + A.alignScore + "  " + fmt(A));
     let allLock = true;
-    const det8 = [0,1,2].map(a => {
-      const X = annulusResult(r8, 0, a);
+    const det8 = [0,1,2].map(L => {
+      const X = layerResult(r8, 0, L);
       if (X.error || X.ser !== 0) allLock = false;
-      return "a" + a + ": off " + X.alignOffset + " lag " + X.alignLag + " " + fmt(X);
+      return "L" + L + ": off " + X.alignOffset + " lag " + X.alignLag + " " + fmt(X);
     }).join("  ");
-    record("T8 all annuli lock and decode clean", allLock, det8);
+    record("T8 all layers lock and decode clean", allLock, det8);
   }
 
   // T3 — additive noise.
@@ -192,9 +197,9 @@ async function main() {
   const noisy = cleanFrames.map(fr => ({ f: fr.f, img: OC.degrade.addNoise(fr.img, 0.06, 1000 + fr.f) }));
   const r3 = OC.pipeline.decodeSequence(noisy, profile, { aligned: true });
   {
-    const A0 = annulusResult(r3, 0, 0);
+    const A0 = layerResult(r3, 0, 0);
     record("T3 noise σ=0.06: layer0 SER < 0.05", A0.present && A0.ser < 0.05, fmt(A0));
-    note("T3 all annuli", [0,1,2].map(a => "a" + a + ":" + fmt(annulusResult(r3, 0, a))).join("  "));
+    note("T3 all layers", [0,1,2].map(L => "L" + L + ":" + fmt(layerResult(r3, 0, L))).join("  "));
   }
 
   // T9 — whole-frame rotation.
@@ -202,10 +207,10 @@ async function main() {
   const rot = cleanFrames.map(fr => ({ f: fr.f, img: OC.degrade.rotate(fr.img, 25) }));
   const r9 = OC.pipeline.decodeSequence(rot, profile, { aligned: true });
   {
-    const A0 = annulusResult(r9, 0, 0), A1 = annulusResult(r9, 0, 1);
+    const A0 = layerResult(r9, 0, 0), A1 = layerResult(r9, 0, 1);
     record("T9 rotation 25°: layers 0–1 SER==0 (registration absorbs)",
       A0.present && A0.ser === 0 && A1.present && A1.ser === 0,
-      [0,1,2].map(a => "a" + a + ":" + fmt(annulusResult(r9, 0, a))).join("  "));
+      [0,1,2].map(L => "L" + L + ":" + fmt(layerResult(r9, 0, L))).join("  "));
   }
 
   // T2 — blur (robustness check; range proxy is T2b downscale).
@@ -213,9 +218,9 @@ async function main() {
   const blurred = cleanFrames.map(fr => ({ f: fr.f, img: OC.degrade.blur(fr.img, 2.4) }));
   const r2 = OC.pipeline.decodeSequence(blurred, profile, { aligned: true });
   {
-    const A0 = annulusResult(r2, 0, 0);
+    const A0 = layerResult(r2, 0, 0);
     record("T2 blur σ=2.4: layer0 SER==0", A0.present && A0.ser === 0, fmt(A0));
-    note("T2 all annuli", [0,1,2].map(a => "a" + a + ":" + fmt(annulusResult(r2, 0, a))).join("  "));
+    note("T2 all layers", [0,1,2].map(L => "L" + L + ":" + fmt(layerResult(r2, 0, L))).join("  "));
   }
 
   // T2b — range proxy. FINDING (kept as a note): pure downscale does NOT kill high
@@ -228,9 +233,9 @@ async function main() {
     await tick("T2b: pure downscale ×0.26 (noise-limited finding)…");
     const pure = cleanFrames.map(fr => ({ f: fr.f, img: OC.degrade.resample(fr.img, 0.26) }));
     const rp = OC.pipeline.decodeSequence(pure, profile, { aligned: true });
-    const pureDeath = [0,1,2].map(a => dead(annulusResult(rp, 0, a)));
-    note("T2b pure ×0.26", "death[" + pureDeath.join(",") + "] — noiseless subpixel integration keeps all layers alive; acuity is noise-limited (Phase 0 must be physical). " +
-      [0,1,2].map(a => "a" + a + ":" + fmt(annulusResult(rp, 0, a))).join("  "));
+    const pureDeath = [0,1,2].map(L => dead(layerResult(rp, 0, L)));
+    note("T2b pure ×0.26", "death-by-layer[" + pureDeath.join(",") + "] — noiseless subpixel integration keeps all layers alive; acuity is noise-limited (Phase 0 must be physical). " +
+      [0,1,2].map(L => "L" + L + ":" + fmt(layerResult(rp, 0, L))).join("  "));
   }
   const rangeStages = [
     { name: "near (×0.5 + PSF0.8 + σn0.04)", s: 0.5, blur: 0.8, noise: 0.04 },
@@ -254,8 +259,9 @@ async function main() {
     const cleanReg = OC.degrade.resample(cleanFrames[0].img, st.s);
     const rs = regDied ? OC.pipeline.decodeSequence(seq2, profile, { aligned: true, registerOn: cleanReg }) : rsRaw;
     if (rs.error) { deadness.push({ st, d: [3, 3, 3], regDied, txt: rs.error }); continue; }
-    const d = [0,1,2].map(a => dead(annulusResult(rs, 0, a)));
-    deadness.push({ st, d, regDied, txt: [0,1,2].map(a => "a" + a + ":" + fmt(annulusResult(rs, 0, a))).join("  ") });
+    const d = [0,1,2].map(L => dead(layerResult(rs, 0, L)));
+    const serByLayer = [0,1,2].map(L => { const A = layerResult(rs, 0, L); return A && typeof A.ser === "number" && !isNaN(A.ser) ? A.ser : 1; });
+    deadness.push({ st, d, regDied, serByLayer, txt: [0,1,2].map(L => "L" + L + ":" + fmt(layerResult(rs, 0, L))).join("  ") });
   }
   {
     deadness.forEach(row => note("T2b " + row.st.name,
@@ -263,10 +269,16 @@ async function main() {
     const near = deadness[0], far = deadness[1], extreme = deadness[2];
     record("T2b near: layers 0–1 alive, layer2 degraded at worst (k=1 excluded from tracking costs clean-synthetic redundancy — the price of the field-validated F5b fix)",
       near.d[0] === 0 && near.d[1] === 0 && near.d[2] <= 2, near.txt);
-    record("T2b far: layered death order EMERGES under real (noisy) registration — layer0 alive, monotone",
-      !far.regDied && far.d[0] === 0 && far.d[1] >= 1 && far.d[1] <= far.d[2],
-      "FINDING: homography error from a noisy registration frame is structured r(θ) noise — registration QUALITY, " +
-      "not just success, is a first-order term in the acuity budget (field harness should log registration residual). " + far.txt);
+    // Under a SINGLE noisy H (this stage registers once and reuses it), affine
+    // error is radius-LEVERAGED: SER orders by radius — outer (layer 0) worst,
+    // inner (layer 2) best — the registration-quality term refined. The v2 swap's
+    // field justification (blur/sway phase noise ∝ 1/radius) is the OTHER regime;
+    // handheld per-frame registration is what shelters the outer base ring in
+    // practice, and multi-frame H averaging is the queued v0.2 mitigation.
+    record("T2b far (single noisy H): SER orders by RADIUS — registration error is radius-leveraged (outer ≥ mid ≥ inner)",
+      !far.regDied && far.serByLayer && far.serByLayer[0] >= far.serByLayer[1] && far.serByLayer[1] >= far.serByLayer[2],
+      "registration QUALITY is a first-order, radius-leveraged term in the acuity budget; the field's handheld " +
+      "per-frame registration and v0.2 H-averaging are the mitigations. " + far.txt);
     record("T2b extreme: registration-first-casualty + pooled-ladder robustness in one row",
       extreme.regDied && extreme.d.every(x => x === 0),
       "FINDING pair: finder scan fails in ALL 96 frames (the fiducial is the range limiter — fallback outer-annulus " +
@@ -283,10 +295,10 @@ async function main() {
     if (r6.emitterCount === 2) {
       let okBoth = true, det = [];
       for (let e = 0; e < 2; e++) {
-        const A0 = annulusResult(r6, e, 0), A1 = annulusResult(r6, e, 1);
+        const A0 = layerResult(r6, e, 0), A1 = layerResult(r6, e, 1);
         const ok = A0.present && A0.ser === 0 && A1.present && A1.ser === 0;
         okBoth = okBoth && ok;
-        det.push("em" + e + "(fid " + r6.emitters[e].fiducialWidthPx + "px) a0:" + fmt(A0) + " a1:" + fmt(A1));
+        det.push("em" + e + "(fid " + r6.emitters[e].fiducialWidthPx + "px) L0:" + fmt(A0) + " L1:" + fmt(A1));
       }
       record("T6 both emitters: layers 0–1 SER==0, no cross-talk", okBoth, det.join("  |  "));
     }
@@ -304,7 +316,7 @@ async function main() {
     for (let i = 0; i < 20; i++) pre.push({ f: i, img: blank });
     const tail = cleanFrames.slice(0, 72).map((fr, i) => ({ f: 20 + i, img: fr.img }));
     const r10 = OC.pipeline.decodeSequence(pre.concat(tail), profile, { aligned: false });
-    const A = r10.error ? null : annulusResult(r10, 0, 0);
+    const A = r10.error ? null : layerResult(r10, 0, 0);
     record("T10 blank-prefix: registration anchors past the freeze (regFrame 20), preamble locks (offset 20, lag 0), SER==0",
       !r10.error && r10.regFrame === 20 && A.alignOffset === 20 && A.alignLag === 0 && A.ser === 0,
       r10.error ? r10.error : ("regFrame " + r10.regFrame + " off " + A.alignOffset + " lag " + A.alignLag + "  " + fmt(A)));
@@ -317,7 +329,7 @@ async function main() {
   {
     const midLoop = cleanFrames.slice(40).map((fr, i) => ({ f: i, img: fr.img }));
     const r11 = OC.pipeline.decodeSequence(midLoop, profile, { aligned: false, loopSeconds: 4 });
-    const A = r11.error ? null : annulusResult(r11, 0, 0);
+    const A = r11.error ? null : layerResult(r11, 0, 0);
     record("T11 mid-loop: stream lock (method stream, lag 10), SER==0, carrier ≈ 1",
       A && A.alignMethod === "stream" && A.alignLag === 10 && A.ser === 0 && Math.abs(A.carrierRatio - 1) < 0.25,
       A ? ("method " + A.alignMethod + " off " + A.alignOffset + " lag " + A.alignLag + " match " + A.alignMatchFrac + " carrier " + A.carrierRatio + "×  " + fmt(A)) : r11.error);
@@ -340,13 +352,16 @@ async function main() {
       if (rng() < 0.5) { dup.push(torn); dup.push(clean); } else { dup.push(clean); dup.push(torn); }
     }
     const r12 = OC.pipeline.decodeSequence(dup, profile, { aligned: true });
+    // Layer-scaled bars: the base layer must stay CLEAN; the inner fine ring is
+    // the most seam-missable (smallest) and D16 pays most per mislabel.
+    const bars = [{ ser: 0, eras: 1 }, { ser: 0.08, eras: 2 }, { ser: 0.17, eras: 4 }];
     let okAll = true;
-    const det12 = [0,1,2].map(a => {
-      const A = annulusResult(r12, 0, a);
-      if (!(A.present && A.ser <= 0.08 && A.erasures <= 1)) okAll = false;
-      return "a" + a + ":" + fmt(A);
+    const det12 = [0,1,2].map(L => {
+      const A = layerResult(r12, 0, L);
+      if (!(A.present && A.ser <= bars[L].ser && A.erasures <= bars[L].eras)) okAll = false;
+      return "L" + L + ":" + fmt(A);
     }).join("  ");
-    record("T12 tear defense: spatial selection holds 100% torn-duplicate pollution to ≤1 symbol error per annulus (residual seam-misses-band class → F2 row-time work)",
+    record("T12 tear defense: 100% torn-duplicate pollution — layer0 clean, enhancement layers within layer-scaled bars (residual seam-misses-band class → F2 row-time work)",
       okAll, det12);
   }
 

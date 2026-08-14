@@ -71,26 +71,31 @@ async function runClip(name) {
   const seek = t => new Promise(r => { v.onseeked = () => r(); v.currentTime = t; });
   const row = { clip: name, dur: +v.duration.toFixed(1), res: v.videoWidth + "×" + v.videoHeight };
 
-  // Pre-scan at 800 px: registration + crop-union across probes.
+  // Pre-scan: registration + crop-union across probes, MULTI-SCALE (800 → 1600 →
+  // native) — a zoomed/distant emitter invisible at 800 px can register at native.
   const pc = document.createElement("canvas");
   const pctx = pc.getContext("2d", { willReadFrequently: true });
-  const PW = 800, PH = Math.round(PW * v.videoHeight / v.videoWidth);
-  pc.width = PW; pc.height = PH;
   const hits = [];
-  for (const t of [0.5, v.duration * 0.3, v.duration * 0.6, Math.max(0.5, v.duration - 1)]) {
-    await seek(Math.min(t, v.duration - 0.1));
-    pctx.drawImage(v, 0, 0, PW, PH);
-    const reg = OC.register.registerAll(lumFrom(pctx, PW, PH));
-    if (reg.emitters.length) {
-      const em = reg.emitters[0], sc = v.videoWidth / PW;
-      hits.push({
-        cx: ((em.corners.TL.x + em.corners.TR.x + em.corners.BL.x) / 3 + em.fiducialWidthPx * 0.14) * sc,
-        cy: ((em.corners.TL.y + em.corners.TR.y + em.corners.BL.y) / 3 + em.fiducialWidthPx * 0.14) * sc,
-        fid: em.fiducialWidthPx * sc
-      });
+  let scaleUsed = null;
+  for (const PW of [800, 1600, Math.min(2200, v.videoWidth)]) {
+    const PH = Math.round(PW * v.videoHeight / v.videoWidth);
+    pc.width = PW; pc.height = PH;
+    for (const t of [0.5, v.duration * 0.3, v.duration * 0.6, Math.max(0.5, v.duration - 1)]) {
+      await seek(Math.min(t, v.duration - 0.1));
+      pctx.drawImage(v, 0, 0, PW, PH);
+      const reg = OC.register.registerAll(lumFrom(pctx, PW, PH));
+      if (reg.emitters.length) {
+        const em = reg.emitters[0], sc = v.videoWidth / PW;
+        hits.push({
+          cx: ((em.corners.TL.x + em.corners.TR.x + em.corners.BL.x) / 3 + em.fiducialWidthPx * 0.14) * sc,
+          cy: ((em.corners.TL.y + em.corners.TR.y + em.corners.BL.y) / 3 + em.fiducialWidthPx * 0.14) * sc,
+          fid: em.fiducialWidthPx * sc
+        });
+      }
     }
+    if (hits.length) { scaleUsed = PW; break; }
   }
-  row.preScanHits = hits.length + "/4";
+  row.preScanHits = hits.length + "/4" + (scaleUsed ? " @" + scaleUsed : "");
   let sx = 0, sy = 0, sw = v.videoWidth, sh = v.videoHeight;
   if (hits.length) {
     const half = Math.max(...hits.map(h => h.fid)) * 4.2;
@@ -104,7 +109,8 @@ async function runClip(name) {
   const W = Math.min(1024, sw), H = Math.round(sh * W / sw);
   c.width = W; c.height = H;
 
-  const profile = OC.profile.defaultProfile();
+  const profile = (new URLSearchParams(location.search).get("profile") === "v1")
+    ? OC.profile.profileV1() : OC.profile.defaultProfile();
   const fps = profile.frame_rate_hz;
   const frames = []; const perIdx = {};
   for (let i = 0; ; i++) {

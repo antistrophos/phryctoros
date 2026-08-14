@@ -8,7 +8,13 @@
 
   function defaultProfile(overrides) {
     var p = {
-      profile_version: "phase0-v1",
+      // v2: THE LAYER SWAP (first-walk finding 3). Spec §7.1's rule and §7.6's
+      // table put layer 0 OUTERMOST; the §7.1 diagram says the opposite and v1
+      // faithfully implemented the diagram. Field physics endorsed the rule:
+      // phase noise scales as blur-px/radius-px, so the base layer belongs on
+      // the biggest ring. v1 clips decode only under profileV1() — the profile
+      // is the CONTRACT, and this swap is an emission version, not a patch.
+      profile_version: "phase0-v2",
       units: "fiducial-width",
       // 15 fps emission against 30 fps capture: every emission frame persists two
       // camera frames, so one of each pair escapes the rolling-shutter/refresh
@@ -31,15 +37,15 @@
       },
       preamble_symbols: 8,
       annuli: [
-        { index: 0, layer: 0, r_inner: 1.05, r0: 1.45,
-          rotation: { nominal_hz: 1.5, rate_tier_fps: 30, constellation: "dqpsk", M: 4, gray: true, frames_per_symbol: 4, seed: 101 },
-          boundary: { harmonics: [1, 2, 3], amplitudes: [0.030, 0.050, 0.050], phases_deg: [0, 40, 80] } },
+        { index: 0, layer: 2, r_inner: 1.05, r0: 1.45,
+          rotation: { nominal_hz: 0.75, rate_tier_fps: 15, constellation: "d16psk", M: 16, gray: true, frames_per_symbol: 4, seed: 101 },
+          boundary: { harmonics: [1, 2, 3, 5, 8, 13, 20], amplitudes: [0.030, 0.020, 0.020, 0.015, 0.015, 0.015, 0.015], phases_deg: [0, 25, 50, 75, 100, 125, 150] } },
         { index: 1, layer: 1, r_inner: 1.75, r0: 2.15,
-          rotation: { nominal_hz: 1.0, rate_tier_fps: 30, constellation: "d8psk", M: 8, gray: true, frames_per_symbol: 4, seed: 202 },
+          rotation: { nominal_hz: 1.0, rate_tier_fps: 15, constellation: "d8psk", M: 8, gray: true, frames_per_symbol: 4, seed: 202 },
           boundary: { harmonics: [1, 2, 3, 5, 8], amplitudes: [0.020, 0.030, 0.030, 0.030, 0.030], phases_deg: [0, 30, 60, 90, 120] } },
-        { index: 2, layer: 2, r_inner: 2.45, r0: 2.85,
-          rotation: { nominal_hz: 0.75, rate_tier_fps: 30, constellation: "d16psk", M: 16, gray: true, frames_per_symbol: 4, seed: 303 },
-          boundary: { harmonics: [1, 2, 3, 5, 8, 13, 20], amplitudes: [0.014, 0.018, 0.018, 0.018, 0.018, 0.018, 0.018], phases_deg: [0, 25, 50, 75, 100, 125, 150] } }
+        { index: 2, layer: 0, r_inner: 2.45, r0: 2.85,
+          rotation: { nominal_hz: 1.5, rate_tier_fps: 15, constellation: "dqpsk", M: 4, gray: true, frames_per_symbol: 4, seed: 303 },
+          boundary: { harmonics: [1, 2, 3], amplitudes: [0.030, 0.045, 0.045], phases_deg: [0, 40, 80] } }
       ],
       layers: [
         { index: 0, role: "base" },
@@ -121,7 +127,27 @@
     return { ok: errors.length === 0, errors: errors, warnings: warnings, flicker: flicker };
   }
 
-  var API = { defaultProfile: defaultProfile, validate: validate, sumAmp: sumAmp, sampleWindow: sampleWindow, deepMerge: deepMerge };
+  /* The v1 emission contract, frozen: layer 0 innermost (the §7.1-diagram
+     ordering v1 shipped with). Clips filmed under v1 decode ONLY under this. */
+  function profileV1(overrides) {
+    var p = defaultProfile();
+    p.profile_version = "phase0-v1";
+    p.annuli = [
+      { index: 0, layer: 0, r_inner: 1.05, r0: 1.45,
+        rotation: { nominal_hz: 1.5, rate_tier_fps: 30, constellation: "dqpsk", M: 4, gray: true, frames_per_symbol: 4, seed: 101 },
+        boundary: { harmonics: [1, 2, 3], amplitudes: [0.030, 0.050, 0.050], phases_deg: [0, 40, 80] } },
+      { index: 1, layer: 1, r_inner: 1.75, r0: 2.15,
+        rotation: { nominal_hz: 1.0, rate_tier_fps: 30, constellation: "d8psk", M: 8, gray: true, frames_per_symbol: 4, seed: 202 },
+        boundary: { harmonics: [1, 2, 3, 5, 8], amplitudes: [0.020, 0.030, 0.030, 0.030, 0.030], phases_deg: [0, 30, 60, 90, 120] } },
+      { index: 2, layer: 2, r_inner: 2.45, r0: 2.85,
+        rotation: { nominal_hz: 0.75, rate_tier_fps: 30, constellation: "d16psk", M: 16, gray: true, frames_per_symbol: 4, seed: 303 },
+        boundary: { harmonics: [1, 2, 3, 5, 8, 13, 20], amplitudes: [0.014, 0.018, 0.018, 0.018, 0.018, 0.018, 0.018], phases_deg: [0, 25, 50, 75, 100, 125, 150] } }
+    ];
+    if (overrides) deepMerge(p, overrides);
+    return p;
+  }
+
+  var API = { defaultProfile: defaultProfile, profileV1: profileV1, validate: validate, sumAmp: sumAmp, sampleWindow: sampleWindow, deepMerge: deepMerge };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   global.OC = global.OC || {}; global.OC.profile = API;
 })(typeof window !== "undefined" ? window : globalThis);
