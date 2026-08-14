@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- single-file build 2026-08-13 — regenerate with build_standalone.py -->
+<!-- single-file build 2026-08-14 — regenerate with build_standalone.py -->
 
 <html lang="en">
 <head>
@@ -1326,6 +1326,10 @@
     gainMax: 0.55,    // split SSE must fall below this fraction of unsplit SSE
     gateRel: 1.3,     // scan only frames whose unsplit SSE exceeds this × stream median
     guardPx: 2.5,     // samples within this of the seam are on neither side (scanout blend band)
+    cleanRel: 2.0,    // split halves must land near the stream's clean floor (× median mse):
+                      // a true SEAM splits into two clean instants; handheld sway-WARP splits
+                      // into two still-warped halves (walk 4: warps passed the gain gate en
+                      // masse and the invalidation fallback shredded 20% of frames into gaps)
     sepMinFrac: 0.1,  // sides closer than this × nominal step: not a phase tear (and harmless either way)
     sepSlack: 1.25,   // window headroom over the physical one-frame step range
     discrim: 0.6      // chosen side must sit this much nearer prediction than the other
@@ -1474,9 +1478,73 @@
     for (var q = 0; q < n; q++) allIdx[q] = q;
     var all = fitSubset(basis, rv, allIdx, P);
     if (!all) return null;
-    var result = { n: n, mseAll: all.sse / n, all: all, best: null };
+    var result = { n: n, mseAll: all.sse / n, all: all, best: null, warp: null };
     if (opts.gateOnly) return result;
     if (all.sse <= 0) return result;
+
+    // WARP fit — the continuous half of F2 (field walk 4 taught the split):
+    // handheld sway makes the boundary phase drift with row inside a frame
+    // (largest ring pays most px per unit sway — the base ring's field
+    // inversion). A rigid rotation warp shifts EVERY harmonic by the same
+    // φ'·y, which equals evaluating the ideal boundary at the rotated angle
+    // θ − φ'·y — so de-warp by RESAMPLING the contour there and fitting the
+    // plain model, grid-searching the single rate φ'. (Free per-harmonic
+    // row-linear terms are DEGENERATE on a circle: y ≡ r·sinθ makes the
+    // derivative columns alias into neighboring harmonics — the function
+    // fits but the yc=0 phase comes out wrong. One shared rate does not.)
+    // A true SEAM is a step, which no continuous rate expresses — the seam
+    // path wins its frames on gain.
+    (function () {
+      var meanY = 0;
+      for (var s2 = 0; s2 < n; s2++) meanY += py[s2];
+      meanY /= n;
+      var scaleY = 0;
+      for (var s3 = 0; s3 < n; s3++) scaleY = Math.max(scaleY, Math.abs(py[s3] - meanY));
+      if (scaleY < 1) return;
+      var yc = new Float64Array(n);
+      for (var s4 = 0; s4 < n; s4++) yc[s4] = (py[s4] - meanY) / scaleY;
+      var dofPlain = Math.max(1, n - P - 1); // P coefficients + the rate
+      var fitAtRate = function (phiP) {
+        var b2 = new Float64Array(n * P);
+        for (var i2 = 0; i2 < n; i2++) {
+          var thW = th[i2] - phiP * yc[i2];
+          b2[i2 * P] = 1;
+          for (var j2 = 0; j2 < ks.length; j2++) {
+            b2[i2 * P + 1 + 2 * j2] = Math.cos(ks[j2] * thW);
+            b2[i2 * P + 2 + 2 * j2] = Math.sin(ks[j2] * thW);
+          }
+        }
+        return fitSubset(b2, rv, allIdx, P);
+      };
+      // One frame can hold at most ~one frame-time of rotation across its rows.
+      var rot = annulus.rotation;
+      var maxW = (TAU * rot.nominal_hz / (rot.rate_tier_fps || 15) +
+                  Math.PI * (rot.M - 1) / (rot.M * rot.frames_per_symbol)) * 1.2;
+      var bestR = null;
+      for (var g2 = -6; g2 <= 6; g2++) {
+        var cand = fitAtRate(maxW * g2 / 6);
+        if (cand && (!bestR || cand.sse < bestR.fit.sse)) bestR = { rate: maxW * g2 / 6, fit: cand };
+      }
+      if (!bestR) return;
+      // Parabolic refinement around the best grid point, then a final fit.
+      var h = maxW / 6;
+      var fm = fitAtRate(bestR.rate - h), fp = fitAtRate(bestR.rate + h);
+      if (fm && fp) {
+        var denom = fm.sse - 2 * bestR.fit.sse + fp.sse;
+        if (Math.abs(denom) > 1e-20) {
+          var delta = 0.5 * (fm.sse - fp.sse) / denom * h;
+          if (Math.abs(delta) < h) {
+            var refined = fitAtRate(bestR.rate + delta);
+            if (refined && refined.sse < bestR.fit.sse) bestR = { rate: bestR.rate + delta, fit: refined };
+          }
+        }
+      }
+      result.warp = {
+        beta: bestR.fit.beta, mse: bestR.fit.sse / dofPlain,
+        gain: (bestR.fit.sse / dofPlain) / (all.sse / Math.max(1, n - P)),
+        rate: bestR.rate
+      };
+    })();
 
     var minSide = Math.max(3 * P, n >> 2);
     var dofAll = Math.max(1, n - P);
@@ -1499,8 +1567,9 @@
       // split "win" on overfit alone when few samples survive degradation
       // (the suite caught exactly this under blur+noise). Per-DOF residuals
       // converge to the raw ratio at large n and remove the small-n freebie.
-      var gain = ((ft.sse + fb.sse) / Math.max(1, ft.n + fb.n - 2 * P)) / (all.sse / dofAll);
-      return { axis: axName, ci: ci, cut: cut, gain: gain, top: ft, bot: fb, nTop: ft.n, nBot: fb.n };
+      var mseSplit = (ft.sse + fb.sse) / Math.max(1, ft.n + fb.n - 2 * P);
+      var gain = mseSplit / (all.sse / dofAll);
+      return { axis: axName, ci: ci, cut: cut, gain: gain, mseSplit: mseSplit, top: ft, bot: fb, nTop: ft.n, nBot: fb.n };
     };
     for (var ax = 0; ax < 2; ax++) {
       var coord = axes[ax];
@@ -1538,6 +1607,7 @@
     opts = opts || {};
     var gainMax = opts.gainMax != null ? opts.gainMax : DEFAULTS.gainMax;
     var gateRel = opts.gateRel != null ? opts.gateRel : DEFAULTS.gateRel;
+    var cleanRel = opts.cleanRel != null ? opts.cleanRel : DEFAULTS.cleanRel;
     var sepMinFrac = opts.sepMinFrac != null ? opts.sepMinFrac : DEFAULTS.sepMinFrac;
     var sepSlack = opts.sepSlack != null ? opts.sepSlack : DEFAULTS.sepSlack;
     var discrim = opts.discrim != null ? opts.discrim : DEFAULTS.discrim;
@@ -1556,8 +1626,10 @@
     var sepHi = (nomStep0 + devPF) * sepSlack;
     var ks = annulus.boundary.harmonics;
 
-    var stats = { scanned: 0, gated: 0, torn: 0, repaired: 0, invalidated: 0, slipSuspect: 0, cuts: [],
-                  reasons: { nopred: 0, sepLo: 0, sepHi: 0, discrim: 0 } };
+    var stats = { scanned: 0, gated: 0, torn: 0, repaired: 0, warped: 0, invalidated: 0, slipSuspect: 0,
+                  warpRate: null, cuts: [],
+                  reasons: { noisy: 0, nopred: 0, sepLo: 0, sepHi: 0, discrim: 0 } };
+    var warpRates = [];
 
     // Pass 1 (cheap): unsplit misfit per frame → stream median → the gate.
     var mses = [], entries = [];
@@ -1577,6 +1649,10 @@
     var sorted = mses.slice().sort(function (a, b) { return a - b; });
     var median = sorted[sorted.length >> 1];
     var gate = median * gateRel;
+    // The seam test's reference is the CLEAN floor (lower quartile), not the
+    // median: on sway-heavy handheld streams the median itself is warped, and
+    // a median-relative bar let warps masquerade as clean-sided seams.
+    var cleanFloor = sorted[sorted.length >> 2];
 
     var pred = function (f) {
       // Nearest valid neighbor, nominal-bridged — same bridge trackPhase uses.
@@ -1606,14 +1682,34 @@
       if (ent.mse <= gate) continue;
       stats.gated++;
       var scan = scanAnnulus(e2.rRaw, e2.H, annulus, { guardPx: opts.guardPx });
-      if (!scan || !scan.best || !(scan.best.gain < gainMax)) continue;
-      stats.torn++;
-      var specT = specFromBeta(scan.best.top.beta, ks, e2.spec0);
-      var specB = specFromBeta(scan.best.bot.beta, ks, e2.spec0);
-      var anchor = p !== null ? p : (isNaN(track.phi[e2.f]) ? 0 : track.phi[e2.f]);
-      torn[e2.f] = { e: e2, scan: scan, specT: specT, specB: specB, p: p,
-                     phiT: phiFromSpec(specT, annulus, anchor),
-                     phiB: phiFromSpec(specB, annulus, anchor) };
+      if (!scan) continue;
+      // Route the frame to the model that explains it (field walk 4's split):
+      // SEAM = a step in row — two CLEAN instants (sides at the clean floor);
+      // WARP = a continuous phase-vs-row gradient (handheld sway) — the
+      // extended-basis fit explains it and its yc=0 coefficients ARE the
+      // de-warped frame. A warp is repaired in place, no side to adjudicate.
+      var seamOK = scan.best && scan.best.gain < gainMax &&
+                   scan.best.mseSplit <= cleanRel * cleanFloor + 1e-12;
+      var warpOK = scan.warp && scan.warp.gain < gainMax;
+      if (seamOK && (!warpOK || scan.best.gain <= scan.warp.gain)) {
+        stats.torn++;
+        var specT = specFromBeta(scan.best.top.beta, ks, e2.spec0);
+        var specB = specFromBeta(scan.best.bot.beta, ks, e2.spec0);
+        var anchor = p !== null ? p : (isNaN(track.phi[e2.f]) ? 0 : track.phi[e2.f]);
+        torn[e2.f] = { e: e2, scan: scan, specT: specT, specB: specB, p: p,
+                       phiT: phiFromSpec(specT, annulus, anchor),
+                       phiB: phiFromSpec(specB, annulus, anchor) };
+      } else if (warpOK) {
+        e2.spec = specFromBeta(scan.warp.beta, ks, e2.spec0); // first P terms = yc=0 coefficients
+        stats.warped++;
+        if (warpRates.length < 400) warpRates.push(scan.warp.rate);
+      } else {
+        stats.reasons.noisy++;
+      }
+    }
+    if (warpRates.length) {
+      warpRates.sort(function (a, b) { return a - b; });
+      stats.warpRate = Math.round(warpRates[warpRates.length >> 1] * 1000) / 1000;
     }
 
     // Phase 2: adjudicate. Partner references for neighbor f±1: its scanned
@@ -1641,7 +1737,10 @@
       if (tf.p === null) { stats.reasons.nopred++; invalidate(); continue; }
       var sep = Math.abs(wrap(tf.phiT - tf.phiB));
       if (sep < sepLo) { stats.reasons.sepLo++; continue; } // sides agree: not a phase seam, and the blend is harmless
-      if (sep > sepHi) { stats.reasons.sepHi++; invalidate(); continue; } // beyond a one-frame step: repair would be a guess
+      // Beyond a one-frame step: whatever split this is, it is NOT an emission
+      // seam — evidence AGAINST the seam model, so the unsplit spec stands.
+      // (Invalidating here amplified field sway-warps into mass frame loss.)
+      if (sep > sepHi) { stats.reasons.sepHi++; continue; }
       var refN = partnerRefs(e3.f + 1), refP = partnerRefs(e3.f - 1);
       var dTp = Math.abs(wrap(tf.phiT - tf.p)), dBp = Math.abs(wrap(tf.phiB - tf.p));
       var hyps = [];
@@ -2147,10 +2246,11 @@
         var tear = null;
         if (rowtime) {
           tear = rowtime.repairSeries(series, track, a, profile, opts.rowTimeOpts);
-          if (tear.repaired > 0 || tear.invalidated > 0) {
+          if (tear.repaired > 0 || tear.invalidated > 0 || tear.warped > 0) {
             track = separate.trackPhase(series, a, profile);
             var tear2 = rowtime.repairSeries(series, track, a, profile, opts.rowTimeOpts);
             tear.repaired = tear2.repaired; tear.torn = tear2.torn;
+            tear.warped = tear2.warped; tear.warpRate = tear2.warpRate;
             tear.invalidated = tear2.invalidated; tear.reasons = tear2.reasons;
             tear.slipSuspect = tear2.slipSuspect; tear.cuts = tear2.cuts;
             track = separate.trackPhase(series, a, profile);
@@ -2182,10 +2282,16 @@
         // variance, so static-vs-running is statistically separable only where the
         // nominal advance dominates — and a stalled canvas stalls ALL annuli, so
         // annulus 0's verdict covers the emission. Higher-M rows report, never gate.
+        // A LOW carrier is not always a stalled emitter: walk 4 produced 0.37×
+        // from a heavily sway-degraded handheld capture (track under-rotates
+        // under warp; slipSuspect and torn counts run high). Say so.
+        var swayHint = tear && valid && (tear.slipSuspect > valid * 0.2 || tear.torn > valid * 0.1)
+          ? " OR this is a sway-degraded handheld capture (tear/slip diagnostics are heavy) — steady the phone or add light and re-film."
+          : "";
         if (carrierRatio !== null && a.rotation.M <= 4 && Math.abs(carrierRatio) < 0.4)
           return { annulus: a.index, layer: a.layer, present: true, contrast: round3(meanContrast), validFrames: valid,
-                   carrierRatio: carrierRatio,
-                   error: "STATIC PATTERN — annulus present but not rotating (" + carrierRatio + "× expected). The emitter's rendering was stalled (browser throttling / battery saver): re-film with the emitter animating; keep its window focused, plug in power, use Fullscreen." };
+                   carrierRatio: carrierRatio, tear: tearBrief(tear),
+                   error: "STATIC PATTERN — annulus present but not rotating (" + carrierRatio + "× expected). The emitter's rendering was stalled (browser throttling / battery saver): re-film with the emitter animating; keep its window focused, plug in power, use Fullscreen." + swayHint };
         if (carrierRatio !== null && a.rotation.M <= 4 && (carrierRatio < 0.4 || carrierRatio > 1.8))
           return { annulus: a.index, layer: a.layer, present: true, contrast: round3(meanContrast), validFrames: valid,
                    carrierRatio: carrierRatio,
@@ -2231,7 +2337,7 @@
 
   function tearBrief(t) {
     if (!t) return undefined;
-    return { scanned: t.scanned, torn: t.torn, repaired: t.repaired, invalidated: t.invalidated, slipSuspect: t.slipSuspect, reasons: t.reasons, cuts: t.cuts };
+    return { scanned: t.scanned, torn: t.torn, repaired: t.repaired, warped: t.warped, warpRate: t.warpRate, invalidated: t.invalidated, slipSuspect: t.slipSuspect, reasons: t.reasons, cuts: t.cuts };
   }
 
   function averageNoise(series, a, kmax, transform) {

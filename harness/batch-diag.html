@@ -133,9 +133,10 @@ async function runClip(name) {
   else {
     row.fidPx = res.emitters[0].fiducialWidthPx;
     row.annuli = res.emitters[0].annuli.map(a => ({
-      annulus: a.annulus, present: a.present, ok: a.ok || false, ser: a.ser, errors: a.errors,
+      annulus: a.annulus, layer: a.layer, present: a.present, ok: a.ok || false, ser: a.ser, errors: a.errors,
       compared: a.compared, erasures: a.erasures, alignMethod: a.alignMethod, alignLag: a.alignLag,
-      carrierRatio: a.carrierRatio, error: a.error || null, snr: a.snr_db || null, contrast: a.contrast
+      carrierRatio: a.carrierRatio, error: a.error || null, snr: a.snr_db || null, contrast: a.contrast,
+      tear: a.tear || null
     }));
   }
   URL.revokeObjectURL(v.src);

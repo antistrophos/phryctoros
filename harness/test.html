@@ -460,6 +460,34 @@ async function main() {
       det15 += "  top " + eT.toFixed(3) + "→" + phi1 + "  bot " + eB.toFixed(3) + "→" + phi2;
     }
     record("T15b scanAnnulus finds a synthetic seam and each side refits its own phase", ok15, det15);
+
+    // T16 — the WARP half of F2 (walk-4 finding: handheld sway = continuous
+    // phase-vs-row gradient, radius-leveraged, base ring pays most). (a) A
+    // synthetic warped contour must be explained by the extended-basis fit and
+    // its yc=0 coefficients must recover the CENTER-row phase. (b) A step
+    // seam must still route to the seam path (linear terms can't express it).
+    await tick("T16: warp fit pins…");
+    {
+      const phi0 = 0.7, dPhi = 0.25;
+      const rWarp = new Float64Array(N15);
+      for (let i = 0; i < N15; i++) {
+        const th = 2 * Math.PI * i / N15;
+        rWarp[i] = bound(th, phi0 + dPhi * Math.sin(th)); // y − ȳ ∝ sinθ on a circle
+      }
+      const sw = OC.rowtime.scanAnnulus(rWarp, H15, a2, {});
+      let ok16 = !!(sw && sw.warp && sw.warp.gain < 0.2 && Math.abs(sw.warp.rate - dPhi) < 0.06);
+      let det16 = sw && sw.warp ? ("warp gain " + sw.warp.gain.toExponential(1) + " rate " + sw.warp.rate.toFixed(3) + "→" + dPhi) : "no warp fit";
+      if (ok16) {
+        const sW = OC.rowtime.specFromBeta(sw.warp.beta, a2.boundary.harmonics, OC.transform.dft(rWarp, 24));
+        const eW = OC.rowtime.phiFromSpec(sW, a2, phi0 + 0.05);
+        ok16 = Math.abs(wrapP(eW - phi0)) < 0.03;
+        det16 += "  center " + eW.toFixed(3) + "→" + phi0;
+      }
+      const sSeam = OC.rowtime.scanAnnulus(rSeam, H15, a2, {});
+      const seamRoutes = !!(sSeam && sSeam.best && (!sSeam.warp || sSeam.best.gain <= sSeam.warp.gain));
+      record("T16 warp fit: synthetic sway explained (gain<0.2), center phase recovered; step seam still routes to the seam path",
+        ok16 && seamRoutes, det16 + "  seamRoutes " + seamRoutes);
+    }
   }
 
   // Determinism spot-check: dtrig render of one frame is identical across two runs.

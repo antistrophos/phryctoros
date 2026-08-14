@@ -133,10 +133,11 @@
         var tear = null;
         if (rowtime) {
           tear = rowtime.repairSeries(series, track, a, profile, opts.rowTimeOpts);
-          if (tear.repaired > 0 || tear.invalidated > 0) {
+          if (tear.repaired > 0 || tear.invalidated > 0 || tear.warped > 0) {
             track = separate.trackPhase(series, a, profile);
             var tear2 = rowtime.repairSeries(series, track, a, profile, opts.rowTimeOpts);
             tear.repaired = tear2.repaired; tear.torn = tear2.torn;
+            tear.warped = tear2.warped; tear.warpRate = tear2.warpRate;
             tear.invalidated = tear2.invalidated; tear.reasons = tear2.reasons;
             tear.slipSuspect = tear2.slipSuspect; tear.cuts = tear2.cuts;
             track = separate.trackPhase(series, a, profile);
@@ -168,10 +169,16 @@
         // variance, so static-vs-running is statistically separable only where the
         // nominal advance dominates — and a stalled canvas stalls ALL annuli, so
         // annulus 0's verdict covers the emission. Higher-M rows report, never gate.
+        // A LOW carrier is not always a stalled emitter: walk 4 produced 0.37×
+        // from a heavily sway-degraded handheld capture (track under-rotates
+        // under warp; slipSuspect and torn counts run high). Say so.
+        var swayHint = tear && valid && (tear.slipSuspect > valid * 0.2 || tear.torn > valid * 0.1)
+          ? " OR this is a sway-degraded handheld capture (tear/slip diagnostics are heavy) — steady the phone or add light and re-film."
+          : "";
         if (carrierRatio !== null && a.rotation.M <= 4 && Math.abs(carrierRatio) < 0.4)
           return { annulus: a.index, layer: a.layer, present: true, contrast: round3(meanContrast), validFrames: valid,
-                   carrierRatio: carrierRatio,
-                   error: "STATIC PATTERN — annulus present but not rotating (" + carrierRatio + "× expected). The emitter's rendering was stalled (browser throttling / battery saver): re-film with the emitter animating; keep its window focused, plug in power, use Fullscreen." };
+                   carrierRatio: carrierRatio, tear: tearBrief(tear),
+                   error: "STATIC PATTERN — annulus present but not rotating (" + carrierRatio + "× expected). The emitter's rendering was stalled (browser throttling / battery saver): re-film with the emitter animating; keep its window focused, plug in power, use Fullscreen." + swayHint };
         if (carrierRatio !== null && a.rotation.M <= 4 && (carrierRatio < 0.4 || carrierRatio > 1.8))
           return { annulus: a.index, layer: a.layer, present: true, contrast: round3(meanContrast), validFrames: valid,
                    carrierRatio: carrierRatio,
@@ -217,7 +224,7 @@
 
   function tearBrief(t) {
     if (!t) return undefined;
-    return { scanned: t.scanned, torn: t.torn, repaired: t.repaired, invalidated: t.invalidated, slipSuspect: t.slipSuspect, reasons: t.reasons, cuts: t.cuts };
+    return { scanned: t.scanned, torn: t.torn, repaired: t.repaired, warped: t.warped, warpRate: t.warpRate, invalidated: t.invalidated, slipSuspect: t.slipSuspect, reasons: t.reasons, cuts: t.cuts };
   }
 
   function averageNoise(series, a, kmax, transform) {
