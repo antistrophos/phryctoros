@@ -364,7 +364,24 @@
         modules: 25,
         quiet_modules: 4,
         seed: 77,
-        dark: 0.05, light: 0.95   // finders need punch; they are static (small area)
+        // Finders need CONTRAST, not brightness. light == render.background: the
+        // fiducial must never be the brightest thing on screen — the practitioner
+        // watched AE meter on the old 0.95 white (especially under the advised
+        // AF/AE-lock on the fiducial) and crush the low-contrast annuli. Dark
+        // modules on the field's own gray give the 1:1:3:1:1 scan a 0.57 swing.
+        dark: 0.05, light: 0.62,
+        // AF collar — DISABLED after two suite-caught failures. Both 12 thin
+        // spokes AND 4 fat cardinal arcs generated finder-like candidates (arc
+        // edges/tips scan at ~4px units, inside the grouper's 1.6× unit
+        // tolerance) and corrupted triple grouping into plausible-but-wrong
+        // homographies (fid read 96px where truth was 124). ANY high-contrast
+        // texture near the fiducial is a registration decoy until triple
+        // acceptance VERIFIES against the fiducial's own structure (timing
+        // pattern along the implied grid) — that decoy-robust grouping is the
+        // prerequisite, queued with the registration work. Until then the AF
+        // answer is operational: AE/AF-lock on the fiducial before recording.
+        // af_collar: { r_in: 0.72, r_out: 0.98, spokes: 4 }
+        af_collar: null
       },
       preamble_symbols: 8,
       annuli: [
@@ -432,8 +449,12 @@
       // Geometry collisions (spec §7.4: enforce at validation, not render).
       if (a.r_inner + 0.03 > a.r0 - s - 0.08)
         errors.push(tag + "sampling window bottom (" + (a.r0 - s - 0.08).toFixed(3) + ") is inside r_inner + margin");
+      if (i === 0 && p.fiducial.af_collar && p.fiducial.af_collar.r_out + 0.05 > a.r0 - s - 0.08)
+        errors.push("AF collar r_out " + p.fiducial.af_collar.r_out + " intrudes on annulus " + a.index + "'s sampling window");
       if (i === 0 && a.r_inner < fidCornerRadius + 0.03)
         errors.push(tag + "r_inner " + a.r_inner + " intrudes on fiducial quiet zone (corner radius " + fidCornerRadius.toFixed(3) + ")");
+      if (i === 0 && p.fiducial.light > p.render.background + 0.05)
+        warnings.push("fiducial.light " + p.fiducial.light + " out-brights the field (" + p.render.background + ") — AE meters the white and crushes the annuli (field finding)");
       if (i > 0) {
         var prev = p.annuli[i - 1];
         if (prev.r0 + sumAmp(prev) + 0.05 > a.r_inner)
@@ -610,20 +631,28 @@
           }
         } else {
           var r = Math.sqrt(x * x + y * y);
-          for (var ai2 = 0; ai2 < ann.length; ai2++) {
-            var A = ann[ai2];
-            if (r < A.rMin || r > A.rMax) continue;
-            var th = atan2(y, x);
-            var b = A.a.r0;
-            for (var h2 = 0; h2 < A.betas.length; h2++) {
-              var B = A.betas[h2];
-              b += B.a * cos(B.k * th + B.beta);
+          if (fid.af_collar && r >= fid.af_collar.r_in && r <= fid.af_collar.r_out) {
+            // Static AF arcs in the dead band — never sampled by the decoder.
+            // Cardinal-centered (offset half a wedge) so the quiet-square corners
+            // clip only LIGHT wedges.
+            var thc = atan2(y, x) + Math.PI / (fid.af_collar.spokes * 2);
+            v = (Math.floor(((thc / TAU + 1) % 1) * fid.af_collar.spokes * 2) % 2 === 0) ? fid.dark : fid.light;
+          } else {
+            for (var ai2 = 0; ai2 < ann.length; ai2++) {
+              var A = ann[ai2];
+              if (r < A.rMin || r > A.rMax) continue;
+              var th = atan2(y, x);
+              var b = A.a.r0;
+              for (var h2 = 0; h2 < A.betas.length; h2++) {
+                var B = A.betas[h2];
+                b += B.a * cos(B.k * th + B.beta);
+              }
+              var covOuter = clamp01((b - r) * scale / soft + 0.5);
+              var covInner = clamp01((r - A.a.r_inner) * scale / soft + 0.5);
+              var cov = covOuter * covInner;
+              if (cov > 0) v = bg + (fill - bg) * cov;
+              break; // annuli are disjoint by validation
             }
-            var covOuter = clamp01((b - r) * scale / soft + 0.5);
-            var covInner = clamp01((r - A.a.r_inner) * scale / soft + 0.5);
-            var cov = covOuter * covInner;
-            if (cov > 0) v = bg + (fill - bg) * cov;
-            break; // annuli are disjoint by validation
           }
         }
         d[rowOff + px] = v;
@@ -827,14 +856,75 @@
     return { H: H, moduleSizePx: unit, fiducialWidthPx: unit * 25, chirality: chirality, corners: { TL: A, TR: TR2, BL: BL } };
   }
 
-  /* The stage-2 entry point: all emitters in the frame. */
+  /* Decoy-robust triple verification: geometry alone accepts fakes (ring chords,
+     collars, clutter — two incidents in one evening). The fiducial's TIMING
+     pattern (row/col 6, alternating dark/light between finders) is a signature
+     no decoy carries: sample the 18 timing cells through the candidate H,
+     self-normalize (C2 posture), and score the alternation. */
+  function timingScore(img, H) {
+    var g = G();
+    var vals = [], expected = [];
+    for (var t = 8; t <= 16; t++) {
+      var cx = -0.5 + (t + 0.5) / 25, cy = -0.5 + 6.5 / 25;
+      var p1 = g.applyH(H, cx, cy);
+      vals.push(g.bilinear(img, p1[0], p1[1])); expected.push(t % 2 === 0);
+      var p2 = g.applyH(H, -0.5 + 6.5 / 25, -0.5 + (t + 0.5) / 25);
+      vals.push(g.bilinear(img, p2[0], p2[1])); expected.push(t % 2 === 0);
+    }
+    var lo = Infinity, hi = -Infinity;
+    for (var i = 0; i < vals.length; i++) { if (vals[i] < lo) lo = vals[i]; if (vals[i] > hi) hi = vals[i]; }
+    if (hi - lo < 1e-6) return 0;
+    var mid = (lo + hi) / 2, match = 0;
+    for (var j = 0; j < vals.length; j++) if ((vals[j] < mid) === expected[j]) match++;
+    return match / vals.length;
+  }
+
+  /* Blur-tolerant structure check: the 3 finder centres must read DARK against
+     the quiet zone's LIGHT — low-frequency features that survive heavy blur
+     (the timing cells do not; σ2.4 erases their alternation). */
+  function structureScore(img, H) {
+    var g = G();
+    var pts = [
+      [-FC, -FC, true], [FC, -FC, true], [-FC, FC, true],          // finder centres: dark
+      [0.58, 0, false], [-0.58, 0, false], [0, 0.58, false], [0, -0.58, false] // quiet: light
+    ];
+    var vals = [], lo = Infinity, hi = -Infinity;
+    for (var i = 0; i < pts.length; i++) {
+      var p = g.applyH(H, pts[i][0], pts[i][1]);
+      var v = g.bilinear(img, p[0], p[1]);
+      vals.push(v);
+      if (v < lo) lo = v; if (v > hi) hi = v;
+    }
+    if (hi - lo < 1e-6) return 0;
+    var mid = (lo + hi) / 2, match = 0;
+    for (var j = 0; j < pts.length; j++) if ((vals[j] < mid) === pts[j][2]) match++;
+    return match / pts.length;
+  }
+
+  /* The stage-2 entry point: all emitters in the frame. Acceptance: rank all
+     geometric triples by timing+structure; the BEST is accepted on structure
+     alone (blur-tolerant — a real fiducial outranks ring/collar decoys whenever
+     its timing resolves, and still verifies structurally when blur erases the
+     timing). ADDITIONAL emitters (multi-emitter/§5.1, decoy-exposed) must pass
+     the strict timing signature too. */
   function registerAll(img, opts) {
     var cands = findFinderCandidates(img, opts);
     var triples = groupTriples(cands);
-    var emitters = [];
+    var scored = [];
     for (var i = 0; i < triples.length; i++) {
       var e = emitterFromTriple(triples[i]);
-      if (e) emitters.push(e);
+      if (!e) continue;
+      e.timingScore = timingScore(img, e.H);
+      e.structureScore = structureScore(img, e.H);
+      scored.push(e);
+    }
+    scored.sort(function (a, b) { return (b.timingScore + b.structureScore) - (a.timingScore + a.structureScore); });
+    var emitters = [];
+    for (var k = 0; k < scored.length; k++) {
+      var s = scored[k];
+      if (emitters.length === 0) {
+        if (s.structureScore >= 0.7) emitters.push(s);
+      } else if (s.timingScore >= 0.6 && s.structureScore >= 0.7) emitters.push(s);
     }
     return { emitters: emitters, candidates: cands };
   }

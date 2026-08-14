@@ -158,14 +158,75 @@
     return { H: H, moduleSizePx: unit, fiducialWidthPx: unit * 25, chirality: chirality, corners: { TL: A, TR: TR2, BL: BL } };
   }
 
-  /* The stage-2 entry point: all emitters in the frame. */
+  /* Decoy-robust triple verification: geometry alone accepts fakes (ring chords,
+     collars, clutter — two incidents in one evening). The fiducial's TIMING
+     pattern (row/col 6, alternating dark/light between finders) is a signature
+     no decoy carries: sample the 18 timing cells through the candidate H,
+     self-normalize (C2 posture), and score the alternation. */
+  function timingScore(img, H) {
+    var g = G();
+    var vals = [], expected = [];
+    for (var t = 8; t <= 16; t++) {
+      var cx = -0.5 + (t + 0.5) / 25, cy = -0.5 + 6.5 / 25;
+      var p1 = g.applyH(H, cx, cy);
+      vals.push(g.bilinear(img, p1[0], p1[1])); expected.push(t % 2 === 0);
+      var p2 = g.applyH(H, -0.5 + 6.5 / 25, -0.5 + (t + 0.5) / 25);
+      vals.push(g.bilinear(img, p2[0], p2[1])); expected.push(t % 2 === 0);
+    }
+    var lo = Infinity, hi = -Infinity;
+    for (var i = 0; i < vals.length; i++) { if (vals[i] < lo) lo = vals[i]; if (vals[i] > hi) hi = vals[i]; }
+    if (hi - lo < 1e-6) return 0;
+    var mid = (lo + hi) / 2, match = 0;
+    for (var j = 0; j < vals.length; j++) if ((vals[j] < mid) === expected[j]) match++;
+    return match / vals.length;
+  }
+
+  /* Blur-tolerant structure check: the 3 finder centres must read DARK against
+     the quiet zone's LIGHT — low-frequency features that survive heavy blur
+     (the timing cells do not; σ2.4 erases their alternation). */
+  function structureScore(img, H) {
+    var g = G();
+    var pts = [
+      [-FC, -FC, true], [FC, -FC, true], [-FC, FC, true],          // finder centres: dark
+      [0.58, 0, false], [-0.58, 0, false], [0, 0.58, false], [0, -0.58, false] // quiet: light
+    ];
+    var vals = [], lo = Infinity, hi = -Infinity;
+    for (var i = 0; i < pts.length; i++) {
+      var p = g.applyH(H, pts[i][0], pts[i][1]);
+      var v = g.bilinear(img, p[0], p[1]);
+      vals.push(v);
+      if (v < lo) lo = v; if (v > hi) hi = v;
+    }
+    if (hi - lo < 1e-6) return 0;
+    var mid = (lo + hi) / 2, match = 0;
+    for (var j = 0; j < pts.length; j++) if ((vals[j] < mid) === pts[j][2]) match++;
+    return match / pts.length;
+  }
+
+  /* The stage-2 entry point: all emitters in the frame. Acceptance: rank all
+     geometric triples by timing+structure; the BEST is accepted on structure
+     alone (blur-tolerant — a real fiducial outranks ring/collar decoys whenever
+     its timing resolves, and still verifies structurally when blur erases the
+     timing). ADDITIONAL emitters (multi-emitter/§5.1, decoy-exposed) must pass
+     the strict timing signature too. */
   function registerAll(img, opts) {
     var cands = findFinderCandidates(img, opts);
     var triples = groupTriples(cands);
-    var emitters = [];
+    var scored = [];
     for (var i = 0; i < triples.length; i++) {
       var e = emitterFromTriple(triples[i]);
-      if (e) emitters.push(e);
+      if (!e) continue;
+      e.timingScore = timingScore(img, e.H);
+      e.structureScore = structureScore(img, e.H);
+      scored.push(e);
+    }
+    scored.sort(function (a, b) { return (b.timingScore + b.structureScore) - (a.timingScore + a.structureScore); });
+    var emitters = [];
+    for (var k = 0; k < scored.length; k++) {
+      var s = scored[k];
+      if (emitters.length === 0) {
+        if (s.structureScore >= 0.7) emitters.push(s);
+      } else if (s.timingScore >= 0.6 && s.structureScore >= 0.7) emitters.push(s);
     }
     return { emitters: emitters, candidates: cands };
   }

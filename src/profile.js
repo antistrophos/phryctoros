@@ -33,7 +33,12 @@
         modules: 25,
         quiet_modules: 4,
         seed: 77,
-        dark: 0.05, light: 0.95,  // finders need punch; they are static (small area)
+        // Finders need CONTRAST, not brightness. light == render.background: the
+        // fiducial must never be the brightest thing on screen — the practitioner
+        // watched AE meter on the old 0.95 white (especially under the advised
+        // AF/AE-lock on the fiducial) and crush the low-contrast annuli. Dark
+        // modules on the field's own gray give the 1:1:3:1:1 scan a 0.57 swing.
+        dark: 0.05, light: 0.62,
         // AF collar — DISABLED after two suite-caught failures. Both 12 thin
         // spokes AND 4 fat cardinal arcs generated finder-like candidates (arc
         // edges/tips scan at ~4px units, inside the grouper's 1.6× unit
@@ -117,6 +122,8 @@
         errors.push("AF collar r_out " + p.fiducial.af_collar.r_out + " intrudes on annulus " + a.index + "'s sampling window");
       if (i === 0 && a.r_inner < fidCornerRadius + 0.03)
         errors.push(tag + "r_inner " + a.r_inner + " intrudes on fiducial quiet zone (corner radius " + fidCornerRadius.toFixed(3) + ")");
+      if (i === 0 && p.fiducial.light > p.render.background + 0.05)
+        warnings.push("fiducial.light " + p.fiducial.light + " out-brights the field (" + p.render.background + ") — AE meters the white and crushes the annuli (field finding)");
       if (i > 0) {
         var prev = p.annuli[i - 1];
         if (prev.r0 + sumAmp(prev) + 0.05 > a.r_inner)
