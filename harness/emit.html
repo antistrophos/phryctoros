@@ -89,17 +89,37 @@ function buildFiducialCanvas() {
   const R = profile.render, scale = R.scale_px_per_unit, fid = profile.fiducial;
   const modPx = scale / fid.modules;
   const quietPx = fid.quiet_modules * modPx;
-  const w = Math.ceil(scale + 2 * quietPx);
+  const collar = fid.af_collar;
+  const half = collar ? Math.ceil(collar.r_out * scale) + 2 : Math.ceil(scale / 2 + quietPx);
+  const w = half * 2;
   const c = document.createElement("canvas"); c.width = w; c.height = w;
-  const ctx = c.getContext("2d");
-  ctx.fillStyle = gray(fid.light); ctx.fillRect(0, 0, w, w);
+  const ctx = c.getContext("2d"); // transparent ground — bg shows through gaps
+  const qhalf = scale / 2 + quietPx;
+  ctx.fillStyle = gray(fid.light);
+  ctx.fillRect(half - qhalf, half - qhalf, 2 * qhalf, 2 * qhalf);
   const mods = OC.emission.fiducialModules(fid);
+  const ox = half - scale / 2, oy = half - scale / 2;
   for (let my = 0; my < fid.modules; my++)
     for (let mx = 0; mx < fid.modules; mx++)
       if (mods[my * fid.modules + mx]) {
         ctx.fillStyle = gray(fid.dark);
-        ctx.fillRect(quietPx + mx * modPx, quietPx + my * modPx, modPx + 0.5, modPx + 0.5);
+        ctx.fillRect(ox + mx * modPx, oy + my * modPx, modPx + 0.5, modPx + 0.5);
       }
+  if (collar) {
+    // Static AF spokes in the dead band (autofocus target, second-walk finding).
+    const rIn = collar.r_in * scale, rOut = collar.r_out * scale;
+    const aOff = -Math.PI / (collar.spokes * 2); // cardinal-centered dark arcs
+    for (let s = 0; s < collar.spokes * 2; s++) {
+      const a0 = aOff + (s / (collar.spokes * 2)) * 2 * Math.PI;
+      const a1 = aOff + ((s + 1) / (collar.spokes * 2)) * 2 * Math.PI;
+      ctx.beginPath();
+      ctx.arc(half, half, rOut, a0, a1);
+      ctx.arc(half, half, rIn, a1, a0, true);
+      ctx.closePath();
+      ctx.fillStyle = gray(s % 2 === 0 ? fid.dark : fid.light);
+      ctx.fill();
+    }
+  }
   return c;
 }
 

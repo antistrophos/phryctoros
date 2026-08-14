@@ -122,20 +122,28 @@
           }
         } else {
           var r = Math.sqrt(x * x + y * y);
-          for (var ai2 = 0; ai2 < ann.length; ai2++) {
-            var A = ann[ai2];
-            if (r < A.rMin || r > A.rMax) continue;
-            var th = atan2(y, x);
-            var b = A.a.r0;
-            for (var h2 = 0; h2 < A.betas.length; h2++) {
-              var B = A.betas[h2];
-              b += B.a * cos(B.k * th + B.beta);
+          if (fid.af_collar && r >= fid.af_collar.r_in && r <= fid.af_collar.r_out) {
+            // Static AF arcs in the dead band — never sampled by the decoder.
+            // Cardinal-centered (offset half a wedge) so the quiet-square corners
+            // clip only LIGHT wedges.
+            var thc = atan2(y, x) + Math.PI / (fid.af_collar.spokes * 2);
+            v = (Math.floor(((thc / TAU + 1) % 1) * fid.af_collar.spokes * 2) % 2 === 0) ? fid.dark : fid.light;
+          } else {
+            for (var ai2 = 0; ai2 < ann.length; ai2++) {
+              var A = ann[ai2];
+              if (r < A.rMin || r > A.rMax) continue;
+              var th = atan2(y, x);
+              var b = A.a.r0;
+              for (var h2 = 0; h2 < A.betas.length; h2++) {
+                var B = A.betas[h2];
+                b += B.a * cos(B.k * th + B.beta);
+              }
+              var covOuter = clamp01((b - r) * scale / soft + 0.5);
+              var covInner = clamp01((r - A.a.r_inner) * scale / soft + 0.5);
+              var cov = covOuter * covInner;
+              if (cov > 0) v = bg + (fill - bg) * cov;
+              break; // annuli are disjoint by validation
             }
-            var covOuter = clamp01((b - r) * scale / soft + 0.5);
-            var covInner = clamp01((r - A.a.r_inner) * scale / soft + 0.5);
-            var cov = covOuter * covInner;
-            if (cov > 0) v = bg + (fill - bg) * cov;
-            break; // annuli are disjoint by validation
           }
         }
         d[rowOff + px] = v;

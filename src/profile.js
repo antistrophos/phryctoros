@@ -33,7 +33,19 @@
         modules: 25,
         quiet_modules: 4,
         seed: 77,
-        dark: 0.05, light: 0.95   // finders need punch; they are static (small area)
+        dark: 0.05, light: 0.95,  // finders need punch; they are static (small area)
+        // AF collar — DISABLED after two suite-caught failures. Both 12 thin
+        // spokes AND 4 fat cardinal arcs generated finder-like candidates (arc
+        // edges/tips scan at ~4px units, inside the grouper's 1.6× unit
+        // tolerance) and corrupted triple grouping into plausible-but-wrong
+        // homographies (fid read 96px where truth was 124). ANY high-contrast
+        // texture near the fiducial is a registration decoy until triple
+        // acceptance VERIFIES against the fiducial's own structure (timing
+        // pattern along the implied grid) — that decoy-robust grouping is the
+        // prerequisite, queued with the registration work. Until then the AF
+        // answer is operational: AE/AF-lock on the fiducial before recording.
+        // af_collar: { r_in: 0.72, r_out: 0.98, spokes: 4 }
+        af_collar: null
       },
       preamble_symbols: 8,
       annuli: [
@@ -101,6 +113,8 @@
       // Geometry collisions (spec §7.4: enforce at validation, not render).
       if (a.r_inner + 0.03 > a.r0 - s - 0.08)
         errors.push(tag + "sampling window bottom (" + (a.r0 - s - 0.08).toFixed(3) + ") is inside r_inner + margin");
+      if (i === 0 && p.fiducial.af_collar && p.fiducial.af_collar.r_out + 0.05 > a.r0 - s - 0.08)
+        errors.push("AF collar r_out " + p.fiducial.af_collar.r_out + " intrudes on annulus " + a.index + "'s sampling window");
       if (i === 0 && a.r_inner < fidCornerRadius + 0.03)
         errors.push(tag + "r_inner " + a.r_inner + " intrudes on fiducial quiet zone (corner radius " + fidCornerRadius.toFixed(3) + ")");
       if (i > 0) {
