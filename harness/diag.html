@@ -85,7 +85,7 @@ async function main() {
       const img = lumFrom(ctx, W, H);
       const thr = OC.register.threshold(img);
       const cands = OC.register.findFinderCandidates(img);
-      const reg = OC.register.registerAll(img);
+      const reg = OC.register.registerAll(img, { profile: OC.profile.defaultProfile() });
       row.scales.push({
         W, thr: +thr.toFixed(1),
         lum: lumStats(img),
@@ -111,7 +111,7 @@ async function main() {
     c.width = W; c.height = H;
     ctx.drawImage(v, 0, 0, W, H);
     const img = lumFrom(ctx, W, H);
-    const reg = OC.register.registerAll(img);
+    const reg = OC.register.registerAll(img, { profile: OC.profile.defaultProfile() });
     const em = reg.emitters[0];
     const profile = OC.profile.defaultProfile();
     report.annulusProbe = { t: best.row.t, W, annuli: [] };
@@ -166,7 +166,7 @@ async function main() {
   }
   report.deep = { captures: frames.length, groups: Object.keys(perIdx).length };
   // Emitter-version check: RMS annulus-0 boundary diff between same-idx candidates.
-  const regD = OC.register.registerAll(frames[0].img);
+  const regD = OC.register.registerAll(frames[0].img, { profile: OC.profile.defaultProfile() });
   if (regD.emitters.length) {
     const HD = regD.emitters[0].H;
     const a0 = profile.annuli[0];

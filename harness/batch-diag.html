@@ -72,8 +72,12 @@ async function runClip(name) {
   const seek = t => new Promise(r => { v.onseeked = () => r(); v.currentTime = t; });
   const row = { clip: name, dur: +v.duration.toFixed(1), res: v.videoWidth + "×" + v.videoHeight };
 
+  const profile = (new URLSearchParams(location.search).get("profile") === "v1")
+    ? OC.profile.profileV1() : OC.profile.defaultProfile();
+
   // Pre-scan: registration + crop-union across probes, MULTI-SCALE (800 → 1600 →
   // native) — a zoomed/distant emitter invisible at 800 px can register at native.
+  // The profile rides along so the finder-less ring fallback is live here too.
   const pc = document.createElement("canvas");
   const pctx = pc.getContext("2d", { willReadFrequently: true });
   const hits = [];
@@ -84,7 +88,7 @@ async function runClip(name) {
     for (const t of [0.5, v.duration * 0.3, v.duration * 0.6, Math.max(0.5, v.duration - 1)]) {
       await seek(Math.min(t, v.duration - 0.1));
       pctx.drawImage(v, 0, 0, PW, PH);
-      const reg = OC.register.registerAll(lumFrom(pctx, PW, PH));
+      const reg = OC.register.registerAll(lumFrom(pctx, PW, PH), { profile });
       if (reg.emitters.length) {
         const em = reg.emitters[0], sc = v.videoWidth / PW;
         hits.push({
@@ -110,8 +114,6 @@ async function runClip(name) {
   const W = Math.min(1024, sw), H = Math.round(sh * W / sw);
   c.width = W; c.height = H;
 
-  const profile = (new URLSearchParams(location.search).get("profile") === "v1")
-    ? OC.profile.profileV1() : OC.profile.defaultProfile();
   const fps = profile.frame_rate_hz;
   const frames = []; const perIdx = {};
   for (let i = 0; ; i++) {

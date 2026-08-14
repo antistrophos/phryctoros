@@ -286,11 +286,16 @@ async function main() {
     // under three legitimate registration improvements. Logged, never asserted;
     // the radius-leverage physics lives in the corpus record.
     note("T2b far regime probe", "regDied:" + far.regDied + " serByLayer " + JSON.stringify(far.serByLayer) + "  " + far.txt);
-    record("T2b extreme: registration-first-casualty + pooled-ladder robustness in one row",
-      extreme.regDied && extreme.d.every(x => x === 0),
-      "FINDING pair: finder scan fails in ALL 96 frames (the fiducial is the range limiter — fallback outer-annulus " +
-      "circle-fit registration is the v0.2 item), yet with registration isolated every rotation channel decodes SER 0 — " +
-      "each annulus's φ pools its whole harmonic ladder weighted (k·|c_k|)². " + extreme.txt);
+    // HISTORY: this row was born as the registration-first-casualty finding —
+    // finder scan dead in all 96 extreme frames, decode perfect only when
+    // registration was isolated. The finder-less RING fallback repealed the
+    // premise: the extreme stage now registers UNASSISTED via the rings and
+    // decodes clean end-to-end. The old finding's physics (fiducial dies
+    // first) is exactly WHY the fallback exists; the assertion now pins the
+    // cure instead of the disease.
+    record("T2b extreme: finder scan dead, RING fallback registers unassisted, every rotation channel decodes SER 0",
+      !extreme.regDied && extreme.d.every(x => x === 0),
+      "regDied:" + extreme.regDied + " — " + extreme.txt);
   }
 
   // T6 — two emitters in one frame (spec §5.1).
@@ -488,6 +493,51 @@ async function main() {
       record("T16 warp fit: synthetic sway explained (gain<0.2), center phase recovered; step seam still routes to the seam path",
         ok16 && seamRoutes, det16 + "  seamRoutes " + seamRoutes);
     }
+  }
+
+  // T17 — finder-less RING registration (walks 4–5: the fiducial dies first,
+  // module-scale smear/geometry, while the ten-times-coarser rings survive).
+  // (a) An emission whose fiducial is INVISIBLE (modules at field gray) must
+  // register via the ring fallback and decode layer 0 clean; (b) the same
+  // under blur+noise (the walk-4 regime); (c) a bare gray frame must yield
+  // NO ring emitters (decoy discipline).
+  await tick("T17: finder-less ring registration…");
+  {
+    const pInvis = OC.profile.defaultProfile({
+      render: { size_px: 768, scale_px_per_unit: 124 },
+      preamble_symbols: 4,
+      fiducial: { dark: 0.62, light: 0.62 }
+    });
+    const seq17 = OC.emission.renderSequence(pInvis, 72, {});
+    const st17 = seq17.frames.map((fr, i) => ({ f: i, img: fr.img }));
+    const r17 = OC.pipeline.decodeSequence(st17, pInvis, { aligned: true });
+    const A17 = r17.error ? null : layerResult(r17, 0, 0);
+    record("T17a ring registration: invisible fiducial — registers via rings, layer 0 SER==0",
+      !!(A17 && r17.emitters[0].method === "rings" && A17.ser === 0),
+      r17.error ? r17.error : ("method " + r17.emitters[0].method + " fid " + r17.emitters[0].fiducialWidthPx + "px  L0:" + fmt(A17)));
+
+    await tick("T17b: ring registration under blur+noise…");
+    const deg17 = seq17.frames.slice(0, 40).map((fr, i) => ({
+      f: i, img: OC.degrade.addNoise(OC.degrade.blur(fr.img, 2.0), 0.03, 4242 + i)
+    }));
+    const r17b = OC.pipeline.decodeSequence(deg17, pInvis, { aligned: true });
+    const A17b = r17b.error ? null : layerResult(r17b, 0, 0);
+    record("T17b ring registration: blur σ2 + noise — still registers via rings, layer 0 SER ≤ 0.1",
+      !!(A17b && r17b.emitters[0].method === "rings" && A17b.present && !A17b.error && A17b.ser <= 0.1 && A17b.compared >= 4),
+      r17b.error ? r17b.error : ("method " + r17b.emitters[0].method + "  L0:" + fmt(A17b)));
+
+    const flat = { w: 768, h: 768, data: new Float32Array(768 * 768), norm: 1 };
+    const rngF = OC.prng.mulberry32(777);
+    for (let i = 0; i < flat.data.length; i++) flat.data[i] = 0.62 + (rngF() - 0.5) * 0.04;
+    const ringsOnly = OC.register.ringRegisterAll(flat, pInvis, {});
+    record("T17c ring registration: bare gray frame — the RING path yields zero emitters (variance + modulation-depth guards)",
+      ringsOnly.length === 0, ringsOnly.length + " ring emitters");
+    // Known latent, PREDATES this build: the FINDER path can hallucinate a
+    // phantom fiducial from pure noise runs (structureScore by coin flips).
+    // Harmless in practice — real frames have structure and the pipeline's
+    // presence/carrier gates kill phantoms — recorded here, not fixed here.
+    const rF = OC.register.registerAll(flat, { profile: pInvis });
+    note("finder-path noise phantom (latent)", rF.emitters.length + " emitter(s), method " + (rF.emitters[0] ? (rF.emitters[0].method || "finder") : "—"));
   }
 
   // Determinism spot-check: dtrig render of one frame is identical across two runs.

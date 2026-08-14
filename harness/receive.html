@@ -257,7 +257,7 @@ $("fileIn").onchange = async () => {
       for (const t of [0.5, v.duration * 0.3, v.duration * 0.6, Math.max(0.5, v.duration - 1)]) {
         await seek(Math.min(t, v.duration - 0.1));
         pctx.drawImage(v, 0, 0, PWs, PHs);
-        const reg = OC.register.registerAll(toLumFromCanvas(pctx, PWs, PHs));
+        const reg = OC.register.registerAll(toLumFromCanvas(pctx, PWs, PHs), { profile: currentProfile() });
         if (reg.emitters.length) {
           const em = reg.emitters[0];
           const sc = v.videoWidth / PWs;

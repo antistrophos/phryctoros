@@ -203,13 +203,256 @@
     return match / pts.length;
   }
 
+  /* ================= Ring registration (finder-less fallback) =================
+     Walks 4–5 proved the failure order: the 25-module fiducial dies first
+     (module-scale smear / geometric floor) while the RINGS — ten times
+     coarser — stay perfectly legible. So register on the rings themselves:
+       1. VOTE for centers: every circular edge's gradient ray passes through
+          the center regardless of polarity or rotation; straight-edge clutter
+          spreads into ridges, concentric structure into point peaks.
+       2. SCALE from the radial profile: the three dark bands at the profile's
+          known radii are a coarse, specific signature (the radial cousin of
+          1:1:3:1:1), matched by normalized correlation over log-spaced scales.
+       3. VERIFY per the decoy discipline: band-vs-gap darkness coverage over
+          the full circle — a clock face or bezel ghost has no such profile.
+       4. REFINE with the emission's own physics: the measured k=1 boundary
+          coefficient IS the centering error (F5b's diagnostic becomes the
+          corrector), and the mean radius calibrates scale.
+     Rotation is deliberately unresolved: DPSK differencing absorbs a constant
+     roll, so the similarity H uses rotation 0. Mirror stays config (C9).
+     Limitation: the outer ring must lie mostly in frame. */
+
+  function SAMP() { return (typeof module !== "undefined" && module.exports) ? require("./sample.js") : global.OC.sample; }
+
+  function ringRegisterAll(img, profile, opts) {
+    opts = opts || {};
+    var maxE = opts.maxEmitters || 4;
+    var annuli = profile.annuli;
+    var outerA = annuli[annuli.length - 1];
+    var rOutU = outerA.r0;
+
+    // --- decimate for the vote/profile passes ---
+    var dec = Math.max(1, Math.ceil(Math.max(img.w, img.h) / 640));
+    var W = Math.floor(img.w / dec), H = Math.floor(img.h / dec);
+    if (W < 32 || H < 32) return [];
+    var lum = new Float64Array(W * H);
+    for (var y = 0; y < H; y++)
+      for (var x = 0; x < W; x++) {
+        var s0 = 0;
+        for (var dy = 0; dy < dec; dy++)
+          for (var dx = 0; dx < dec; dx++)
+            s0 += img.data[(y * dec + dy) * img.w + (x * dec + dx)];
+        lum[y * W + x] = s0 / (dec * dec);
+      }
+
+    // --- gradients + edge threshold (percentile of magnitude) ---
+    var mags = [], gxA = new Float64Array(W * H), gyA = new Float64Array(W * H);
+    for (var y2 = 1; y2 < H - 1; y2++)
+      for (var x2 = 1; x2 < W - 1; x2++) {
+        var i2 = y2 * W + x2;
+        var gx = lum[i2 + 1] - lum[i2 - 1];
+        var gy = lum[i2 + W] - lum[i2 - W];
+        gxA[i2] = gx; gyA[i2] = gy;
+        var m = Math.hypot(gx, gy);
+        if (m > 0) mags.push(m);
+      }
+    if (mags.length < 100) return [];
+    mags.sort(function (a, b) { return a - b; });
+    var thrG = mags[Math.floor(mags.length * 0.92)];
+
+    // --- center vote: walk both ways along the gradient line ---
+    var acc = new Float64Array(W * H);
+    var rMin = 5, rMax = 0.6 * Math.min(W, H);
+    for (var y3 = 1; y3 < H - 1; y3++)
+      for (var x3 = 1; x3 < W - 1; x3++) {
+        var i3 = y3 * W + x3;
+        var m3 = Math.hypot(gxA[i3], gyA[i3]);
+        if (m3 < thrG) continue;
+        var ux = gxA[i3] / m3, uy = gyA[i3] / m3;
+        for (var t = rMin; t < rMax; t += 2) {
+          for (var sgn = -1; sgn <= 1; sgn += 2) {
+            var px = Math.round(x3 + sgn * ux * t), py = Math.round(y3 + sgn * uy * t);
+            if (px >= 0 && px < W && py >= 0 && py < H) acc[py * W + px] += 1;
+          }
+        }
+      }
+    // light smooth (two 3×3 box passes)
+    for (var pass = 0; pass < 2; pass++) {
+      var sm = new Float64Array(W * H);
+      for (var y4 = 1; y4 < H - 1; y4++)
+        for (var x4 = 1; x4 < W - 1; x4++) {
+          var a4 = 0;
+          for (var oy = -1; oy <= 1; oy++) for (var ox = -1; ox <= 1; ox++) a4 += acc[(y4 + oy) * W + x4 + ox];
+          sm[y4 * W + x4] = a4 / 9;
+        }
+      acc = sm;
+    }
+
+    // --- top-K peaks with suppression ---
+    var peaks = [];
+    var minSep = Math.max(24, Math.floor(0.12 * Math.min(W, H)));
+    var work = new Float64Array(acc);
+    for (var k2 = 0; k2 < maxE * 2 && peaks.length < maxE * 2; k2++) {
+      var bi = -1, bv = 0;
+      for (var i4 = 0; i4 < W * H; i4++) if (work[i4] > bv) { bv = work[i4]; bi = i4; }
+      if (bi < 0 || bv <= 0) break;
+      var pxk = bi % W, pyk = (bi - pxk) / W;
+      peaks.push({ x: pxk, y: pyk, v: bv });
+      for (var yy = Math.max(0, pyk - minSep); yy < Math.min(H, pyk + minSep); yy++)
+        for (var xx = Math.max(0, pxk - minSep); xx < Math.min(W, pxk + minSep); xx++)
+          work[yy * W + xx] = 0;
+    }
+
+    // --- per peak: radial profile → scale by template NCC → coverage verify ---
+    var NANG = 48;
+    var cosT = [], sinT = [];
+    for (var a5 = 0; a5 < NANG; a5++) { cosT.push(Math.cos(2 * Math.PI * a5 / NANG)); sinT.push(Math.sin(2 * Math.PI * a5 / NANG)); }
+    var bilin = function (fx, fy) {
+      if (fx < 0 || fy < 0 || fx > W - 1.001 || fy > H - 1.001) return NaN;
+      var x0 = Math.floor(fx), y0 = Math.floor(fy), tx = fx - x0, ty = fy - y0;
+      var i0 = y0 * W + x0;
+      return lum[i0] * (1 - tx) * (1 - ty) + lum[i0 + 1] * tx * (1 - ty) + lum[i0 + W] * (1 - tx) * ty + lum[i0 + W + 1] * tx * ty;
+    };
+    var inBand = function (u) {
+      for (var bi2 = 0; bi2 < annuli.length; bi2++)
+        if (u >= annuli[bi2].r_inner && u <= annuli[bi2].r0) return true;
+      return false;
+    };
+    var found = [];
+    for (var p5 = 0; p5 < peaks.length && found.length < maxE; p5++) {
+      var pk = peaks[p5];
+      var rProfMax = Math.floor(0.7 * Math.min(W, H));
+      var prof = new Float64Array(rProfMax + 1);
+      for (var r5 = 2; r5 <= rProfMax; r5++) {
+        var vals = [];
+        for (var a6 = 0; a6 < NANG; a6++) {
+          var v6 = bilin(pk.x + r5 * cosT[a6], pk.y + r5 * sinT[a6]);
+          if (!isNaN(v6)) vals.push(v6);
+        }
+        if (vals.length < NANG * 0.5) { prof[r5] = NaN; continue; }
+        vals.sort(function (a, b) { return a - b; });
+        var lo6 = Math.floor(vals.length * 0.17), hi6 = Math.ceil(vals.length * 0.83), s6 = 0;
+        for (var t6 = lo6; t6 < hi6; t6++) s6 += vals[t6];
+        prof[r5] = s6 / (hi6 - lo6);
+      }
+      // scale search: NCC of two-level template over the emission's radial span
+      var sMinC = 6, sMaxC = rProfMax / (rOutU + 0.15);
+      if (sMaxC <= sMinC) continue;
+      var best = null;
+      for (var st = 0; st < 48; st++) {
+        var sc = sMinC * Math.pow(sMaxC / sMinC, st / 47);
+        var xs = [], ys = [];
+        for (var r7 = Math.max(2, Math.round(0.7 * sc)); r7 <= Math.min(rProfMax, Math.round((rOutU + 0.12) * sc)); r7++) {
+          if (isNaN(prof[r7])) continue;
+          xs.push(inBand(r7 / sc) ? 1 : 0);
+          ys.push(prof[r7]);
+        }
+        if (xs.length < 20) continue;
+        var mx = 0, my = 0;
+        for (var i7 = 0; i7 < xs.length; i7++) { mx += xs[i7]; my += ys[i7]; }
+        mx /= xs.length; my /= ys.length;
+        var num = 0, dx7 = 0, dy7 = 0;
+        for (var i8 = 0; i8 < xs.length; i8++) {
+          var ax = xs[i8] - mx, ay = ys[i8] - my;
+          num += ax * ay; dx7 += ax * ax; dy7 += ay * ay;
+        }
+        // A near-FLAT profile makes normalized correlation meaningless (÷~0
+        // variance → ±1 on noise) — the T17c false-positive. Real ink is a
+        // 0.3-deep modulation; require material variance before correlating.
+        var norm7 = img.norm || 1;
+        if (dx7 <= 0 || Math.sqrt(dy7 / xs.length) / norm7 < 0.015) continue;
+        var ncc = -num / Math.sqrt(dx7 * dy7); // bands are DARK: anticorrelation is the match
+        if (!best || ncc > best.ncc) best = { s: sc, ncc: ncc };
+      }
+      if (!best || best.ncc < 0.5) continue;
+      // Absolute modulation depth at the chosen scale: gap radii must be
+      // MATERIALLY brighter than band radii (ink is 0.3 deep; ask for 0.04).
+      var bSum = 0, bN = 0, gSum = 0, gN = 0;
+      for (var rD = Math.max(2, Math.round(0.7 * best.s)); rD <= Math.min(rProfMax, Math.round((rOutU + 0.12) * best.s)); rD++) {
+        if (isNaN(prof[rD])) continue;
+        if (inBand(rD / best.s)) { bSum += prof[rD]; bN++; } else { gSum += prof[rD]; gN++; }
+      }
+      if (!bN || !gN) continue;
+      if ((gSum / gN - bSum / bN) / (img.norm || 1) < 0.04) continue;
+      // coverage: per annulus, band midpoint darker than the gap beyond it, per angle
+      var covs = [], covSum = 0;
+      var okCov = true;
+      for (var a8 = 0; a8 < annuli.length; a8++) {
+        var an8 = annuli[a8];
+        var rBand = ((an8.r_inner + an8.r0) / 2) * best.s;
+        var gapU = a8 + 1 < annuli.length ? (an8.r0 + annuli[a8 + 1].r_inner) / 2 : an8.r0 + 0.35;
+        var rGap = gapU * best.s;
+        var hits = 0, tries = 0;
+        for (var a9 = 0; a9 < NANG; a9++) {
+          var vb = bilin(pk.x + rBand * cosT[a9], pk.y + rBand * sinT[a9]);
+          var vg = bilin(pk.x + rGap * cosT[a9], pk.y + rGap * sinT[a9]);
+          if (isNaN(vb) || isNaN(vg)) continue;
+          tries++;
+          if (vb < vg - 1e-9) hits++;
+        }
+        var cov = tries ? hits / tries : 0;
+        covs.push(cov); covSum += cov;
+        if (cov < 0.6) okCov = false;
+      }
+      if (!okCov || covSum / annuli.length < 0.72) continue;
+
+      // --- promote to full-res similarity H, then physics refinement ---
+      var sFull = best.s * dec;
+      var cxF = (pk.x + 0.5) * dec, cyF = (pk.y + 0.5) * dec;
+      var mkH = function (cx, cy, s) { return [s, 0, cx, 0, s, cy, 0, 0, 1]; };
+      var Hc = mkH(cxF, cyF, sFull);
+      var samp = SAMP();
+      for (var it = 0; it < 3; it++) {
+        var sb = samp.sampleBoundary(img, Hc, outerA);
+        if (sb.found < sb.N * 0.5) break;
+        var n9 = 0, mean9 = 0;
+        for (var i9 = 0; i9 < sb.N; i9++) if (!isNaN(sb.r[i9])) { mean9 += sb.r[i9]; n9++; }
+        mean9 /= n9;
+        var dxU = 0, dyU = 0;
+        for (var i10 = 0; i10 < sb.N; i10++) {
+          if (isNaN(sb.r[i10])) continue;
+          var th10 = 2 * Math.PI * i10 / sb.N;
+          dxU += (sb.r[i10] - mean9) * Math.cos(th10);
+          dyU += (sb.r[i10] - mean9) * Math.sin(th10);
+        }
+        dxU *= 2 / n9; dyU *= 2 / n9;
+        cxF += sFull * dxU; cyF += sFull * dyU;
+        sFull *= mean9 / outerA.r0;
+        Hc = mkH(cxF, cyF, sFull);
+        if (Math.abs(dxU) < 0.003 && Math.abs(dyU) < 0.003 && Math.abs(mean9 / outerA.r0 - 1) < 0.003) break;
+      }
+      // duplicate suppression vs already-found (full-res coords)
+      var dup = false;
+      for (var f10 = 0; f10 < found.length; f10++) {
+        var g10 = found[f10];
+        if (Math.hypot(g10.cx - cxF, g10.cy - cyF) < 1.5 * Math.max(sFull, g10.s)) { dup = true; break; }
+      }
+      if (dup) continue;
+      found.push({ cx: cxF, cy: cyF, s: sFull, ncc: best.ncc, coverage: covSum / annuli.length, H: Hc });
+    }
+
+    // --- emitter objects shaped like the finder path's ---
+    var g = G();
+    return found.map(function (f) {
+      var mk = function (ux, uy) { var p = g.applyH(f.H, ux, uy); return { x: p[0], y: p[1], unit: f.s / 25 }; };
+      return {
+        H: f.H, moduleSizePx: f.s / 25, fiducialWidthPx: f.s, chirality: 1,
+        corners: { TL: mk(-FC, -FC), TR: mk(FC, -FC), BL: mk(-FC, FC) },
+        method: "rings", timingScore: f.coverage, structureScore: f.ncc
+      };
+    });
+  }
+
   /* The stage-2 entry point: all emitters in the frame. Acceptance: rank all
      geometric triples by timing+structure; the BEST is accepted on structure
      alone (blur-tolerant — a real fiducial outranks ring/collar decoys whenever
      its timing resolves, and still verifies structurally when blur erases the
      timing). ADDITIONAL emitters (multi-emitter/§5.1, decoy-exposed) must pass
-     the strict timing signature too. */
+     the strict timing signature too. When the finder path comes up EMPTY and
+     the caller supplied the emission profile, fall back to ring registration
+     (the fiducial dies before the rings — walks 4–5). */
   function registerAll(img, opts) {
+    opts = opts || {};
     var cands = findFinderCandidates(img, opts);
     var triples = groupTriples(cands);
     var scored = [];
@@ -228,10 +471,14 @@
         if (s.structureScore >= 0.7) emitters.push(s);
       } else if (s.timingScore >= 0.6 && s.structureScore >= 0.7) emitters.push(s);
     }
+    if (!emitters.length && opts.profile && !opts.noRings) {
+      var ringed = ringRegisterAll(img, opts.profile, opts);
+      if (ringed.length) return { emitters: ringed, candidates: cands, method: "rings" };
+    }
     return { emitters: emitters, candidates: cands };
   }
 
-  var API = { registerAll: registerAll, findFinderCandidates: findFinderCandidates, groupTriples: groupTriples, threshold: threshold, FC: FC };
+  var API = { registerAll: registerAll, ringRegisterAll: ringRegisterAll, findFinderCandidates: findFinderCandidates, groupTriples: groupTriples, threshold: threshold, FC: FC };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   global.OC = global.OC || {}; global.OC.register = API;
 })(typeof window !== "undefined" ? window : globalThis);

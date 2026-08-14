@@ -34,12 +34,13 @@
     // begin on a dead screen (the emitter's countdown freeze, or pre-framing wobble).
     // opts.registerOn: an alternate (already parity-corrected) frame to register on —
     // harness-only isolation of annulus degradation from registration death.
+    var regOpts = { profile: profile, maxEmitters: opts.maxEmitters };
     var reg = null, regFrame = 0;
     if (opts.registerOn) {
-      reg = register.registerAll(opts.registerOn);
+      reg = register.registerAll(opts.registerOn, regOpts);
     } else {
       for (var rf = 0; rf < groups.length; rf++) {
-        var rTry = register.registerAll(groups[rf].imgs[0]);
+        var rTry = register.registerAll(groups[rf].imgs[0], regOpts);
         if (rTry.emitters.length) { reg = rTry; regFrame = rf; break; }
       }
     }
@@ -59,7 +60,7 @@
     if (opts.handheld) {
       var prev = emitters.map(function (em) { return geom.applyH(em.H, 0, 0); });
       for (var fi = regFrame + 1; fi < groups.length; fi++) {
-        var reg2 = register.registerAll(groups[fi].imgs[0]);
+        var reg2 = register.registerAll(groups[fi].imgs[0], regOpts);
         for (var ei = 0; ei < tracksH.length; ei++) {
           var best = null, bd = Infinity;
           for (var c2 = 0; c2 < reg2.emitters.length; c2++) {
@@ -239,7 +240,7 @@
         }
         return pick;
       });
-      return { fiducialWidthPx: Math.round(em.fiducialWidthPx * 10) / 10, annuli: annuli };
+      return { fiducialWidthPx: Math.round(em.fiducialWidthPx * 10) / 10, method: em.method || "finder", annuli: annuli };
     });
 
     return { emitters: results, emitterCount: emitters.length, regFrame: regFrame };
