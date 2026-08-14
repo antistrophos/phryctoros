@@ -37,6 +37,7 @@ software loop the field harness sits on.</p>
 <script src="../src/sample.js"></script>
 <script src="../src/transform.js"></script>
 <script src="../src/separate.js"></script>
+<script src="../src/rowtime.js"></script>
 <script src="../src/demap.js"></script>
 <script src="../src/ser.js"></script>
 <script src="../src/degrade.js"></script>
@@ -367,6 +368,98 @@ async function main() {
     }).join("  ");
     record("T12 tear defense: 100% torn-duplicate pollution — layer0 clean, enhancement layers within layer-scaled bars (residual seam-misses-band class → F2 row-time work)",
       okAll, det12);
+  }
+
+  // T13 — F2 row-time repair, the case T12 cannot reach: every emission frame
+  // has exactly ONE look and a 4-frame run of them is torn (a full symbol on
+  // every ring). Duplicate selection has nothing to select; without repair the
+  // blended phases cost that symbol on every layer. The row-time scan must
+  // find the seams, refit the prediction-consistent side, and decode clean.
+  await tick("T13: row-time repair of single-look torn frames…");
+  {
+    const oneLook = [];
+    for (let f = 0; f < 72; f++) {
+      let img = cleanFrames[f].img;
+      if (f >= 24 && f < 28)
+        img = OC.degrade.tearComposite(cleanFrames[f].img, cleanFrames[f + 1].img,
+          Math.floor(cleanFrames[f].img.h * (0.40 + 0.05 * (f - 24))));
+      oneLook.push({ f, img });
+    }
+    const r13 = OC.pipeline.decodeSequence(oneLook, profile, { aligned: true });
+    let okAll = true, torn = 0, repaired = 0, invalidated = 0;
+    const det13 = [0, 1, 2].map(L => {
+      const A = layerResult(r13, 0, L);
+      torn += (A.tear && A.tear.torn) || 0;
+      repaired += (A.tear && A.tear.repaired) || 0;
+      invalidated += (A.tear && A.tear.invalidated) || 0;
+      // Erasures are honest (an unadjudicated seam becomes a gap, never a
+      // confident wrong symbol); symbol ERRORS are the failure. Without the
+      // repair this scenario demapped 2 CONFIDENT WRONG symbols on D16 with
+      // zero erasures — that, not the erasure count, is what T13 pins.
+      if (!(A.present && A.ser === 0 && A.erasures <= 2)) okAll = false;
+      return "L" + L + ":" + fmt(A) + (A.tear ? " tear " + A.tear.repaired + "/" + A.tear.torn + (A.tear.invalidated ? "+inv" + A.tear.invalidated : "") : "");
+    }).join("  ");
+    record("T13 row-time repair: 4-frame torn run, single looks — every layer SER==0 (erasures ≤2), all 12 seams detected, each either repaired or honestly erased, ≥5 repaired",
+      okAll && torn >= 10 && repaired + invalidated >= 10 && repaired >= 5,
+      det13 + "  (torn " + torn + ", repaired " + repaired + ", invalidated " + invalidated + ")");
+  }
+
+  // T14 — row-time no-harm: a clean stream must produce ZERO tear verdicts
+  // (the split's parameter dividend alone must never cross the gain gate).
+  await tick("T14: row-time false-positive guard on a clean stream…");
+  {
+    const clean14 = cleanFrames.slice(0, 72).map((fr, i) => ({ f: i, img: fr.img }));
+    const r14 = OC.pipeline.decodeSequence(clean14, profile, { aligned: true });
+    let okAll = true, torn = 0;
+    const det14 = [0, 1, 2].map(L => {
+      const A = layerResult(r14, 0, L);
+      torn += (A.tear && A.tear.torn) || 0;
+      if (!(A.present && A.ser === 0)) okAll = false;
+      return "L" + L + ":" + fmt(A);
+    }).join("  ");
+    record("T14 row-time no-harm: clean stream, zero torn verdicts, SER==0", okAll && torn === 0,
+      det14 + "  (torn " + torn + ")");
+  }
+
+  // T15 — convention pins for rowtime's fit path. (a) phiFromSpec inverts the
+  // dft convention: a boundary at known φ comes back at φ. (b) scanAnnulus on
+  // a synthetic two-phase seam finds the cut and each side's fit recovers its
+  // own phase — pinning specFromBeta's atan2(−B, A) against ground truth.
+  await tick("T15: rowtime convention pins…");
+  {
+    const a2 = profile.annuli[2];
+    const psis = a2.boundary.phases_deg.map(d => d * Math.PI / 180);
+    const bound = (th, phi) => {
+      let v = a2.r0;
+      a2.boundary.harmonics.forEach((k, j) => { v += a2.boundary.amplitudes[j] * Math.cos(k * th + psis[j] - k * phi); });
+      return v;
+    };
+    const wrapP = OC.separate.wrap;
+    const N15 = 256, phiTrue = 1.234;
+    const rr = new Float64Array(N15);
+    for (let i = 0; i < N15; i++) rr[i] = bound(2 * Math.PI * i / N15, phiTrue);
+    const est = OC.rowtime.phiFromSpec(OC.transform.dft(rr, 24), a2, 1.0);
+    record("T15a phiFromSpec inverts dft: |est − φ| < 1e-3", Math.abs(wrapP(est - phiTrue)) < 1e-3,
+      "est " + est.toFixed(5) + " vs " + phiTrue);
+
+    const H15 = [124, 0, 384, 0, 124, 384, 0, 0, 1];
+    const phi1 = 0.4, phi2 = 1.2; // one ~nominal step apart
+    const rSeam = new Float64Array(N15);
+    for (let i = 0; i < N15; i++) {
+      const th = 2 * Math.PI * i / N15;
+      rSeam[i] = bound(th, Math.sin(th) < 0 ? phi1 : phi2); // image top (y<384) = φ1
+    }
+    const scan = OC.rowtime.scanAnnulus(rSeam, H15, a2, {});
+    let ok15 = !!(scan && scan.best && scan.best.axis === "y" && Math.abs(scan.best.cut - 384) < 20 && scan.best.gain < 0.2);
+    let det15 = scan && scan.best ? ("axis " + scan.best.axis + " cut " + scan.best.cut.toFixed(0) + " gain " + scan.best.gain.toExponential(1)) : "no seam found";
+    if (ok15) {
+      const sT = OC.rowtime.specFromBeta(scan.best.top.beta, a2.boundary.harmonics, OC.transform.dft(rSeam, 24));
+      const sB = OC.rowtime.specFromBeta(scan.best.bot.beta, a2.boundary.harmonics, OC.transform.dft(rSeam, 24));
+      const eT = OC.rowtime.phiFromSpec(sT, a2, phi1 + 0.05), eB = OC.rowtime.phiFromSpec(sB, a2, phi2 - 0.05);
+      ok15 = Math.abs(wrapP(eT - phi1)) < 0.02 && Math.abs(wrapP(eB - phi2)) < 0.02;
+      det15 += "  top " + eT.toFixed(3) + "→" + phi1 + "  bot " + eB.toFixed(3) + "→" + phi2;
+    }
+    record("T15b scanAnnulus finds a synthetic seam and each side refits its own phase", ok15, det15);
   }
 
   // Determinism spot-check: dtrig render of one frame is identical across two runs.

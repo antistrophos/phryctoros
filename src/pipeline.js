@@ -92,10 +92,14 @@
           var cands = [];
           for (var ci = 0; ci < groups[i].imgs.length; ci++) {
             var s = sample.sampleBoundary(groups[i].imgs[ci], tracksH[emIdx].Hs[i], a);
+            // Pre-fill copy for the F2 row-time scan: gap-filled angles are
+            // fabrications the least-squares refit must never see, and each
+            // retained radius + H reproduces its own image row on demand.
+            var rRaw = new Float64Array(s.r);
             var gapFrac = sample.fillGaps(s.r);
             if (gapFrac < 0 || s.found < s.N * 0.7) continue;
             var spec2 = transform.dft(s.r, kmax);
-            cands.push({ spec: spec2, sigma: transform.noiseSigma(spec2, a.boundary.harmonics, kmax), contrast: s.contrast });
+            cands.push({ spec: spec2, sigma: transform.noiseSigma(spec2, a.boundary.harmonics, kmax), contrast: s.contrast, rRaw: rRaw });
           }
           candsPerGroup[i] = cands;
           if (!cands.length) { series.push(null); continue; }
@@ -105,7 +109,7 @@
           if (firstValidIdx < 0) firstValidIdx = i;
           valid++;
           contrastAct += best.contrast;
-          series.push({ f: groups[i].f, spec: best.spec });
+          series.push({ f: groups[i].f, spec: best.spec, rRaw: best.rRaw, H: tracksH[emIdx].Hs[i] });
         }
         var activeN = firstValidIdx >= 0 ? groups.length - firstValidIdx : 0;
         var meanContrast = valid ? contrastAct / valid : 0;
@@ -114,17 +118,34 @@
           return { annulus: a.index, layer: a.layer, present: false, contrast: round3(meanContrast), validFrames: valid };
 
         var track = separate.trackPhase(series, a, profile);
+        // F2 row-time repair (rowtime.js): frames whose selected look still
+        // straddles an emission transition get their active harmonics refit
+        // from the seam's clean side, adjudicated against the track's own
+        // prediction. Two passes: repairs shift the track, and the second
+        // adjudication (recompute-from-original — never compounding) lets a
+        // better track revise or rescind the first. The seam class this does
+        // NOT cover: a seam missing this annulus's band entirely leaves a
+        // clean-looking ring at the WRONG instant — invisible here, counted
+        // by the slipSuspect diagnostic, unrepaired until slip logic exists.
+        // (A neighbor-midpoint temporal adjudicator was tried and REVERTED:
+        // at symbol kinks the midpoint is itself a temporal blend.)
+        var rowtime = opts.rowTime !== false ? dep("rowtime") : null;
+        var tear = null;
+        if (rowtime) {
+          tear = rowtime.repairSeries(series, track, a, profile, opts.rowTimeOpts);
+          if (tear.repaired > 0 || tear.invalidated > 0) {
+            track = separate.trackPhase(series, a, profile);
+            var tear2 = rowtime.repairSeries(series, track, a, profile, opts.rowTimeOpts);
+            tear.repaired = tear2.repaired; tear.torn = tear2.torn;
+            tear.invalidated = tear2.invalidated; tear.reasons = tear2.reasons;
+            tear.slipSuspect = tear2.slipSuspect; tear.cuts = tear2.cuts;
+            track = separate.trackPhase(series, a, profile);
+          }
+        }
         // Motion onset: the emitter freezes frame 0 through the countdown, so a
         // capture may begin with valid-but-static samples. Sync bases at onset;
         // no onset at all IS the emitter-stall case.
         var onset = separate.motionOnset(track, a, profile);
-        // NOTE on the residual tear class: a seam that MISSES this annulus's band
-        // yields a clean-looking ring at the wrong instant — invisible to the
-        // spatial residual, worth ~1 symbol error per ~13 under 100%-torn
-        // pollution (T12). A neighbor-midpoint temporal adjudicator was tried and
-        // REVERTED: at symbol-boundary kinks the midpoint is itself a temporal
-        // blend and sides with the torn candidate. The principled fix is F2
-        // row-time regression — each sample's row says which instant it belongs to.
 
         // Carrier check BEFORE symbol work: is the pattern actually rotating?
         // Expected per-frame advance = nominal + mean data drift (uniform symbols
@@ -165,7 +186,7 @@
         }
         if (!align)
           return { annulus: a.index, layer: a.layer, present: true, contrast: round3(meanContrast), validFrames: valid,
-                   carrierRatio: carrierRatio,
+                   carrierRatio: carrierRatio, tear: tearBrief(tear),
                    error: "no lock — symbols match neither preamble nor stream at any lag (carrier " + carrierRatio + "× expected" + (carrierRatio !== null && carrierRatio < 0.5 ? "; low carrier — see the layer-0 row" : "") + ")" };
         var decoded = demap.decode(track, a, profile, align.offset);
         var score = serM.evaluate(decoded, a, profile, align.lag);
@@ -184,7 +205,8 @@
           alignOffset: align.offset, alignLag: align.lag, alignScore: align.score,
           ser: round3(score.ser), errors: score.errors, compared: score.compared,
           erasures: score.erasures, erasureRate: round3(score.erasureRate),
-          preambleMiss: score.preambleMiss, ok: score.ok, snr_db: snr
+          preambleMiss: score.preambleMiss, ok: score.ok, snr_db: snr,
+          tear: tearBrief(tear)
         };
       });
       return { fiducialWidthPx: Math.round(em.fiducialWidthPx * 10) / 10, annuli: annuli };
@@ -193,10 +215,15 @@
     return { emitters: results, emitterCount: emitters.length, regFrame: regFrame };
   }
 
+  function tearBrief(t) {
+    if (!t) return undefined;
+    return { scanned: t.scanned, torn: t.torn, repaired: t.repaired, invalidated: t.invalidated, slipSuspect: t.slipSuspect, reasons: t.reasons, cuts: t.cuts };
+  }
+
   function averageNoise(series, a, kmax, transform) {
     var sum = 0, n = 0;
     for (var i = 0; i < series.length; i++) {
-      if (!series[i]) continue;
+      if (!series[i] || !series[i].spec) continue; // row-time may invalidate a seam frame
       sum += transform.noiseSigma(series[i].spec, a.boundary.harmonics, kmax);
       n++;
     }

@@ -50,6 +50,7 @@ register.js    stage 2 — EVERY fiducial in frame (1:1:3:1:1 scan), one homogra
 sample.js      stages 4–5 — radial profiles, self-normalized 0.5-crossing boundary; row timestamps carried (F2)
 transform.js   stage 6 — DFT at harmonics of interest + noise bins
 separate.js    stage 7 — phase ladder: k=1 anchors (down-weighted, F5b), high k carry precision
+rowtime.js     stage 6b — F2 row-time TEAR repair: step-model seam scan, clean-side refit
 demap.js       stage 8 — differential demap; (offset, lag) preamble alignment; low-confidence → erasure
 ser.js         stage 9 stand-in — SER/erasures vs the seeded reference stream
 pipeline.js    orchestration incl. mirror parity (C9, applied once), handheld re-registration
