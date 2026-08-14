@@ -117,104 +117,127 @@
         if (!present)
           return { annulus: a.index, layer: a.layer, present: false, contrast: round3(meanContrast), validFrames: valid };
 
-        var track = separate.trackPhase(series, a, profile);
-        // F2 row-time repair (rowtime.js): frames whose selected look still
-        // straddles an emission transition get their active harmonics refit
-        // from the seam's clean side, adjudicated against the track's own
-        // prediction. Two passes: repairs shift the track, and the second
-        // adjudication (recompute-from-original — never compounding) lets a
-        // better track revise or rescind the first. The seam class this does
-        // NOT cover: a seam missing this annulus's band entirely leaves a
-        // clean-looking ring at the WRONG instant — invisible here, counted
-        // by the slipSuspect diagnostic, unrepaired until slip logic exists.
+        // The downstream (track → onset → carrier gates → align → demap → score)
+        // as a function of the series, so the row-time branch can be judged
+        // EMPIRICALLY (walk 5: the repair stage rescued 5× enhancement rings,
+        // 0.87→0.12, and destroyed lit-1× base tracks, 0.14→0.67 — the same
+        // gates cannot serve both; the decoder tries both and keeps the winner).
+        var downstream = function (seriesX, tearX) {
+          var track = separate.trackPhase(seriesX, a, profile);
+          // Motion onset: the emitter freezes frame 0 through the countdown, so a
+          // capture may begin with valid-but-static samples. Sync bases at onset;
+          // no onset at all IS the emitter-stall case.
+          var onset = separate.motionOnset(track, a, profile);
+
+          // Carrier check BEFORE symbol work: is the pattern actually rotating?
+          // ratio ≈ 1 → healthy; ≈ 0 → static (emitter stalled); else clock mismatch.
+          var omega = 2 * Math.PI * a.rotation.nominal_hz;
+          var nomStep = omega / profile.frame_rate_hz + Math.PI / (a.rotation.M * a.rotation.frames_per_symbol);
+          var stepSum = 0, stepN = 0, pF = null, pPhi = null;
+          for (var ff = (onset !== null ? onset : 0); ff <= track.maxF; ff++) {
+            if (isNaN(track.phi[ff])) continue;
+            if (pF !== null && ff - pF === 1) { stepSum += track.phi[ff] - pPhi; stepN++; }
+            pF = ff; pPhi = track.phi[ff];
+          }
+          var carrierRatio = stepN ? round3((stepSum / stepN) / nomStep) : null;
+          if (onset === null && a.rotation.M <= 4)
+            return { annulus: a.index, layer: a.layer, present: true, contrast: round3(meanContrast), validFrames: valid,
+                     carrierRatio: carrierRatio,
+                     error: "STATIC PATTERN — no motion onset in the whole capture (" + (carrierRatio !== null ? carrierRatio + "× expected" : "no track") + "). The emitter's rendering was stalled: re-film with the rings visibly turning; keep the emitter window focused, plugged in, Fullscreen." };
+          // Gate only on low-M annuli (M ≤ 4): a stalled canvas stalls ALL annuli,
+          // so annulus 0's verdict covers the emission; higher-M rows report only.
+          // A LOW carrier is not always a stalled emitter: walk 4 produced 0.37×
+          // from a heavily sway-degraded handheld capture. Say so.
+          var swayHint = tearX && valid && (tearX.slipSuspect > valid * 0.2 || tearX.torn > valid * 0.1)
+            ? " OR this is a sway-degraded handheld capture (tear/slip diagnostics are heavy) — steady the phone or add light and re-film."
+            : "";
+          if (carrierRatio !== null && a.rotation.M <= 4 && Math.abs(carrierRatio) < 0.4)
+            return { annulus: a.index, layer: a.layer, present: true, contrast: round3(meanContrast), validFrames: valid,
+                     carrierRatio: carrierRatio, tear: tearBrief(tearX),
+                     error: "STATIC PATTERN — annulus present but not rotating (" + carrierRatio + "× expected). The emitter's rendering was stalled (browser throttling / battery saver): re-film with the emitter animating; keep its window focused, plug in power, use Fullscreen." + swayHint };
+          if (carrierRatio !== null && a.rotation.M <= 4 && (carrierRatio < 0.4 || carrierRatio > 1.8))
+            return { annulus: a.index, layer: a.layer, present: true, contrast: round3(meanContrast), validFrames: valid,
+                     carrierRatio: carrierRatio,
+                     error: "CLOCK MISMATCH — rotation at " + carrierRatio + "× expected. Emitter stalling intermittently, or capture fps ≠ profile fps." };
+
+          var syncBase = onset !== null ? onset : null;
+          var align = opts.aligned ? { offset: 0, lag: 0, score: null, method: "aligned" } : demap.findAlignment(track, a, profile, syncBase);
+          if (align && !align.method) align.method = "preamble";
+          if (!align) {
+            var maxLagSym = Math.ceil(((opts.loopSeconds || 60) * profile.frame_rate_hz) / a.rotation.frames_per_symbol) + profile.preamble_symbols;
+            align = demap.correlateStream(track, a, profile, maxLagSym, syncBase);
+          }
+          if (!align)
+            return { annulus: a.index, layer: a.layer, present: true, contrast: round3(meanContrast), validFrames: valid,
+                     carrierRatio: carrierRatio, tear: tearBrief(tearX),
+                     error: "no lock — symbols match neither preamble nor stream at any lag (carrier " + carrierRatio + "× expected" + (carrierRatio !== null && carrierRatio < 0.5 ? "; low carrier — see the layer-0 row" : "") + ")" };
+          var decoded = demap.decode(track, a, profile, align.offset);
+          var score = serM.evaluate(decoded, a, profile, align.lag);
+
+          var sigma = averageNoise(seriesX, a, kmax, transform);
+          var snr = {};
+          a.boundary.harmonics.forEach(function (k) {
+            snr[k] = round1(20 * Math.log10((track.meanMag[k] || 1e-9) / (sigma + 1e-9)));
+          });
+
+          return {
+            annulus: a.index, layer: a.layer, present: true,
+            contrast: round3(meanContrast), validFrames: valid, firstValidFrame: firstValidIdx >= 0 ? groups[firstValidIdx].f : null,
+            duplicatesSeen: work.length - groups.length,
+            carrierRatio: carrierRatio, alignMethod: align.method, alignMatchFrac: align.matchFrac,
+            alignOffset: align.offset, alignLag: align.lag, alignScore: align.score,
+            ser: round3(score.ser), errors: score.errors, compared: score.compared,
+            erasures: score.erasures, erasureRate: round3(score.erasureRate),
+            preambleMiss: score.preambleMiss, ok: score.ok, snr_db: snr,
+            tear: tearBrief(tearX)
+          };
+        };
+
+        // F2 row-time repair (rowtime.js): seams refit from the clean side,
+        // sway-warps de-warped, unlabelable seams invalidated to erasures.
         // (A neighbor-midpoint temporal adjudicator was tried and REVERTED:
         // at symbol kinks the midpoint is itself a temporal blend.)
         var rowtime = opts.rowTime !== false ? dep("rowtime") : null;
         var tear = null;
         if (rowtime) {
-          tear = rowtime.repairSeries(series, track, a, profile, opts.rowTimeOpts);
+          var track0 = separate.trackPhase(series, a, profile);
+          tear = rowtime.repairSeries(series, track0, a, profile, opts.rowTimeOpts);
           if (tear.repaired > 0 || tear.invalidated > 0 || tear.warped > 0) {
-            track = separate.trackPhase(series, a, profile);
-            var tear2 = rowtime.repairSeries(series, track, a, profile, opts.rowTimeOpts);
+            var trackR = separate.trackPhase(series, a, profile);
+            var tear2 = rowtime.repairSeries(series, trackR, a, profile, opts.rowTimeOpts);
             tear.repaired = tear2.repaired; tear.torn = tear2.torn;
             tear.warped = tear2.warped; tear.warpRate = tear2.warpRate;
             tear.invalidated = tear2.invalidated; tear.reasons = tear2.reasons;
             tear.slipSuspect = tear2.slipSuspect; tear.cuts = tear2.cuts;
-            track = separate.trackPhase(series, a, profile);
           }
         }
-        // Motion onset: the emitter freezes frame 0 through the countdown, so a
-        // capture may begin with valid-but-static samples. Sync bases at onset;
-        // no onset at all IS the emitter-stall case.
-        var onset = separate.motionOnset(track, a, profile);
-
-        // Carrier check BEFORE symbol work: is the pattern actually rotating?
-        // Expected per-frame advance = nominal + mean data drift (uniform symbols
-        // are NOT zero-mean: mean delta = π/M per symbol = π/(M·F) per frame).
-        // ratio ≈ 1 → healthy; ≈ 0 → static (emitter stalled); else clock mismatch.
-        var omega = 2 * Math.PI * a.rotation.nominal_hz;
-        var nomStep = omega / profile.frame_rate_hz + Math.PI / (a.rotation.M * a.rotation.frames_per_symbol);
-        var stepSum = 0, stepN = 0, pF = null, pPhi = null;
-        for (var ff = (onset !== null ? onset : 0); ff <= track.maxF; ff++) {
-          if (isNaN(track.phi[ff])) continue;
-          if (pF !== null && ff - pF === 1) { stepSum += track.phi[ff] - pPhi; stepN++; }
-          pF = ff; pPhi = track.phi[ff];
-        }
-        var carrierRatio = stepN ? round3((stepSum / stepN) / nomStep) : null;
-        if (onset === null && a.rotation.M <= 4)
-          return { annulus: a.index, layer: a.layer, present: true, contrast: round3(meanContrast), validFrames: valid,
-                   carrierRatio: carrierRatio,
-                   error: "STATIC PATTERN — no motion onset in the whole capture (" + (carrierRatio !== null ? carrierRatio + "× expected" : "no track") + "). The emitter's rendering was stalled: re-film with the rings visibly turning; keep the emitter window focused, plugged in, Fullscreen." };
-        // Gate only on low-M annuli (M ≤ 4): short seeded streams have large drift
-        // variance, so static-vs-running is statistically separable only where the
-        // nominal advance dominates — and a stalled canvas stalls ALL annuli, so
-        // annulus 0's verdict covers the emission. Higher-M rows report, never gate.
-        // A LOW carrier is not always a stalled emitter: walk 4 produced 0.37×
-        // from a heavily sway-degraded handheld capture (track under-rotates
-        // under warp; slipSuspect and torn counts run high). Say so.
-        var swayHint = tear && valid && (tear.slipSuspect > valid * 0.2 || tear.torn > valid * 0.1)
-          ? " OR this is a sway-degraded handheld capture (tear/slip diagnostics are heavy) — steady the phone or add light and re-film."
-          : "";
-        if (carrierRatio !== null && a.rotation.M <= 4 && Math.abs(carrierRatio) < 0.4)
-          return { annulus: a.index, layer: a.layer, present: true, contrast: round3(meanContrast), validFrames: valid,
-                   carrierRatio: carrierRatio, tear: tearBrief(tear),
-                   error: "STATIC PATTERN — annulus present but not rotating (" + carrierRatio + "× expected). The emitter's rendering was stalled (browser throttling / battery saver): re-film with the emitter animating; keep its window focused, plug in power, use Fullscreen." + swayHint };
-        if (carrierRatio !== null && a.rotation.M <= 4 && (carrierRatio < 0.4 || carrierRatio > 1.8))
-          return { annulus: a.index, layer: a.layer, present: true, contrast: round3(meanContrast), validFrames: valid,
-                   carrierRatio: carrierRatio,
-                   error: "CLOCK MISMATCH — rotation at " + carrierRatio + "× expected. Emitter stalling intermittently, or capture fps ≠ profile fps." };
-
-        var syncBase = onset !== null ? onset : null;
-        var align = opts.aligned ? { offset: 0, lag: 0, score: null, method: "aligned" } : demap.findAlignment(track, a, profile, syncBase);
-        if (align && !align.method) align.method = "preamble";
-        if (!align) {
-          var maxLagSym = Math.ceil(((opts.loopSeconds || 60) * profile.frame_rate_hz) / a.rotation.frames_per_symbol) + profile.preamble_symbols;
-          align = demap.correlateStream(track, a, profile, maxLagSym, syncBase);
-        }
-        if (!align)
-          return { annulus: a.index, layer: a.layer, present: true, contrast: round3(meanContrast), validFrames: valid,
-                   carrierRatio: carrierRatio, tear: tearBrief(tear),
-                   error: "no lock — symbols match neither preamble nor stream at any lag (carrier " + carrierRatio + "× expected" + (carrierRatio !== null && carrierRatio < 0.5 ? "; low carrier — see the layer-0 row" : "") + ")" };
-        var decoded = demap.decode(track, a, profile, align.offset);
-        var score = serM.evaluate(decoded, a, profile, align.lag);
-
-        var sigma = averageNoise(series, a, kmax, transform);
-        var snr = {};
-        a.boundary.harmonics.forEach(function (k) {
-          snr[k] = round1(20 * Math.log10((track.meanMag[k] || 1e-9) / (sigma + 1e-9)));
+        var mutated = tear && (tear.repaired > 0 || tear.invalidated > 0 || tear.warped > 0);
+        if (!mutated) return downstream(series, tear);
+        // Judge the repairs by outcome, not by gate: decode BOTH the repaired
+        // series and the untouched originals (spec0, retained for exactly
+        // this), and keep the better result. Rank: hard error < decodes;
+        // then ok, lower SER, fewer erasures, stronger alignment.
+        var seriesPlain = series.map(function (e) {
+          return e && e.spec0 ? { f: e.f, spec: e.spec0 } : e;
         });
-
-        return {
-          annulus: a.index, layer: a.layer, present: true,
-          contrast: round3(meanContrast), validFrames: valid, firstValidFrame: firstValidIdx >= 0 ? groups[firstValidIdx].f : null,
-          duplicatesSeen: work.length - groups.length,
-          carrierRatio: carrierRatio, alignMethod: align.method, alignMatchFrac: align.matchFrac,
-          alignOffset: align.offset, alignLag: align.lag, alignScore: align.score,
-          ser: round3(score.ser), errors: score.errors, compared: score.compared,
-          erasures: score.erasures, erasureRate: round3(score.erasureRate),
-          preambleMiss: score.preambleMiss, ok: score.ok, snr_db: snr,
-          tear: tearBrief(tear)
+        tear.applied = true;
+        var rRep = downstream(series, tear);
+        var tearOff = {};
+        for (var tk in tear) tearOff[tk] = tear[tk];
+        tearOff.applied = false;
+        var rPlain = downstream(seriesPlain, tearOff);
+        var rank = function (r) {
+          return [r.error ? 0 : 1, r.ok ? 1 : 0,
+                  r.ser != null && !isNaN(r.ser) ? -r.ser : -9,
+                  r.erasures != null ? -r.erasures : -999,
+                  r.alignMatchFrac != null ? r.alignMatchFrac : -1];
         };
+        var ra = rank(rRep), rb = rank(rPlain), pick = rRep;
+        for (var ri = 0; ri < ra.length; ri++) {
+          if (ra[ri] > rb[ri]) { pick = rRep; break; }
+          if (ra[ri] < rb[ri]) { pick = rPlain; break; }
+        }
+        return pick;
       });
       return { fiducialWidthPx: Math.round(em.fiducialWidthPx * 10) / 10, annuli: annuli };
     });
@@ -224,7 +247,7 @@
 
   function tearBrief(t) {
     if (!t) return undefined;
-    return { scanned: t.scanned, torn: t.torn, repaired: t.repaired, warped: t.warped, warpRate: t.warpRate, invalidated: t.invalidated, slipSuspect: t.slipSuspect, reasons: t.reasons, cuts: t.cuts };
+    return { applied: t.applied, scanned: t.scanned, torn: t.torn, repaired: t.repaired, warped: t.warped, warpRate: t.warpRate, invalidated: t.invalidated, slipSuspect: t.slipSuspect, reasons: t.reasons, cuts: t.cuts };
   }
 
   function averageNoise(series, a, kmax, transform) {
