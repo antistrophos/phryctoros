@@ -792,8 +792,60 @@ async function main() {
       detOn + "  conic " + JSON.stringify(con));
   }
 
-  // T21b — the self-gate: on a clean capture the fitted k=2 sits under the
-  // noise floor, A stays the EXACT identity, and the decode is byte-identical
+  // T21c — the PERSPECTIVE leg, field30's conviction. A fiducial-fit affine
+  // absorbs the local linear pose but cannot see the quadratic: a finite-
+  // distance tilt leaves each ring's centre shifted by r²·(g,h) — a static
+  // k=1 on the same harmonic as the k=1 DATA and the k-ladder's branch
+  // guide. field30/31 measured |k1| ≈ 0.05 units, constant per take, with
+  // k2 at the leakage floor — middle and outer rings trapped (|static| >
+  // |data|), carriers 0.47–0.65. This leg reproduces that exact regime
+  // synthetically and asserts the projective correction clears it.
+  await tick("T21c: perspective k=1 — rendering + warping…");
+  {
+    const p21c = OC.profile.defaultProfile({
+      render: { size_px: 768, scale_px_per_unit: 124 },
+      preamble_symbols: 4
+    });
+    const seqC = OC.emission.renderSequence(p21c, 152, {});
+    // Perspective row sized to the FIELD regime: cg ≈ 0.005 /unit² → in
+    // pixels /124 → ring-centre shifts 0.010/0.023/0.041 units against
+    // k=1 data amps 0.030/0.020/0.030 — a1/a2 in the trapping zone.
+    const gp = 0.005 / 124, phc = 40 * Math.PI / 180;
+    const Hp = [1, 0, 0, 0, 1, 0, gp * Math.cos(phc), gp * Math.sin(phc), 1];
+    const warpedC = seqC.frames.map((fr, i) => ({ f: i, img: OC.degrade.warpH(fr.img, Hp) }));
+    const regCleanC = seqC.frames[0].img;
+
+    await tick("T21c: decoding WITHOUT the correction (must break)…");
+    const rOffC = OC.pipeline.decodeSequence(warpedC, p21c, { aligned: true, registerOn: regCleanC, conic: false });
+    const detOffC = rOffC.error ? rOffC.error :
+      [0, 1, 2].map(L => "L" + L + ":" + fmt(layerResult(rOffC, 0, L))).join("  ");
+    // Noiseless, the middle ring survives on its four clean harmonics (only
+    // k=1 of five is poisoned) — field noise removes that shelter, which is
+    // why the field broke L1 too. The synthetic asserts the ring it honestly
+    // breaks: the outer base ring, 1-of-3 harmonics poisoned.
+    const A0offC = rOffC.error ? null : layerResult(rOffC, 0, 0);
+    const brokeC = !!rOffC.error || !A0offC || !A0offC.present || !!A0offC.error ||
+      (typeof A0offC.ser === "number" && A0offC.ser > 0.05);
+    record("T21c without correction: r²-growing static k=1 (perspective, field30's magnitude) breaks the outer base ring; enhancement rings shelter on clean harmonics only because the synthetic is noiseless",
+      brokeC, detOffC);
+
+    await tick("T21c: decoding WITH the correction…");
+    const rOnC = OC.pipeline.decodeSequence(warpedC, p21c, { aligned: true, registerOn: regCleanC });
+    const conC = rOnC.error ? null : rOnC.emitters[0].conic;
+    let okOnC = !rOnC.error;
+    const detOnC = rOnC.error ? rOnC.error : [0, 1, 2].map(L => {
+      const A = layerResult(rOnC, 0, L);
+      if (!(A.present && A.ser === 0)) okOnC = false;
+      return "L" + L + ":" + fmt(A);
+    }).join("  ");
+    const perspOk = !!(conC && conC.applied && conC.k1p > 0.02 && conC.k1p < 0.08);
+    record("T21c with correction: gate trips on dmax, fitted perspective k1 in the field band, projective A restores SER==0 on all three annuli",
+      okOnC && perspOk,
+      detOnC + "  conic " + JSON.stringify(conC));
+  }
+
+  // T21b — the self-gate: on a clean capture the fitted static model sits
+  // under the noise floor, A stays the EXACT identity, and the decode is byte-identical
   // to a run with the module disabled — no branch doubling, no thresholds
   // tuned on synthetics (the criterion-hunt lesson made structural).
   await tick("T21b: no tilt — gate stays closed, decode byte-identical…");

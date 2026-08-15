@@ -91,6 +91,23 @@
     return out;
   }
 
+  /* Projective warp about the image centre — the finite-distance tilt. Unlike
+     warpAffine, ring centres shift with r² (the perspective k=1 that field30
+     convicted: invisible to a fiducial-local affine, lethal at ring radius).
+     H3 is the FORWARD row-major 3x3 applied about the centre. */
+  function warpH(img, H3) {
+    var g = G();
+    var inv = g.invertH(H3);
+    var cx = img.w / 2, cy = img.h / 2;
+    var out = { w: img.w, h: img.h, data: new Float32Array(img.w * img.h) };
+    for (var y = 0; y < img.h; y++) for (var x = 0; x < img.w; x++) {
+      var pt = g.applyH(inv, x + 0.5 - cx, y + 0.5 - cy);
+      var sx = cx + pt[0] - 0.5, sy = cy + pt[1] - 0.5;
+      out.data[y * img.w + x] = (sx < 0 || sy < 0 || sx > img.w - 1 || sy > img.h - 1) ? img.data[0] : g.bilinear(img, sx, sy);
+    }
+    return out;
+  }
+
   /* Exposure/white-balance ramp: gain and offset (C2 witness — must have no effect). */
   function exposure(img, gain, offset) {
     var out = clone(img);
@@ -143,7 +160,7 @@
     return s;
   }
 
-  var API = { clone: clone, blur: blur, addNoise: addNoise, flipH: flipH, rotate: rotate, warpAffine: warpAffine, exposure: exposure, resample: resample, composite2: composite2, tearComposite: tearComposite, dropSet: dropSet };
+  var API = { clone: clone, blur: blur, addNoise: addNoise, flipH: flipH, rotate: rotate, warpAffine: warpAffine, warpH: warpH, exposure: exposure, resample: resample, composite2: composite2, tearComposite: tearComposite, dropSet: dropSet };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   global.OC = global.OC || {}; global.OC.degrade = API;
 })(typeof window !== "undefined" ? window : globalThis);

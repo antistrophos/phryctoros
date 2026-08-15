@@ -89,8 +89,6 @@ async function runClip(name) {
   v.src = URL.createObjectURL(blob);
   await new Promise((r, j) => { v.onloadedmetadata = r; v.onerror = () => j(new Error("load failed")); });
   const seek = t => new Promise(r => { v.onseeked = () => r(); v.currentTime = t; });
-  const row = { clip: name, dur: +v.duration.toFixed(1), res: v.videoWidth + "×" + v.videoHeight };
-
   const qs = new URLSearchParams(location.search);
   const pv = qs.get("profile");
   const profile = pv === "v1" ? OC.profile.profileV1()
@@ -99,9 +97,15 @@ async function runClip(name) {
   // capfps: the SEEK cadence — must match the clip's recording rate (a 60 fps
   // clip stepped at 1/30 silently drops every other camera frame). anw: the
   // analysis-crop width cap — raise to 2048 for 4K sources to keep module
-  // resolution instead of downscaling it away.
+  // resolution instead of downscaling it away. t0/t1: decode window in clip
+  // seconds — long clips exceed the accumulate-all-frames heap (the 4K60
+  // lesson); window the decode and pool droplets across runs instead.
   const capFps = +qs.get("capfps") || 30;
   const ANW = +qs.get("anw") || 1024;
+  const T0 = +qs.get("t0") || 0;
+  const T1 = qs.get("t1") ? +qs.get("t1") : Infinity;
+  const row = { clip: name + (T0 > 0 || T1 < Infinity ? " [" + T0 + "–" + Math.min(v.duration, T1).toFixed(0) + "s]" : ""),
+                dur: +v.duration.toFixed(1), res: v.videoWidth + "×" + v.videoHeight };
 
   // Pre-scan: registration + crop-union across probes, MULTI-SCALE (800 → 1600 →
   // native) — a zoomed/distant emitter invisible at 800 px can register at native.
@@ -113,7 +117,8 @@ async function runClip(name) {
   for (const PW of [800, 1600, Math.min(2200, v.videoWidth)]) {
     const PH = Math.round(PW * v.videoHeight / v.videoWidth);
     pc.width = PW; pc.height = PH;
-    for (const t of [0.5, v.duration * 0.3, v.duration * 0.6, Math.max(0.5, v.duration - 1)]) {
+    const wEnd = Math.min(v.duration, T1), wLen = wEnd - T0;
+    for (const t of [T0 + Math.min(0.5, wLen * 0.1), T0 + wLen * 0.3, T0 + wLen * 0.6, Math.max(T0 + 0.5, wEnd - 1)]) {
       await seek(Math.min(t, v.duration - 0.1));
       pctx.drawImage(v, 0, 0, PW, PH);
       const reg = OC.register.registerAll(lumFrom(pctx, PW, PH), { profile });
@@ -144,9 +149,9 @@ async function runClip(name) {
 
   const fps = profile.frame_rate_hz;
   const frames = []; const perIdx = {};
-  for (let i = 0; ; i++) {
+  for (let i = Math.floor(T0 * capFps); ; i++) {
     const t = i / capFps;
-    if (t >= v.duration - 0.05) break;
+    if (t >= Math.min(v.duration - 0.05, T1)) break;
     await seek(t);
     const idx = Math.round(t * fps);
     if ((perIdx[idx] || 0) < 2) {
@@ -158,7 +163,10 @@ async function runClip(name) {
   }
   $("status").textContent = name + ": decoding " + frames.length + " frames…";
   await new Promise(r => setTimeout(r, 10));
-  const res = OC.pipeline.decodeSequence(frames, profile, { aligned: false, loopSeconds: 60, handheld: true, payload: PAYLOAD });
+  const res = OC.pipeline.decodeSequence(frames, profile, {
+    aligned: false, loopSeconds: 60, handheld: true, payload: PAYLOAD,
+    conicScan: qs.get("scan") === "1"   // wander probe: per-window k≤2 fits in row.conic.scan
+  });
   if (res.error) { row.error = res.error; row.annuli = null; }
   else {
     row.fidPx = res.emitters[0].fiducialWidthPx;
@@ -188,8 +196,8 @@ async function main() {
     tr.innerHTML = "<td>" + row.clip + "</td><td>" + (row.dur || "—") + "</td><td>" + (row.res || "—") +
       "</td><td>" + (row.preScanHits || "—") + "</td><td>" +
       (row.fidPx ? (row.fidPx + (row.method === "rings" ? " <span class='dim'>(ring-reg)</span>" : "") +
-        (row.conic ? (row.conic.applied ? " <span class='warn'>(tilt " + row.conic.tiltDeg + "° corrected)</span>"
-                                        : " <span class='dim'>(k2 " + row.conic.k2 + " under floor " + row.conic.floor + ")</span>") : "")) :
+        (row.conic ? (row.conic.applied ? " <span class='warn'>(pose residual " + row.conic.dmax + " corrected, k1p " + row.conic.k1p + ")</span>"
+                                        : " <span class='dim'>(static " + row.conic.dmax + " under floor " + row.conic.floor + ")</span>") : "")) :
         (row.error ? "<span class='bad'>" + row.error + "</span>" : "—")) + "</td>" +
       (row.annuli ? row.annuli.map(cell).join("") + payloadCell(row)
                   : "<td colspan='4' class='bad'>" + (row.error || "no decode") + "</td>");

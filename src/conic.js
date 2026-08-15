@@ -44,11 +44,17 @@
     return R;
   }
 
-  /* The correction affine: presumed circle → fitted ellipse. The traceless
+  /* The correction: presumed circle → fitted static geometry. The traceless
      symmetric part [[p,q],[q,-p]] moves radius by r·(p·cos2θ + q·sin2θ);
-     the translation carries the fitted centre offset. */
-  function affineOf(p, q, dx, dy) {
-    return new Float64Array([1 + p, q, dx, q, 1 - p, dy, 0, 0, 1]);
+     the translation carries the fitted centre offset; the PROJECTIVE row
+     (g,h) moves radius by −r²·(g·cosθ + h·sinθ) — the perspective term.
+     field30 convicted that last one: a fiducial-fit affine absorbs the
+     local linear pose but cannot see the quadratic, so an angled capture
+     keeps a static k=1 growing as r² — same harmonic as the k=1 DATA and
+     the k-ladder's branch guide, which is why rings die middle-and-outer
+     first with carriers wandering BOTH directions. */
+  function affineOf(p, q, dx, dy, g, h) {
+    return new Float64Array([1 + p, q, dx, q, 1 - p, dy, g || 0, h || 0, 1]);
   }
 
   /* 2x2 singular values + the output (image-side) major-axis angle. */
@@ -89,8 +95,11 @@
     }
     if (!ringIdx.length) return { ok: false, reason: "no ring averaged cleanly over the probe span" };
 
-    // Unknowns: [bias per included ring..., dx, dy, p, q].
-    var u = ringIdx.length + 4;
+    // Unknowns: [bias per included ring..., dx, dy, cg, ch, p, q] where the
+    // (cg, ch) columns are r0²·cosθ / r0²·sinθ — the perspective k=1. With
+    // one ring the r² column is degenerate with the constant k=1; drop it.
+    var withPersp = ringIdx.length >= 2;
+    var u = ringIdx.length + (withPersp ? 6 : 4);
     var AtA = new Float64Array(u * u), Atb = new Float64Array(u), row = new Float64Array(u);
     var forEachPoint = function (fn) {
       for (var k = 0; k < ringIdx.length; k++) {
@@ -105,9 +114,14 @@
     forEachPoint(function (k, r0, th, m) {
       for (var z = 0; z < u; z++) row[z] = 0;
       row[k] = 1;
-      var b = ringIdx.length;
-      row[b] = Math.cos(th); row[b + 1] = Math.sin(th);
-      row[b + 2] = r0 * Math.cos(2 * th); row[b + 3] = r0 * Math.sin(2 * th);
+      var b = ringIdx.length, ct = Math.cos(th), st = Math.sin(th);
+      row[b] = ct; row[b + 1] = st;
+      if (withPersp) {
+        row[b + 2] = r0 * r0 * ct; row[b + 3] = r0 * r0 * st;
+        row[b + 4] = r0 * Math.cos(2 * th); row[b + 5] = r0 * Math.sin(2 * th);
+      } else {
+        row[b + 2] = r0 * Math.cos(2 * th); row[b + 3] = r0 * Math.sin(2 * th);
+      }
       for (var r1 = 0; r1 < u; r1++) {
         if (!row[r1]) continue;
         Atb[r1] += row[r1] * m;
@@ -118,17 +132,30 @@
     var x = geom.solve(AtA, Atb, u);
     if (!x) return { ok: false, reason: "singular fit" };
     var b0 = ringIdx.length;
-    var dx = x[b0], dy = x[b0 + 1], p = x[b0 + 2], q = x[b0 + 3];
+    var dx = x[b0], dy = x[b0 + 1];
+    var cg = withPersp ? x[b0 + 2] : 0, ch = withPersp ? x[b0 + 3] : 0;
+    var p = x[b0 + (withPersp ? 4 : 2)], q = x[b0 + (withPersp ? 5 : 3)];
     var ss = 0;
     forEachPoint(function (k, r0, th, m) {
-      var pred = x[k] + dx * Math.cos(th) + dy * Math.sin(th) +
+      var pred = x[k] + (dx + cg * r0 * r0) * Math.cos(th) + (dy + ch * r0 * r0) * Math.sin(th) +
                  r0 * (p * Math.cos(2 * th) + q * Math.sin(2 * th));
       ss += (m - pred) * (m - pred);
     });
+    // The gate quantity: the model's own peak static radial displacement at
+    // the worst ring — constant k=1, perspective k=1, and k=2 together.
+    var dmax = 0;
+    for (var km = 0; km < ringIdx.length; km++) {
+      var r0m = ann[ringIdx[km]].r0;
+      var d = Math.hypot(dx + cg * r0m * r0m, dy + ch * r0m * r0m) + Math.hypot(p, q) * r0m;
+      if (d > dmax) dmax = d;
+    }
     return {
-      ok: true, p: p, q: q, dx: dx, dy: dy,
+      ok: true, p: p, q: q, dx: dx, dy: dy, cg: cg, ch: ch,
       sigma: Math.sqrt(ss / Math.max(1, n - u)),
       k2: Math.hypot(p, q) * r0max,
+      k1c: Math.hypot(dx, dy),
+      k1p: Math.hypot(cg, ch) * r0max * r0max,
+      dmax: dmax,
       rings: ringIdx.length, frames: Math.max.apply(null, used),
       bias: ringIdx.map(function (ai4, k2) { return { annulus: ai4, bias: r4(x[k2] - ann[ai4].r0) }; })
     };
@@ -161,31 +188,74 @@
 
     var p1 = fitPass(groups, Hs, null, profile, span, step, N);
     if (!p1.ok) return { applied: false, reason: p1.reason };
+    // Gate on the model's PEAK static displacement (k=1 const + k=1
+    // perspective + k=2 together) — field30's lesson: a 10σ perspective
+    // k=1 sat in the fit while a k2-only gate looked the other way.
     var floor = Math.max(gate * p1.sigma, minK2);
-    if (p1.k2 <= floor)
-      return { applied: false, k2: r4(p1.k2), noise: r4(p1.sigma), floor: r4(floor),
-               rings: p1.rings, frames: p1.frames };
+    if (p1.dmax <= floor)
+      return { applied: false, dmax: r4(p1.dmax), k1c: r4(p1.k1c), k1p: r4(p1.k1p), k2: r4(p1.k2),
+               noise: r4(p1.sigma), floor: r4(floor), rings: p1.rings, frames: p1.frames };
 
-    var A = affineOf(p1.p, p1.q, p1.dx, p1.dy);
+    // Sign: the fit measures Δr = +cg·r²cosθ…, A's projective row moves
+    // radius by −r²(g·cosθ + h·sinθ) — so g = −cg, h = −ch.
+    var A = affineOf(p1.p, p1.q, p1.dx, p1.dy, -p1.cg, -p1.ch);
     var p2 = fitPass(groups, Hs, A, profile, span, step, N);
-    if (p2.ok) A = mul3(A, affineOf(p2.p, p2.q, p2.dx, p2.dy));
+    if (p2.ok) A = mul3(A, affineOf(p2.p, p2.q, p2.dx, p2.dy, -p2.cg, -p2.ch));
 
     var sv = svd2(A[0], A[1], A[3], A[4]);
     return {
       applied: true, A: A,
-      k2: r4(p1.k2), noise: r4(p1.sigma), floor: r4(floor),
-      residualK2: p2.ok ? r4(p2.k2) : null,
+      dmax: r4(p1.dmax), k1c: r4(p1.k1c), k1p: r4(p1.k1p), k2: r4(p1.k2),
+      noise: r4(p1.sigma), floor: r4(floor),
+      residual: p2.ok ? r4(p2.dmax) : null,
       tiltDeg: r1(Math.acos(Math.min(1, sv.smin / Math.max(sv.smax, 1e-9))) * 180 / Math.PI),
       axisDeg: r1(sv.axisDeg),
+      persp: [r4(A[6]), r4(A[7])],
       center: [r4(A[2]), r4(A[5])],
       ringBias: p1.bias, rings: p1.rings, frames: p1.frames
     };
   }
 
+  /* Windowed DIAGNOSTIC scan — the wander probe. field30 taught the sharp
+     lesson: the full-capture average measured k2 ≈ 0.006 (no static ellipse)
+     while the rings stayed wrecked — a hand-sway pose that WANDERS is
+     geometric at every instant and static never, and a whole-capture mean
+     washes it to nothing (its residue inflates the fit noise instead). This
+     scan fits the same k≤2 model over consecutive windows (each just long
+     enough to average the rotating data out) and reports the per-window
+     ellipse vector — if (p,q) is large per-window but wanders in direction,
+     the wander hypothesis is confirmed and the window length calibrates the
+     correction's timescale. Diagnostic only: changes nothing downstream. */
+  function scanWindows(groups, Hs, profile, opts) {
+    opts = opts || {};
+    var N = opts.rays || 96;
+    var G = groups.length;
+    var minHz = Infinity;
+    for (var i = 0; i < profile.annuli.length; i++)
+      if (profile.annuli[i].rotation.nominal_hz < minHz) minHz = profile.annuli[i].rotation.nominal_hz;
+    var need = Math.ceil(2 * profile.frame_rate_hz / minHz);
+    var i0 = Math.min(Math.floor(G * 0.1), Math.max(0, G - need));
+    var W = Math.max(need, opts.windowFrames || need);
+    var out = [];
+    for (var w0 = i0; w0 + Math.floor(W * 0.75) <= G; w0 += W) {
+      var w1 = Math.min(G, w0 + W);
+      var f = fitPass(groups, Hs, null, profile, [w0, w1], 1, N);
+      if (!f.ok) { out.push({ w: [w0, w1], reason: f.reason }); continue; }
+      var e = Math.hypot(f.p, f.q);
+      out.push({
+        w: [w0, w1], dmax: r4(f.dmax), k1c: r4(f.k1c), k1p: r4(f.k1p), k2: r4(f.k2), noise: r4(f.sigma),
+        axisDeg: r1(((Math.atan2(f.q, f.p) / 2) * 180 / Math.PI % 180 + 180) % 180),
+        tiltDeg: r1(Math.acos((1 - e) / (1 + e)) * 180 / Math.PI),
+        center: [r4(f.dx), r4(f.dy)], persp: [r4(f.cg), r4(f.ch)], frames: f.frames
+      });
+    }
+    return out;
+  }
+
   function r4(x) { return Math.round(x * 10000) / 10000; }
   function r1(x) { return Math.round(x * 10) / 10; }
 
-  var API = { estimateStatic: estimateStatic, compose: mul3, affineOf: affineOf, svd2: svd2 };
+  var API = { estimateStatic: estimateStatic, scanWindows: scanWindows, compose: mul3, affineOf: affineOf, svd2: svd2 };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   global.OC = global.OC || {}; global.OC.conic = API;
 })(typeof window !== "undefined" ? window : globalThis);

@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>field36 — pooled peel (seg1 ∪ seg2)</title>
+<style>body { font: 14px/1.5 system-ui, sans-serif; margin: 1.5rem; background: #14161a; color: #d8dce2; } pre { background: #0d0f12; padding: 1rem; white-space: pre-wrap; }</style>
+</head>
+<body>
+<h1 style="font-size:1rem">field36 pooled peel — segment [0–45s] ∪ segment [40–85s]</h1>
+<pre id="out">(running)</pre>
+<script src="../src/prng.js"></script>
+<script src="../src/profile.js"></script>
+<script src="../src/fountain.js"></script>
+<script>
+"use strict";
+// Raw droplet hex mined from field36.mp4 by batch-diag under the projective
+// conic correction (2026-08-15). Retained per the harvest-decoder discipline:
+// raws ALWAYS outlive the run that mined them.
+const SEG1 = [
+  { annulus: 0, droplets: [
+    {c:0,hex:"a719007d55"},{c:1,hex:"2248656c6c"},{c:2,hex:"6f21205468"},{c:4,hex:"0a15494443"},
+    {c:8,hex:"a719007d55"},{c:9,hex:"4d3c0d1e1d"},{c:10,hex:"6478353771"},{c:11,hex:"450a1a5312"},
+    {c:12,hex:"637420636f"},{c:13,hex:"1d1e11405c"},{c:14,hex:"7837662667"},{c:20,hex:"64723c6321"},
+    {c:21,hex:"170d075a47"},{c:22,hex:"4b3a4e1f06"},{c:23,hex:"463549214e"},{c:24,hex:"a719007d55"},
+    {c:25,hex:"1d1441130d"} ] },
+  { annulus: 1, droplets: [
+    {c:0,hex:"a719007d55"},{c:1,hex:"2248656c6c"},{c:5,hex:"47680d1902"},{c:6,hex:"114f5c0452"},
+    {c:7,hex:"4549165816"},{c:8,hex:"a719007d55"},{c:9,hex:"1741060c04"},{c:10,hex:"1a4f54740e"},
+    {c:13,hex:"171753424d"},{c:15,hex:"0706490317"},{c:16,hex:"a719007d55"},{c:17,hex:"7464697c65"},
+    {c:18,hex:"6e3237772a"} ] },
+  { annulus: 2, droplets: [
+    {c:0,hex:"a719007d55"},{c:1,hex:"2248656c6c"},{c:4,hex:"6037372769"},{c:5,hex:"070645074f"},
+    {c:6,hex:"1606000d0a"},{c:9,hex:"6e672c2063"},{c:10,hex:"7261637465"},{c:11,hex:"0146002000"},
+    {c:12,hex:"6564732e22"} ] }
+];
+const SEG2 = [
+  { annulus: 0, droplets: [
+    {c:24,hex:"a719007d55"},{c:25,hex:"1d1441130d"},{c:26,hex:"5f1d4f1659"},{c:31,hex:"0d060a180c"},
+    {c:32,hex:"a719007d55"},{c:33,hex:"75292c6f25"},{c:34,hex:"1c44104643"},{c:35,hex:"6520657861"},
+    {c:36,hex:"0a011f1650"},{c:37,hex:"1749110c04"},{c:43,hex:"7972244b6c"},{c:44,hex:"0b00451d4f"},
+    {c:45,hex:"1c0e54000d"},{c:46,hex:"1f494d030f"},{c:47,hex:"6472656420"},{c:48,hex:"a719007d55"} ] },
+  { annulus: 1, droplets: [] },
+  { annulus: 2, droplets: [
+    {c:12,hex:"6564732e22"},{c:13,hex:"0d59584213"},{c:15,hex:"6537730325"},{c:16,hex:"a719007d55"},
+    {c:17,hex:"1d5c554548"},{c:18,hex:"7261637465"},{c:21,hex:"0c0200041a"},{c:22,hex:"121a166111"},
+    {c:23,hex:"1b16020c0c"} ] }
+];
+function unhex(h) {
+  const u = new Uint8Array(h.length / 2);
+  for (let i = 0; i < u.length; i++) u[i] = parseInt(h.substr(2 * i, 2), 16);
+  return u;
+}
+const P = OC.profile.profileV2r30();
+const rings = [0, 1, 2].map(i => ({
+  seed: P.annuli[i].rotation.seed,
+  droplets: SEG1[i].droplets.concat(SEG2[i].droplets).map(d => ({ c: d.c, bytes: unhex(d.hex) }))
+}));
+const res = OC.fountain.assemble(rings, P);
+document.getElementById("out").textContent =
+  "POOLED " + rings.map(r => r.droplets.length).join("+") + " droplets (pre-dedupe)\n" +
+  JSON.stringify({ ok: res.ok, K: res.K, recovered: res.recovered, reason: res.reason || null }, null, 1) +
+  "\n\nTEXT: " + (res.text != null ? JSON.stringify(res.text) : "(none)");
+</script>
+</body>
+</html>

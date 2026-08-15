@@ -98,6 +98,9 @@
         }
         var brief = {};
         for (var bk in est) if (bk !== "A") brief[bk] = est[bk];
+        // Wander probe (opt-in diagnostic): per-window k≤2 fits through the
+        // same Hs the decode uses — confirms/kills a moving-pose hypothesis.
+        if (opts.conicScan) brief.scan = conicM.scanWindows(groups, tracksH[ce].Hs, profile, opts.conicOpts);
         return brief;
       });
     }
