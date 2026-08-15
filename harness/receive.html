@@ -32,7 +32,7 @@
   <label>camera <select id="m_cam"><option>rear</option><option>front</option></select></label>
   <label>handheld <input id="m_hand" type="checkbox" checked></label>
   <label>emitter loop (s) <input id="m_loop" type="number" value="60" style="width:4rem"></label>
-  <label>profile <select id="m_prof"><option value="v2">v2 (current)</option><option value="v1">v1 (legacy clips)</option></select></label>
+  <label>profile <select id="m_prof"><option value="v2">v2 (current)</option><option value="v2p">v2 + payload (Phase 1)</option><option value="v1">v1 (legacy clips)</option></select></label>
   <label>notes <input id="m_notes" style="width:12rem"></label>
 </fieldset>
 
@@ -65,6 +65,7 @@
 <script src="../src/separate.js"></script>
 <script src="../src/rowtime.js"></script>
 <script src="../src/demap.js"></script>
+<script src="../src/fountain.js"></script>
 <script src="../src/ser.js"></script>
 <script src="../src/degrade.js"></script>
 <script src="../src/pipeline.js"></script>
@@ -77,6 +78,7 @@ const $ = id => document.getElementById(id);
 function currentProfile() {
   return $("m_prof") && $("m_prof").value === "v1" ? OC.profile.profileV1() : OC.profile.defaultProfile();
 }
+function payloadMode() { return $("m_prof") && $("m_prof").value === "v2p"; }
 const rows = [];
 let stream = null, capturing = false, camFrames = [], frameCounter = 0;
 
@@ -100,13 +102,21 @@ function layerSummary(res) {
   if (res.error) return "<span class='bad'>" + res.error + "</span>";
   let html = "";
   res.emitters.forEach((em, ei) => {
-    html += "<table><tr><th colspan='10'>emitter " + ei + " — fiducial " + em.fiducialWidthPx + "px</th></tr>" +
+    if (em.payload) {
+      const p = em.payload;
+      html += p.ok
+        ? "<p class='ok' style='font-size:15px'><b>PAYLOAD RECOVERED</b> (" + p.recovered + "/" + p.K + " blocks, " + p.droplets + " droplets): “" + p.text + "”</p>"
+        : "<p class='warn'><b>payload incomplete</b> — " + (p.reason || "collecting") +
+          (p.K ? " (" + (p.recovered || 0) + "/" + p.K + " blocks, " + (p.droplets || 0) + " droplets — film longer or closer)" : " (" + (p.got || 0) + " droplets so far)") + "</p>";
+    }
+    html += "<table><tr><th colspan='10'>emitter " + ei + " — fiducial " + em.fiducialWidthPx + "px" + (em.method === "rings" ? " (ring-registered)" : "") + "</th></tr>" +
       "<tr><th>annulus</th><th>layer</th><th>present</th><th>carrier</th><th>SER</th><th>erasures</th><th>lock</th><th>contrast</th><th>SNR/harmonic (dB)</th><th>verdict</th></tr>";
     em.annuli.forEach(a => {
       const snr = a.snr_db ? Object.entries(a.snr_db).map(([k, v]) => "k" + k + ":" + v).join(" ") : "—";
       const lock = a.alignMethod ? (a.alignMethod + " lag " + a.alignLag + (a.alignMatchFrac ? " (" + a.alignMatchFrac + ")" : "")) : "—";
       const verdict = !a.present ? "<span class='dim'>unresolved</span>" :
         a.error ? "<span class='bad'>" + a.error + "</span>" :
+        a.dropletsPassed != null ? "<span class='" + (a.dropletsPassed > 0 ? "ok" : "warn") + "'>" + a.dropletsPassed + "/" + a.dropletsTried + " droplets</span>" :
         a.ok ? "<span class='ok'>DECODES</span>" : "<span class='warn'>degraded</span>";
       html += "<tr><td>" + a.annulus + "</td><td>" + a.layer + "</td><td>" + (a.present ? "yes" : "no") +
         "</td><td>" + (a.carrierRatio ?? "—") + "×</td><td>" + (a.ser ?? "—") + "</td><td>" + (a.erasures ?? "—") + "</td><td>" + lock +
@@ -148,7 +158,8 @@ function decodeFrames(frames, source, fpsMeasured) {
       const res = OC.pipeline.decodeSequence(frames, currentProfile(), {
         aligned: false, handheld: $("m_hand").checked,
         loopSeconds: +$("m_loop").value || 60,
-        mirror: { receive: false }, maxEmitters: 4
+        mirror: { receive: false }, maxEmitters: 4,
+        payload: payloadMode()
       });
       $("results").innerHTML = layerSummary(res);
       logRow(res, source, fpsMeasured, frames.length);

@@ -34,7 +34,7 @@
   <label>camera <select id="m_cam"><option>rear</option><option>front</option></select></label>
   <label>handheld <input id="m_hand" type="checkbox" checked></label>
   <label>emitter loop (s) <input id="m_loop" type="number" value="60" style="width:4rem"></label>
-  <label>profile <select id="m_prof"><option value="v2">v2 (current)</option><option value="v1">v1 (legacy clips)</option></select></label>
+  <label>profile <select id="m_prof"><option value="v2">v2 (current)</option><option value="v2p">v2 + payload (Phase 1)</option><option value="v1">v1 (legacy clips)</option></select></label>
   <label>notes <input id="m_notes" style="width:12rem"></label>
 </fieldset>
 
@@ -530,16 +530,19 @@
     x = x % TAU; if (x > Math.PI) x -= TAU; if (x <= -Math.PI) x += TAU; return x;
   }
 
-  /* Symbol schedule for one annulus: preamble (alternating +step/−step) then seeded data.
-     Returns { symbols, deltas, base, thetaData(f), nSymbols } — angles in radians. */
-  function buildSchedule(annulus, fps, nFrames, preambleSymbols) {
+  /* Symbol schedule for one annulus: preamble (alternating +step/−step) then data.
+     Data source: the seeded reference stream (Phase 0 measurement), or — when
+     dataSymbols is supplied — a payload CAROUSEL cycled at its own period
+     (Phase 1; see fountain.js). Returns { symbols, deltas, base, thetaData(f),
+     nSymbols } — angles in radians. */
+  function buildSchedule(annulus, fps, nFrames, preambleSymbols, dataSymbols) {
     var F = annulus.rotation.frames_per_symbol, M = annulus.rotation.M;
     var nSym = Math.ceil(nFrames / F) + 1;
     var symbols = new Uint8Array(nSym);
     var nData = Math.max(0, nSym - preambleSymbols);
-    var data = P().symbolStream(annulus.rotation.seed, nData, M);
+    var data = dataSymbols || P().symbolStream(annulus.rotation.seed, nData, M);
     for (var i = 0; i < nSym; i++)
-      symbols[i] = i < preambleSymbols ? (i % 2 === 0 ? 1 : M - 1) : data[i - preambleSymbols];
+      symbols[i] = i < preambleSymbols ? (i % 2 === 0 ? 1 : M - 1) : data[(i - preambleSymbols) % data.length];
     var deltas = new Float64Array(nSym), base = new Float64Array(nSym + 1);
     for (var j = 0; j < nSym; j++) {
       deltas[j] = wrapSigned(symbols[j] * TAU / M);
@@ -554,10 +557,12 @@
     return { symbols: symbols, deltas: deltas, base: base, thetaData: thetaData, nSymbols: nSym, dataSymbols: data };
   }
 
-  /* Full emission schedule: one per annulus. */
-  function buildSchedules(profile, nFrames) {
-    return profile.annuli.map(function (a) {
-      return buildSchedule(a, profile.frame_rate_hz, nFrames, profile.preamble_symbols);
+  /* Full emission schedule: one per annulus. carousels: per-annulus payload
+     symbol arrays from fountain.encodeCarousels (Phase 1), else seeded. */
+  function buildSchedules(profile, nFrames, carousels) {
+    return profile.annuli.map(function (a, i) {
+      return buildSchedule(a, profile.frame_rate_hz, nFrames, profile.preamble_symbols,
+                           carousels ? carousels[i] : undefined);
     });
   }
 
@@ -663,10 +668,11 @@
 
   function clamp01(u) { return u < 0 ? 0 : (u > 1 ? 1 : u); }
 
-  /* Render a sequence [f0, f0+n) sharing schedules/modules. */
+  /* Render a sequence [f0, f0+n) sharing schedules/modules.
+     opts.carousels: payload-mode symbol carousels (fountain.encodeCarousels). */
   function renderSequence(profile, n, opts) {
     opts = opts || {};
-    var schedules = buildSchedules(profile, n);
+    var schedules = buildSchedules(profile, n, opts.carousels);
     var modules = fiducialModules(profile.fiducial);
     var frames = [];
     for (var f = 0; f < n; f++)
@@ -2175,6 +2181,341 @@
 
 </script>
 <script>
+/* inlined: fountain.js */
+/* fountain.js — Phase 1 payload framing: LT droplet carousels per ring.
+   The three walks characterized the channel precisely: an ERASURE channel
+   (honest erasures everywhere, low residual confident-error rate) received
+   in arbitrary capture windows. That is the fountain code's home turf.
+
+   Layout per ring: [preamble] then droplets c = 0..L−1 cycled forever
+   (period L·D symbols; D = droplet_bits / log2(M) symbols). Droplet 0 is
+   the HEADER (magic, K, and — when capacity allows — payload length +
+   CRC16); droplets 1..L−1 are LT droplets: XOR of a pseudo-random subset
+   of the K payload blocks, subset derived from (ring seed, c) — both ends
+   share the profile, so the wire carries no subset descriptions. Every
+   droplet ends in CRC8 over (c || data): residual symbol ERRORS become
+   erasures (a poisoned XOR would corrupt the peel), and the CRC doubles as
+   the ALIGNMENT signal — scan candidate lags within one carousel period
+   and the true lag lights up with CRC passes. No reference stream needed:
+   sync in payload mode never requires knowing the payload.
+   All rings carry the SAME blocks with ring-distinct subsets; one peeling
+   decoder pools every verified droplet from every ring (and, later, every
+   tile). Bits→symbol mapping is Gray (adjacent phase error = 1 bit). */
+(function (global) {
+  "use strict";
+
+  function P() { return (typeof module !== "undefined" && module.exports) ? require("./prng.js") : global.OC.prng; }
+
+  var MAGIC = 0xA7;
+
+  function crc8(bytes, n) {
+    var c = 0;
+    for (var i = 0; i < n; i++) {
+      c ^= bytes[i];
+      for (var b = 0; b < 8; b++) c = (c & 0x80) ? (((c << 1) ^ 0x07) & 0xFF) : ((c << 1) & 0xFF);
+    }
+    return c;
+  }
+
+  function crc16(bytes) {
+    var c = 0xFFFF;
+    for (var i = 0; i < bytes.length; i++) {
+      c ^= bytes[i] << 8;
+      for (var b = 0; b < 8; b++) c = (c & 0x8000) ? (((c << 1) ^ 0x1021) & 0xFFFF) : ((c << 1) & 0xFFFF);
+    }
+    return c;
+  }
+
+  function toGray(n) { return n ^ (n >> 1); }
+  function fromGray(g) { var n = 0; while (g) { n ^= g; g >>= 1; } return n; }
+
+  function log2M(M) { return M === 4 ? 2 : M === 8 ? 3 : M === 16 ? 4 : Math.round(Math.log(M) / Math.LN2); }
+
+  /* Droplet geometry. droplet_bits must be divisible by 12 so every
+     constellation (2/3/4 bits per symbol) gets an integer symbol count.
+     Production default 48 (40 data + 8 CRC); tests may shrink to 24. */
+  function geom(profile) {
+    var db = (profile.carriage && profile.carriage.droplet_bits) || 48;
+    return { dropletBits: db, dataBits: db - 8, dataBytes: (db - 8) / 8 };
+  }
+  function ringD(annulus, g) { return g.dropletBits / log2M(annulus.rotation.M); }
+  // A capture window is short; the header must RECUR or mid-loop assembly
+  // would wait a whole carousel (~minutes on the base ring). Every 8th
+  // droplet is a header — 12.5% overhead buys a header sighting every few
+  // seconds of pooled 3-ring capture.
+  var HEADER_EVERY = 8;
+  function isHeaderSlot(c) { return c % HEADER_EVERY === 0; }
+  function carouselLen(K) { return 2 * K + 12; }
+
+  /* Degree + subset for LT droplet c (c ≥ 1), deterministic from ring seed.
+     Droplets c = 1..min(3,K) are forced degree-1 singles of blocks 0..2 —
+     guaranteed peel seeds for tiny K. */
+  function subsetFor(ringSeed, c, K) {
+    if (c >= 1 && c <= Math.min(3, K)) return [c - 1];
+    var rng = P().mulberry32(((ringSeed * 2654435761) ^ (c * 40503)) >>> 0);
+    var r = rng(), d;
+    if (r < 0.12) d = 1;
+    else if (r < 0.55) d = 2;
+    else if (r < 0.80) d = 3;
+    else if (r < 0.93) d = 4;
+    else d = Math.min(8, K);
+    if (d > K) d = K;
+    var pool = [];
+    for (var i = 0; i < K; i++) pool.push(i);
+    var out = [];
+    for (var j = 0; j < d; j++) {
+      var pick = j + Math.floor(rng() * (K - j));
+      var t = pool[j]; pool[j] = pool[pick]; pool[pick] = t;
+      out.push(pool[j]);
+    }
+    return out;
+  }
+
+  /* Payload → K blocks of dataBytes each (zero-padded). */
+  function toBlocks(payloadBytes, g) {
+    var K = Math.max(1, Math.ceil(payloadBytes.length / g.dataBytes));
+    var blocks = [];
+    for (var i = 0; i < K; i++) {
+      var b = new Uint8Array(g.dataBytes);
+      for (var j = 0; j < g.dataBytes; j++) {
+        var idx = i * g.dataBytes + j;
+        b[j] = idx < payloadBytes.length ? payloadBytes[idx] : 0;
+      }
+      blocks.push(b);
+    }
+    return { blocks: blocks, K: K };
+  }
+
+  function headerBytes(K, payloadBytes, g) {
+    var h = new Uint8Array(g.dataBytes);
+    h[0] = MAGIC; h[1] = K & 0xFF;
+    if (g.dataBytes >= 5) {
+      h[2] = (payloadBytes.length >> 8) & 0xFF; h[3] = payloadBytes.length & 0xFF;
+      h[4] = crc16(payloadBytes) >> 8;
+      if (g.dataBytes >= 6) h[5] = crc16(payloadBytes) & 0xFF;
+    }
+    return h;
+  }
+
+  function parseHeader(bytes, g) {
+    if (bytes[0] !== MAGIC) return null;
+    var K = bytes[1];
+    if (K < 1) return null;
+    var h = { K: K, len: null, pcrc: null };
+    if (g.dataBytes >= 5) {
+      h.len = (bytes[2] << 8) | bytes[3];
+      if (h.len < 1 || h.len > K * g.dataBytes) return null;
+      h.pcrc = g.dataBytes >= 6 ? ((bytes[4] << 8) | bytes[5]) : bytes[4];
+      h.pcrcBits = g.dataBytes >= 6 ? 16 : 8;
+    }
+    return h;
+  }
+
+  /* Droplet c's wire bytes: data(dataBytes) + crc8(c || data). */
+  function dropletBytes(c, blocks, K, ringSeed, payloadBytes, g) {
+    var data;
+    if (isHeaderSlot(c)) data = headerBytes(K, payloadBytes, g);
+    else {
+      data = new Uint8Array(g.dataBytes);
+      var sub = subsetFor(ringSeed, c, K);
+      for (var s = 0; s < sub.length; s++)
+        for (var j = 0; j < g.dataBytes; j++) data[j] ^= blocks[sub[s]][j];
+    }
+    var buf = new Uint8Array(g.dataBytes + 2);
+    buf[0] = c & 0xFF;
+    buf.set(data, 1);
+    buf[g.dataBytes + 1] = crc8(buf, g.dataBytes + 1);
+    return { data: data, crc: buf[g.dataBytes + 1] };
+  }
+
+  /* Bits → Gray symbols for one ring. */
+  function bitsToSymbols(bytes, crc, annulus, g) {
+    var b = log2M(annulus.rotation.M);
+    var totalBits = g.dropletBits;
+    var bits = new Uint8Array(totalBits);
+    for (var i = 0; i < g.dataBits; i++) bits[i] = (bytes[i >> 3] >> (7 - (i & 7))) & 1;
+    for (var j = 0; j < 8; j++) bits[g.dataBits + j] = (crc >> (7 - j)) & 1;
+    var syms = new Uint8Array(totalBits / b);
+    for (var s = 0; s < syms.length; s++) {
+      var v = 0;
+      for (var k = 0; k < b; k++) v = (v << 1) | bits[s * b + k];
+      syms[s] = toGray(v);
+    }
+    return syms;
+  }
+
+  /* The emitter side: per-annulus symbol carousels (period L·D symbols). */
+  function encodeCarousels(profile, payloadBytes) {
+    var g = geom(profile);
+    var tb = toBlocks(payloadBytes, g);
+    if (tb.K > 200) throw new Error("payload too large: K=" + tb.K + " blocks (cap 200 — " + (200 * g.dataBytes) + " bytes at this droplet size)");
+    var L = carouselLen(tb.K);
+    var carousels = profile.annuli.map(function (a) {
+      var D = ringD(a, g);
+      var syms = new Uint8Array(L * D);
+      for (var c = 0; c < L; c++) {
+        var dr = dropletBytes(c, tb.blocks, tb.K, a.rotation.seed, payloadBytes, g);
+        syms.set(bitsToSymbols(dr.data, dr.crc, a, g), c * D);
+      }
+      return syms;
+    });
+    return { carousels: carousels, K: tb.K, L: L, geom: g };
+  }
+
+  /* Decoder side: decoded symbol list (+erasures) at a known lag → verified
+     droplets. Emission symbol j = i + lag; data position = j − preamble;
+     droplet c = floor(dataPos / D) — captures live inside one carousel
+     period, so c needs no modulus and no knowledge of L. */
+  function collect(decoded, lag, annulus, profile) {
+    var g = geom(profile);
+    var D = ringD(annulus, g);
+    var b = log2M(annulus.rotation.M);
+    var Pn = profile.preamble_symbols;
+    var buckets = {};
+    for (var i = 0; i < decoded.length; i++) {
+      var j = i + lag;
+      if (j < Pn) continue;
+      var dataPos = j - Pn;
+      var c = Math.floor(dataPos / D), pos = dataPos % D;
+      if (!buckets[c]) buckets[c] = { syms: new Array(D), n: 0 };
+      if (buckets[c].syms[pos] === undefined) {
+        buckets[c].syms[pos] = decoded[i].s;
+        buckets[c].n++;
+      }
+    }
+    var passed = [], tried = 0;
+    for (var ck in buckets) {
+      var bu = buckets[ck];
+      if (bu.n < D) continue;
+      var ok = true;
+      for (var p2 = 0; p2 < D; p2++) if (bu.syms[p2] === null || bu.syms[p2] === undefined) { ok = false; break; }
+      if (!ok) continue;
+      tried++;
+      var bits = new Uint8Array(g.dropletBits);
+      for (var s2 = 0; s2 < D; s2++) {
+        var v = fromGray(bu.syms[s2]);
+        for (var k2 = 0; k2 < b; k2++) bits[s2 * b + k2] = (v >> (b - 1 - k2)) & 1;
+      }
+      var bytes = new Uint8Array(g.dataBytes), crcRead = 0;
+      for (var i2 = 0; i2 < g.dataBits; i2++) bytes[i2 >> 3] |= bits[i2] << (7 - (i2 & 7));
+      for (var j2 = 0; j2 < 8; j2++) crcRead = (crcRead << 1) | bits[g.dataBits + j2];
+      var buf = new Uint8Array(g.dataBytes + 1);
+      buf[0] = (+ck) & 0xFF; buf.set(bytes, 1);
+      if (crc8(buf, g.dataBytes + 1) === crcRead) passed.push({ c: +ck, bytes: bytes });
+    }
+    passed.sort(function (a, b2) { return a.c - b2.c; });
+    return { passed: passed, tried: tried };
+  }
+
+  /* Alignment without a reference stream: scan (offset, lag) and score by
+     CRC passes — the true framing lights up (chance rate 1/256/droplet).
+     Needs ≥2 passes to lock. */
+  function crcAlign(track, annulus, profile, baseOverride, maxLagSymbols) {
+    var demap = (typeof module !== "undefined" && module.exports) ? require("./demap.js") : global.OC.demap;
+    var F = annulus.rotation.frames_per_symbol;
+    var maxLag = maxLagSymbols || 4096;
+    var base = (baseOverride !== undefined && baseOverride !== null) ? baseOverride : (track.firstValid || 0);
+    var best = null;
+    for (var off = base; off < base + F; off++) {
+      var decoded = demap.decode(track, annulus, profile, off);
+      if (!decoded.length) continue;
+      for (var lag = 0; lag <= maxLag; lag++) {
+        var col = collect(decoded, lag, annulus, profile);
+        if (col.passed.length < 2) continue;
+        if (!best || col.passed.length > best.score ||
+            (col.passed.length === best.score && lag < best.lag))
+          best = { offset: off, lag: lag, score: col.passed.length, max: col.tried, method: "crc" };
+      }
+    }
+    return best;
+  }
+
+  /* Pool verified droplets from every ring (and eventually every tile) and
+     peel. Header (c=0, MAGIC) supplies K; blocks XOR out one by one. */
+  function assemble(perRing, profile) {
+    var g = geom(profile);
+    var header = null;
+    var lt = []; // { ringSeed, c, bytes }
+    for (var r = 0; r < perRing.length; r++) {
+      var ring = perRing[r];
+      if (!ring || !ring.droplets) continue;
+      for (var i = 0; i < ring.droplets.length; i++) {
+        var d = ring.droplets[i];
+        if (isHeaderSlot(d.c)) {
+          var h = parseHeader(d.bytes, g);
+          if (h) header = header || h;
+        } else lt.push({ ringSeed: ring.seed, c: d.c, bytes: d.bytes });
+      }
+    }
+    if (!header) return { ok: false, reason: "no header droplet yet", got: lt.length };
+    var K = header.K;
+    // dedupe (same ring+c seen across carousel repeats/branches)
+    var seen = {}, uniq = [];
+    for (var u = 0; u < lt.length; u++) {
+      var key = lt[u].ringSeed + ":" + lt[u].c;
+      if (seen[key]) continue;
+      seen[key] = 1; uniq.push(lt[u]);
+    }
+    // peel
+    var drops = uniq.map(function (d2) {
+      return { sub: subsetFor(d2.ringSeed, d2.c, K).slice(), bytes: new Uint8Array(d2.bytes) };
+    });
+    var blocks = new Array(K), recovered = 0, progress = true;
+    while (progress) {
+      progress = false;
+      for (var q = 0; q < drops.length; q++) {
+        var dr = drops[q];
+        if (!dr.sub) continue;
+        var unknown = [];
+        for (var s3 = 0; s3 < dr.sub.length; s3++) {
+          var bi = dr.sub[s3];
+          if (blocks[bi]) { for (var j3 = 0; j3 < g.dataBytes; j3++) dr.bytes[j3] ^= blocks[bi][j3]; }
+          else unknown.push(bi);
+        }
+        dr.sub = unknown;
+        if (unknown.length === 1) {
+          blocks[unknown[0]] = new Uint8Array(dr.bytes);
+          recovered++;
+          dr.sub = null;
+          progress = true;
+        } else if (unknown.length === 0) dr.sub = null;
+      }
+    }
+    if (recovered < K) return { ok: false, reason: "peel incomplete", K: K, recovered: recovered, droplets: uniq.length };
+    var len = header.len !== null ? header.len : K * g.dataBytes;
+    var out = new Uint8Array(len);
+    for (var b3 = 0; b3 < len; b3++) out[b3] = blocks[Math.floor(b3 / g.dataBytes)][b3 % g.dataBytes];
+    var ok = true, why = null;
+    if (header.pcrc !== null && header.pcrcBits === 16 && crc16(out) !== header.pcrc) { ok = false; why = "payload CRC16 mismatch"; }
+    return { ok: ok, reason: why, K: K, recovered: recovered, droplets: uniq.length, bytes: out,
+             text: bytesToText(out) };
+  }
+
+  function bytesToText(bytes) {
+    var s = "";
+    for (var i = 0; i < bytes.length; i++) {
+      var c = bytes[i];
+      s += (c >= 32 && c < 127) ? String.fromCharCode(c) : (c === 0 ? "" : "\\x" + c.toString(16));
+    }
+    return s;
+  }
+
+  function textToBytes(t) {
+    var out = new Uint8Array(t.length);
+    for (var i = 0; i < t.length; i++) out[i] = t.charCodeAt(i) & 0xFF;
+    return out;
+  }
+
+  var API = { encodeCarousels: encodeCarousels, collect: collect, crcAlign: crcAlign, assemble: assemble,
+              geom: geom, ringD: ringD, carouselLen: carouselLen, subsetFor: subsetFor,
+              crc8: crc8, crc16: crc16, toGray: toGray, fromGray: fromGray,
+              textToBytes: textToBytes, bytesToText: bytesToText, MAGIC: MAGIC };
+  if (typeof module !== "undefined" && module.exports) module.exports = API;
+  global.OC = global.OC || {}; global.OC.fountain = API;
+})(typeof window !== "undefined" ? window : globalThis);
+
+</script>
+<script>
 /* inlined: ser.js */
 /* ser.js — stage-9 stand-in for Phase 0: score decoded symbols against the known
    seeded reference. The harness measures SER/erasure-rate per layer; the fountain
@@ -2522,18 +2863,21 @@
                      error: "CLOCK MISMATCH — rotation at " + carrierRatio + "× expected. Emitter stalling intermittently, or capture fps ≠ profile fps." };
 
           var syncBase = onset !== null ? onset : null;
+          var maxLagSym = Math.ceil(((opts.loopSeconds || 60) * profile.frame_rate_hz) / a.rotation.frames_per_symbol) + profile.preamble_symbols;
           var align = opts.aligned ? { offset: 0, lag: 0, score: null, method: "aligned" } : demap.findAlignment(track, a, profile, syncBase);
           if (align && !align.method) align.method = "preamble";
           if (!align) {
-            var maxLagSym = Math.ceil(((opts.loopSeconds || 60) * profile.frame_rate_hz) / a.rotation.frames_per_symbol) + profile.preamble_symbols;
-            align = demap.correlateStream(track, a, profile, maxLagSym, syncBase);
+            // Payload mode has no reference stream — CRC-pass scanning is the
+            // mid-loop sync (fountain.js); reference mode correlates the seeds.
+            align = opts.payload
+              ? dep("fountain").crcAlign(track, a, profile, syncBase, maxLagSym)
+              : demap.correlateStream(track, a, profile, maxLagSym, syncBase);
           }
           if (!align)
             return { annulus: a.index, layer: a.layer, present: true, contrast: round3(meanContrast), validFrames: valid,
                      carrierRatio: carrierRatio, tear: tearBrief(tearX),
                      error: "no lock — symbols match neither preamble nor stream at any lag (carrier " + carrierRatio + "× expected" + (carrierRatio !== null && carrierRatio < 0.5 ? "; low carrier — see the layer-0 row" : "") + ")" };
           var decoded = demap.decode(track, a, profile, align.offset);
-          var score = serM.evaluate(decoded, a, profile, align.lag);
 
           var sigma = averageNoise(seriesX, a, kmax, transform);
           var snr = {};
@@ -2541,6 +2885,22 @@
             snr[k] = round1(20 * Math.log10((track.meanMag[k] || 1e-9) / (sigma + 1e-9)));
           });
 
+          if (opts.payload) {
+            var col = dep("fountain").collect(decoded, align.lag, a, profile);
+            return {
+              annulus: a.index, layer: a.layer, present: true,
+              contrast: round3(meanContrast), validFrames: valid, firstValidFrame: firstValidIdx >= 0 ? groups[firstValidIdx].f : null,
+              duplicatesSeen: work.length - groups.length,
+              carrierRatio: carrierRatio, alignMethod: align.method,
+              alignOffset: align.offset, alignLag: align.lag, alignScore: align.score,
+              dropletsPassed: col.passed.length, dropletsTried: col.tried,
+              droplets: col.passed.map(function (d) { return { c: d.c, hex: toHex(d.bytes) }; }),
+              _droplets: col.passed,
+              snr_db: snr, tear: tearBrief(tearX)
+            };
+          }
+
+          var score = serM.evaluate(decoded, a, profile, align.lag);
           return {
             annulus: a.index, layer: a.layer, present: true,
             contrast: round3(meanContrast), validFrames: valid, firstValidFrame: firstValidIdx >= 0 ? groups[firstValidIdx].f : null,
@@ -2589,6 +2949,7 @@
         var rPlain = downstream(seriesPlain, tearOff);
         var rank = function (r) {
           return [r.error ? 0 : 1, r.ok ? 1 : 0,
+                  r.dropletsPassed != null ? r.dropletsPassed : -1, // payload mode: droplets are the quality
                   r.ser != null && !isNaN(r.ser) ? -r.ser : -9,
                   r.erasures != null ? -r.erasures : -999,
                   r.alignMatchFrac != null ? r.alignMatchFrac : -1];
@@ -2600,10 +2961,27 @@
         }
         return pick;
       });
-      return { fiducialWidthPx: Math.round(em.fiducialWidthPx * 10) / 10, method: em.method || "finder", annuli: annuli };
+      // Payload mode: pool every ring's verified droplets into one peel.
+      var payload;
+      if (opts.payload) {
+        var rings = annuli.map(function (r, ri) {
+          return { seed: profile.annuli[ri].rotation.seed, droplets: r._droplets || [] };
+        });
+        annuli.forEach(function (r) { delete r._droplets; });
+        payload = dep("fountain").assemble(rings, profile);
+        if (payload && payload.bytes) payload.hex = toHex(payload.bytes);
+        if (payload) delete payload.bytes;
+      }
+      return { fiducialWidthPx: Math.round(em.fiducialWidthPx * 10) / 10, method: em.method || "finder", annuli: annuli, payload: payload };
     });
 
     return { emitters: results, emitterCount: emitters.length, regFrame: regFrame };
+  }
+
+  function toHex(u8) {
+    var s = "";
+    for (var i = 0; i < u8.length; i++) s += (u8[i] < 16 ? "0" : "") + u8[i].toString(16);
+    return s;
   }
 
   function tearBrief(t) {
@@ -2639,6 +3017,7 @@ const $ = id => document.getElementById(id);
 function currentProfile() {
   return $("m_prof") && $("m_prof").value === "v1" ? OC.profile.profileV1() : OC.profile.defaultProfile();
 }
+function payloadMode() { return $("m_prof") && $("m_prof").value === "v2p"; }
 const rows = [];
 let stream = null, capturing = false, camFrames = [], frameCounter = 0;
 
@@ -2662,13 +3041,21 @@ function layerSummary(res) {
   if (res.error) return "<span class='bad'>" + res.error + "</span>";
   let html = "";
   res.emitters.forEach((em, ei) => {
-    html += "<table><tr><th colspan='10'>emitter " + ei + " — fiducial " + em.fiducialWidthPx + "px</th></tr>" +
+    if (em.payload) {
+      const p = em.payload;
+      html += p.ok
+        ? "<p class='ok' style='font-size:15px'><b>PAYLOAD RECOVERED</b> (" + p.recovered + "/" + p.K + " blocks, " + p.droplets + " droplets): “" + p.text + "”</p>"
+        : "<p class='warn'><b>payload incomplete</b> — " + (p.reason || "collecting") +
+          (p.K ? " (" + (p.recovered || 0) + "/" + p.K + " blocks, " + (p.droplets || 0) + " droplets — film longer or closer)" : " (" + (p.got || 0) + " droplets so far)") + "</p>";
+    }
+    html += "<table><tr><th colspan='10'>emitter " + ei + " — fiducial " + em.fiducialWidthPx + "px" + (em.method === "rings" ? " (ring-registered)" : "") + "</th></tr>" +
       "<tr><th>annulus</th><th>layer</th><th>present</th><th>carrier</th><th>SER</th><th>erasures</th><th>lock</th><th>contrast</th><th>SNR/harmonic (dB)</th><th>verdict</th></tr>";
     em.annuli.forEach(a => {
       const snr = a.snr_db ? Object.entries(a.snr_db).map(([k, v]) => "k" + k + ":" + v).join(" ") : "—";
       const lock = a.alignMethod ? (a.alignMethod + " lag " + a.alignLag + (a.alignMatchFrac ? " (" + a.alignMatchFrac + ")" : "")) : "—";
       const verdict = !a.present ? "<span class='dim'>unresolved</span>" :
         a.error ? "<span class='bad'>" + a.error + "</span>" :
+        a.dropletsPassed != null ? "<span class='" + (a.dropletsPassed > 0 ? "ok" : "warn") + "'>" + a.dropletsPassed + "/" + a.dropletsTried + " droplets</span>" :
         a.ok ? "<span class='ok'>DECODES</span>" : "<span class='warn'>degraded</span>";
       html += "<tr><td>" + a.annulus + "</td><td>" + a.layer + "</td><td>" + (a.present ? "yes" : "no") +
         "</td><td>" + (a.carrierRatio ?? "—") + "×</td><td>" + (a.ser ?? "—") + "</td><td>" + (a.erasures ?? "—") + "</td><td>" + lock +
@@ -2710,7 +3097,8 @@ function decodeFrames(frames, source, fpsMeasured) {
       const res = OC.pipeline.decodeSequence(frames, currentProfile(), {
         aligned: false, handheld: $("m_hand").checked,
         loopSeconds: +$("m_loop").value || 60,
-        mirror: { receive: false }, maxEmitters: 4
+        mirror: { receive: false }, maxEmitters: 4,
+        payload: payloadMode()
       });
       $("results").innerHTML = layerSummary(res);
       logRow(res, source, fpsMeasured, frames.length);

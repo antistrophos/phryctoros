@@ -21,16 +21,19 @@
     x = x % TAU; if (x > Math.PI) x -= TAU; if (x <= -Math.PI) x += TAU; return x;
   }
 
-  /* Symbol schedule for one annulus: preamble (alternating +step/−step) then seeded data.
-     Returns { symbols, deltas, base, thetaData(f), nSymbols } — angles in radians. */
-  function buildSchedule(annulus, fps, nFrames, preambleSymbols) {
+  /* Symbol schedule for one annulus: preamble (alternating +step/−step) then data.
+     Data source: the seeded reference stream (Phase 0 measurement), or — when
+     dataSymbols is supplied — a payload CAROUSEL cycled at its own period
+     (Phase 1; see fountain.js). Returns { symbols, deltas, base, thetaData(f),
+     nSymbols } — angles in radians. */
+  function buildSchedule(annulus, fps, nFrames, preambleSymbols, dataSymbols) {
     var F = annulus.rotation.frames_per_symbol, M = annulus.rotation.M;
     var nSym = Math.ceil(nFrames / F) + 1;
     var symbols = new Uint8Array(nSym);
     var nData = Math.max(0, nSym - preambleSymbols);
-    var data = P().symbolStream(annulus.rotation.seed, nData, M);
+    var data = dataSymbols || P().symbolStream(annulus.rotation.seed, nData, M);
     for (var i = 0; i < nSym; i++)
-      symbols[i] = i < preambleSymbols ? (i % 2 === 0 ? 1 : M - 1) : data[i - preambleSymbols];
+      symbols[i] = i < preambleSymbols ? (i % 2 === 0 ? 1 : M - 1) : data[(i - preambleSymbols) % data.length];
     var deltas = new Float64Array(nSym), base = new Float64Array(nSym + 1);
     for (var j = 0; j < nSym; j++) {
       deltas[j] = wrapSigned(symbols[j] * TAU / M);
@@ -45,10 +48,12 @@
     return { symbols: symbols, deltas: deltas, base: base, thetaData: thetaData, nSymbols: nSym, dataSymbols: data };
   }
 
-  /* Full emission schedule: one per annulus. */
-  function buildSchedules(profile, nFrames) {
-    return profile.annuli.map(function (a) {
-      return buildSchedule(a, profile.frame_rate_hz, nFrames, profile.preamble_symbols);
+  /* Full emission schedule: one per annulus. carousels: per-annulus payload
+     symbol arrays from fountain.encodeCarousels (Phase 1), else seeded. */
+  function buildSchedules(profile, nFrames, carousels) {
+    return profile.annuli.map(function (a, i) {
+      return buildSchedule(a, profile.frame_rate_hz, nFrames, profile.preamble_symbols,
+                           carousels ? carousels[i] : undefined);
     });
   }
 
@@ -154,10 +159,11 @@
 
   function clamp01(u) { return u < 0 ? 0 : (u > 1 ? 1 : u); }
 
-  /* Render a sequence [f0, f0+n) sharing schedules/modules. */
+  /* Render a sequence [f0, f0+n) sharing schedules/modules.
+     opts.carousels: payload-mode symbol carousels (fountain.encodeCarousels). */
   function renderSequence(profile, n, opts) {
     opts = opts || {};
-    var schedules = buildSchedules(profile, n);
+    var schedules = buildSchedules(profile, n, opts.carousels);
     var modules = fiducialModules(profile.fiducial);
     var frames = [];
     for (var f = 0; f < n; f++)

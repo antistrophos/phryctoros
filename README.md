@@ -52,6 +52,7 @@ transform.js   stage 6 — DFT at harmonics of interest + noise bins
 separate.js    stage 7 — phase ladder: k=1 anchors (down-weighted, F5b), high k carry precision
 rowtime.js     stage 6b — F2 row-time TEAR repair: step-model seam scan, clean-side refit
 demap.js       stage 8 — differential demap; (offset, lag) preamble alignment; low-confidence → erasure
+fountain.js    Phase 1 — LT droplet carousels per ring; CRC8-bound identity; CRC-pass alignment; pooled peel
 ser.js         stage 9 stand-in — SER/erasures vs the seeded reference stream
 pipeline.js    orchestration incl. mirror parity (C9, applied once), handheld re-registration
 profile.js     the contract + validator (units: fiducial widths — F4; slip, collision, odd-pilot rules — F5)

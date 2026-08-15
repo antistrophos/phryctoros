@@ -162,18 +162,21 @@
                      error: "CLOCK MISMATCH — rotation at " + carrierRatio + "× expected. Emitter stalling intermittently, or capture fps ≠ profile fps." };
 
           var syncBase = onset !== null ? onset : null;
+          var maxLagSym = Math.ceil(((opts.loopSeconds || 60) * profile.frame_rate_hz) / a.rotation.frames_per_symbol) + profile.preamble_symbols;
           var align = opts.aligned ? { offset: 0, lag: 0, score: null, method: "aligned" } : demap.findAlignment(track, a, profile, syncBase);
           if (align && !align.method) align.method = "preamble";
           if (!align) {
-            var maxLagSym = Math.ceil(((opts.loopSeconds || 60) * profile.frame_rate_hz) / a.rotation.frames_per_symbol) + profile.preamble_symbols;
-            align = demap.correlateStream(track, a, profile, maxLagSym, syncBase);
+            // Payload mode has no reference stream — CRC-pass scanning is the
+            // mid-loop sync (fountain.js); reference mode correlates the seeds.
+            align = opts.payload
+              ? dep("fountain").crcAlign(track, a, profile, syncBase, maxLagSym)
+              : demap.correlateStream(track, a, profile, maxLagSym, syncBase);
           }
           if (!align)
             return { annulus: a.index, layer: a.layer, present: true, contrast: round3(meanContrast), validFrames: valid,
                      carrierRatio: carrierRatio, tear: tearBrief(tearX),
                      error: "no lock — symbols match neither preamble nor stream at any lag (carrier " + carrierRatio + "× expected" + (carrierRatio !== null && carrierRatio < 0.5 ? "; low carrier — see the layer-0 row" : "") + ")" };
           var decoded = demap.decode(track, a, profile, align.offset);
-          var score = serM.evaluate(decoded, a, profile, align.lag);
 
           var sigma = averageNoise(seriesX, a, kmax, transform);
           var snr = {};
@@ -181,6 +184,22 @@
             snr[k] = round1(20 * Math.log10((track.meanMag[k] || 1e-9) / (sigma + 1e-9)));
           });
 
+          if (opts.payload) {
+            var col = dep("fountain").collect(decoded, align.lag, a, profile);
+            return {
+              annulus: a.index, layer: a.layer, present: true,
+              contrast: round3(meanContrast), validFrames: valid, firstValidFrame: firstValidIdx >= 0 ? groups[firstValidIdx].f : null,
+              duplicatesSeen: work.length - groups.length,
+              carrierRatio: carrierRatio, alignMethod: align.method,
+              alignOffset: align.offset, alignLag: align.lag, alignScore: align.score,
+              dropletsPassed: col.passed.length, dropletsTried: col.tried,
+              droplets: col.passed.map(function (d) { return { c: d.c, hex: toHex(d.bytes) }; }),
+              _droplets: col.passed,
+              snr_db: snr, tear: tearBrief(tearX)
+            };
+          }
+
+          var score = serM.evaluate(decoded, a, profile, align.lag);
           return {
             annulus: a.index, layer: a.layer, present: true,
             contrast: round3(meanContrast), validFrames: valid, firstValidFrame: firstValidIdx >= 0 ? groups[firstValidIdx].f : null,
@@ -229,6 +248,7 @@
         var rPlain = downstream(seriesPlain, tearOff);
         var rank = function (r) {
           return [r.error ? 0 : 1, r.ok ? 1 : 0,
+                  r.dropletsPassed != null ? r.dropletsPassed : -1, // payload mode: droplets are the quality
                   r.ser != null && !isNaN(r.ser) ? -r.ser : -9,
                   r.erasures != null ? -r.erasures : -999,
                   r.alignMatchFrac != null ? r.alignMatchFrac : -1];
@@ -240,10 +260,27 @@
         }
         return pick;
       });
-      return { fiducialWidthPx: Math.round(em.fiducialWidthPx * 10) / 10, method: em.method || "finder", annuli: annuli };
+      // Payload mode: pool every ring's verified droplets into one peel.
+      var payload;
+      if (opts.payload) {
+        var rings = annuli.map(function (r, ri) {
+          return { seed: profile.annuli[ri].rotation.seed, droplets: r._droplets || [] };
+        });
+        annuli.forEach(function (r) { delete r._droplets; });
+        payload = dep("fountain").assemble(rings, profile);
+        if (payload && payload.bytes) payload.hex = toHex(payload.bytes);
+        if (payload) delete payload.bytes;
+      }
+      return { fiducialWidthPx: Math.round(em.fiducialWidthPx * 10) / 10, method: em.method || "finder", annuli: annuli, payload: payload };
     });
 
     return { emitters: results, emitterCount: emitters.length, regFrame: regFrame };
+  }
+
+  function toHex(u8) {
+    var s = "";
+    for (var i = 0; i < u8.length; i++) s += (u8[i] < 16 ? "0" : "") + u8[i].toString(16);
+    return s;
   }
 
   function tearBrief(t) {

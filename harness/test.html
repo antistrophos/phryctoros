@@ -39,6 +39,7 @@ software loop the field harness sits on.</p>
 <script src="../src/separate.js"></script>
 <script src="../src/rowtime.js"></script>
 <script src="../src/demap.js"></script>
+<script src="../src/fountain.js"></script>
 <script src="../src/ser.js"></script>
 <script src="../src/degrade.js"></script>
 <script src="../src/pipeline.js"></script>
@@ -538,6 +539,51 @@ async function main() {
     // presence/carrier gates kill phantoms — recorded here, not fixed here.
     const rF = OC.register.registerAll(flat, { profile: pInvis });
     note("finder-path noise phantom (latent)", rF.emitters.length + " emitter(s), method " + (rF.emitters[0] ? (rF.emitters[0].method || "finder") : "—"));
+  }
+
+  // T18 — Phase 1 payload framing (fountain.js): LT droplet carousels on
+  // every ring, one pooled peel. (a) clean end-to-end payload recovery;
+  // (b) MID-LOOP capture with the preamble long gone — CRC-pass alignment
+  // is the sync, headers recur so assembly never waits a carousel;
+  // (c) corrupted frames — CRC8 turns symbol errors into droplet erasures,
+  // the payload still recovers exactly. Test geometry: 24-bit droplets
+  // (16 data + 8 CRC) so the carousel fits a renderable stream.
+  await tick("T18: payload framing — rendering carousel stream…");
+  {
+    const profileP = OC.profile.defaultProfile({
+      render: { size_px: 768, scale_px_per_unit: 124 },
+      preamble_symbols: 4,
+      carriage: { droplet_bits: 24 }
+    });
+    const payloadText = "PHAROS!";
+    const enc = OC.fountain.encodeCarousels(profileP, OC.fountain.textToBytes(payloadText));
+    const seqP = OC.emission.renderSequence(profileP, 300, { carousels: enc.carousels });
+    const pFrames = seqP.frames.map((fr, i) => ({ f: i, img: fr.img }));
+
+    await tick("T18a: clean payload decode…");
+    const r18 = OC.pipeline.decodeSequence(pFrames, profileP, { aligned: true, payload: true });
+    const pay = r18.error ? null : r18.emitters[0].payload;
+    const perRing = r18.error ? "" : r18.emitters[0].annuli.map(a => "L" + a.layer + ":" + (a.dropletsPassed ?? "—") + "/" + (a.dropletsTried ?? "—")).join("  ");
+    record("T18a payload: clean stream — pooled peel recovers \"" + payloadText + "\" (K=" + enc.K + ")",
+      !!(pay && pay.ok && pay.text === payloadText && pay.recovered === enc.K),
+      r18.error ? r18.error : ("droplets " + perRing + "  → " + JSON.stringify(pay && { ok: pay.ok, K: pay.K, rec: pay.recovered, text: pay.text })));
+
+    await tick("T18b: mid-loop payload capture (CRC alignment)…");
+    const mid = pFrames.slice(120).map((fr, i) => ({ f: i, img: fr.img }));
+    const r18b = OC.pipeline.decodeSequence(mid, profileP, { aligned: false, loopSeconds: 20, payload: true });
+    const payB = r18b.error ? null : r18b.emitters[0].payload;
+    const methB = r18b.error ? "" : r18b.emitters[0].annuli.map(a => "L" + a.layer + ":" + (a.alignMethod || a.error && "×")).join("  ");
+    record("T18b payload: mid-loop capture — CRC-pass alignment syncs without any reference stream, payload recovers",
+      !!(payB && payB.ok && payB.text === payloadText),
+      r18b.error ? r18b.error : (methB + "  → " + JSON.stringify(payB && { ok: payB.ok, rec: payB.recovered, text: payB.text })));
+
+    await tick("T18c: corrupted frames → droplet erasures, payload survives…");
+    const corr = pFrames.map((fr, i) => (i >= 60 && i < 84) ? { f: fr.f, img: pFrames[(i + 40) % 300].img } : fr);
+    const r18c = OC.pipeline.decodeSequence(corr, profileP, { aligned: true, payload: true });
+    const payC = r18c.error ? null : r18c.emitters[0].payload;
+    record("T18c payload: 24 corrupted frames — CRC8 rejects poisoned droplets, payload still exact",
+      !!(payC && payC.ok && payC.text === payloadText),
+      r18c.error ? r18c.error : JSON.stringify(payC && { ok: payC.ok, rec: payC.recovered, droplets: payC.droplets, text: payC.text }));
   }
 
   // Determinism spot-check: dtrig render of one frame is identical across two runs.
