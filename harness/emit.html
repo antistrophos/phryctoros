@@ -44,6 +44,13 @@
   <input id="payloadTxt" value="PHRYCTOROS CARRIES THE STORE" style="width:26rem" maxlength="1000">
   <span id="payloadInfo" class="dim"></span>
 </p>
+<p>
+  <label>rate <select id="rateSel">
+    <option value="15">15 fps — v2 (the banker)</option>
+    <option value="20">20 fps — v2r20 (+33%, stands on tear repair)</option>
+  </select></label>
+  <span class="dim">rewrites the profile JSON below; receiver must decode with the matching profile</span>
+</p>
 <details open><summary>Emission profile (JSON, editable)</summary>
   <textarea id="profileTxt"></textarea>
 </details>
@@ -66,6 +73,10 @@ const OC = window.OC;
 const $ = id => document.getElementById(id);
 let profile = OC.profile.defaultProfile();
 $("profileTxt").value = JSON.stringify(profile, null, 2);
+$("rateSel").onchange = () => {
+  profile = $("rateSel").value === "20" ? OC.profile.profileV2r20() : OC.profile.defaultProfile();
+  $("profileTxt").value = JSON.stringify(profile, null, 2);
+};
 let running = false, schedules = null, loopFrames = 0, t0 = 0, lastF = -1, fidCanvas = null;
 let drawn = 0, fpsWindow = [], ticker = null;
 

@@ -90,8 +90,9 @@ async function runClip(name) {
   const seek = t => new Promise(r => { v.onseeked = () => r(); v.currentTime = t; });
   const row = { clip: name, dur: +v.duration.toFixed(1), res: v.videoWidth + "×" + v.videoHeight };
 
-  const profile = (new URLSearchParams(location.search).get("profile") === "v1")
-    ? OC.profile.profileV1() : OC.profile.defaultProfile();
+  const pv = new URLSearchParams(location.search).get("profile");
+  const profile = pv === "v1" ? OC.profile.profileV1()
+    : pv === "v20" ? OC.profile.profileV2r20() : OC.profile.defaultProfile();
 
   // Pre-scan: registration + crop-union across probes, MULTI-SCALE (800 → 1600 →
   // native) — a zoomed/distant emitter invisible at 800 px can register at native.

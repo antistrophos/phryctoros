@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- single-file build 2026-08-14 — regenerate with build_standalone.py -->
+<!-- single-file build 2026-08-15 — regenerate with build_standalone.py -->
 
 <html lang="en">
 <head>
@@ -34,7 +34,7 @@
   <label>camera <select id="m_cam"><option>rear</option><option>front</option></select></label>
   <label>handheld <input id="m_hand" type="checkbox" checked></label>
   <label>emitter loop (s) <input id="m_loop" type="number" value="60" style="width:4rem"></label>
-  <label>profile <select id="m_prof"><option value="v2">v2 (current)</option><option value="v2p">v2 + payload (Phase 1)</option><option value="v1">v1 (legacy clips)</option></select></label>
+  <label>profile <select id="m_prof"><option value="v2">v2 (current)</option><option value="v2p">v2 + payload (Phase 1)</option><option value="v20">v2 @20 fps</option><option value="v20p">v2 @20 fps + payload</option><option value="v1">v1 (legacy clips)</option></select></label>
   <label>notes <input id="m_notes" style="width:12rem"></label>
 </fieldset>
 
@@ -499,7 +499,25 @@
     return p;
   }
 
-  var API = { defaultProfile: defaultProfile, profileV1: profileV1, validate: validate, sumAmp: sumAmp, sampleWindow: sampleWindow, deepMerge: deepMerge };
+  /* The 20 fps rate variant of v2 (walk-6 follow-on). Same geometry, same
+     rotation nominal_hz — the F1 flicker report is seconds-denominated, so it
+     is IDENTICAL to v2's — and the same frames_per_symbol, so the symbol rate
+     rises 3.75 → 5 sym/s (+33%) on every ring. 20 divides the 60 Hz refresh
+     (each frame holds exactly 3 vsyncs; 24 does not divide 60, which is why
+     20 goes first). Against 30 fps capture each emission frame gets 1.5 looks:
+     worst-phase cameras leave alternate frames with only a TORN look, so this
+     variant stands on F2 row-time repair where v2 stood on duplicate
+     selection. Slip margin improves (per-frame nominal advance shrinks 15/20). */
+  function profileV2r20(overrides) {
+    var p = defaultProfile();
+    p.profile_version = "phase0-v2r20";
+    p.frame_rate_hz = 20;
+    for (var i = 0; i < p.annuli.length; i++) p.annuli[i].rotation.rate_tier_fps = 20;
+    if (overrides) deepMerge(p, overrides);
+    return p;
+  }
+
+  var API = { defaultProfile: defaultProfile, profileV1: profileV1, profileV2r20: profileV2r20, validate: validate, sumAmp: sumAmp, sampleWindow: sampleWindow, deepMerge: deepMerge };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   global.OC = global.OC || {}; global.OC.profile = API;
 })(typeof window !== "undefined" ? window : globalThis);
@@ -1998,29 +2016,45 @@
       var dTp = Math.abs(wrap(tf.phiT - tf.p)), dBp = Math.abs(wrap(tf.phiB - tf.p));
       var hyps = [];
       if (refN) {
-        hyps.push({ spec: tf.specT, side: "top", d: dTp + minDist(tf.phiB, refN) });
-        hyps.push({ spec: tf.specB, side: "bot", d: dBp + minDist(tf.phiT, refN) });
+        hyps.push({ spec: tf.specT, side: "top", dPart: minDist(tf.phiB, refN), d: dTp });
+        hyps.push({ spec: tf.specB, side: "bot", dPart: minDist(tf.phiT, refN), d: dBp });
       }
       if (refP) {
-        hyps.push({ spec: tf.specB, side: "bot", d: dBp + minDist(tf.phiT, refP) });
-        hyps.push({ spec: tf.specT, side: "top", d: dTp + minDist(tf.phiB, refP) });
+        hyps.push({ spec: tf.specB, side: "bot", dPart: minDist(tf.phiT, refP), d: dBp });
+        hyps.push({ spec: tf.specT, side: "top", dPart: minDist(tf.phiB, refP), d: dTp });
       }
+      for (var hp = 0; hp < hyps.length; hp++) hyps[hp].d += hyps[hp].dPart;
       if (!hyps.length) { // no reference at all: prediction-only fallback
-        hyps.push({ spec: tf.specT, side: "top", d: 2 * dTp });
-        hyps.push({ spec: tf.specB, side: "bot", d: 2 * dBp });
+        hyps.push({ spec: tf.specT, side: "top", d: 2 * dTp, dPart: null });
+        hyps.push({ spec: tf.specB, side: "bot", d: 2 * dBp, dPart: null });
       }
       hyps.sort(function (a, b) { return a.d - b.d; });
       // Best must be clearly best against the top competitor CHOOSING THE
       // OTHER SIDE (same-side hypotheses differ only in partner direction) —
-      // AND small in absolute terms relative to the seam it claims to
-      // resolve. The absolute bound kills the degenerate case where an
-      // adjacent symbol's near-zero step makes instant f phase-identical to
-      // f∓1 and a wrong pairing scores well by accident: local evidence
-      // genuinely cannot label such a seam, and an honest invalidation
-      // (erasure) beats a coin-flip repair whose error is the full step.
+      // AND verified in absolute terms against the seam it claims to resolve.
+      // WHICH absolute bound depends on whether the partner evidence actually
+      // separates the sides. The partner term is measurement-vs-measurement
+      // (the claimed partner side against a neighbor's own fitted phase — the
+      // same emission instant, so it is tight whenever the pairing is true),
+      // while the own-vs-prediction term carries the active symbol's CPM data
+      // deviation (pred bridges by the NOMINAL step). Bounding the sum
+      // rejected every tear whose symbol carried a nonzero step — at 20 fps
+      // density that silently erased most of the stream (T19b), and it is why
+      // field discrim counts ran high. But the partner bound is only valid
+      // where the partner term DISCRIMINATES: inside a consecutive torn run
+      // BOTH sides match some neighbor's cached side (adjacent seams share
+      // instants), the partner gap collapses to zero, and accepting on it
+      // lets pass 1 commit prediction-ranked coin flips that poison the
+      // rebuilt track for pass 2 (measured: T13 repairs fell to 4). So:
+      // partner gap > 0.35·sep → bound the partner term; otherwise keep the
+      // strict sum bound — for ties and for prediction-only fallbacks alike,
+      // an honest invalidation beats a coin-flip repair.
       var rival = null;
       for (var hv = 1; hv < hyps.length; hv++) if (hyps[hv].side !== hyps[0].side) { rival = hyps[hv]; break; }
-      var clearWin = (!rival || hyps[0].d < discrim * rival.d) && hyps[0].d < 0.35 * sep;
+      var partnerSplits = rival && rival.dPart != null && hyps[0].dPart != null &&
+                          (rival.dPart - hyps[0].dPart) > 0.35 * sep;
+      var clearWin = (!rival || hyps[0].d < discrim * rival.d) &&
+                     (partnerSplits ? hyps[0].dPart < 0.35 * sep : hyps[0].d < 0.35 * sep);
       if (!clearWin) { stats.reasons.discrim++; invalidate(); continue; }
       e3.spec = hyps[0].spec;
       stats.repaired++;
@@ -3015,9 +3049,12 @@ const $ = id => document.getElementById(id);
 // The profile is the CONTRACT: v2 for new emissions, v1 for clips filmed before
 // the layer swap. The selector picks which mapping decodes.
 function currentProfile() {
-  return $("m_prof") && $("m_prof").value === "v1" ? OC.profile.profileV1() : OC.profile.defaultProfile();
+  const v = $("m_prof") ? $("m_prof").value : "v2";
+  if (v === "v1") return OC.profile.profileV1();
+  if (v === "v20" || v === "v20p") return OC.profile.profileV2r20();
+  return OC.profile.defaultProfile();
 }
-function payloadMode() { return $("m_prof") && $("m_prof").value === "v2p"; }
+function payloadMode() { const v = $("m_prof") && $("m_prof").value; return v === "v2p" || v === "v20p"; }
 const rows = [];
 let stream = null, capturing = false, camFrames = [], frameCounter = 0;
 

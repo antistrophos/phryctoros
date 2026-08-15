@@ -456,29 +456,45 @@
       var dTp = Math.abs(wrap(tf.phiT - tf.p)), dBp = Math.abs(wrap(tf.phiB - tf.p));
       var hyps = [];
       if (refN) {
-        hyps.push({ spec: tf.specT, side: "top", d: dTp + minDist(tf.phiB, refN) });
-        hyps.push({ spec: tf.specB, side: "bot", d: dBp + minDist(tf.phiT, refN) });
+        hyps.push({ spec: tf.specT, side: "top", dPart: minDist(tf.phiB, refN), d: dTp });
+        hyps.push({ spec: tf.specB, side: "bot", dPart: minDist(tf.phiT, refN), d: dBp });
       }
       if (refP) {
-        hyps.push({ spec: tf.specB, side: "bot", d: dBp + minDist(tf.phiT, refP) });
-        hyps.push({ spec: tf.specT, side: "top", d: dTp + minDist(tf.phiB, refP) });
+        hyps.push({ spec: tf.specB, side: "bot", dPart: minDist(tf.phiT, refP), d: dBp });
+        hyps.push({ spec: tf.specT, side: "top", dPart: minDist(tf.phiB, refP), d: dTp });
       }
+      for (var hp = 0; hp < hyps.length; hp++) hyps[hp].d += hyps[hp].dPart;
       if (!hyps.length) { // no reference at all: prediction-only fallback
-        hyps.push({ spec: tf.specT, side: "top", d: 2 * dTp });
-        hyps.push({ spec: tf.specB, side: "bot", d: 2 * dBp });
+        hyps.push({ spec: tf.specT, side: "top", d: 2 * dTp, dPart: null });
+        hyps.push({ spec: tf.specB, side: "bot", d: 2 * dBp, dPart: null });
       }
       hyps.sort(function (a, b) { return a.d - b.d; });
       // Best must be clearly best against the top competitor CHOOSING THE
       // OTHER SIDE (same-side hypotheses differ only in partner direction) —
-      // AND small in absolute terms relative to the seam it claims to
-      // resolve. The absolute bound kills the degenerate case where an
-      // adjacent symbol's near-zero step makes instant f phase-identical to
-      // f∓1 and a wrong pairing scores well by accident: local evidence
-      // genuinely cannot label such a seam, and an honest invalidation
-      // (erasure) beats a coin-flip repair whose error is the full step.
+      // AND verified in absolute terms against the seam it claims to resolve.
+      // WHICH absolute bound depends on whether the partner evidence actually
+      // separates the sides. The partner term is measurement-vs-measurement
+      // (the claimed partner side against a neighbor's own fitted phase — the
+      // same emission instant, so it is tight whenever the pairing is true),
+      // while the own-vs-prediction term carries the active symbol's CPM data
+      // deviation (pred bridges by the NOMINAL step). Bounding the sum
+      // rejected every tear whose symbol carried a nonzero step — at 20 fps
+      // density that silently erased most of the stream (T19b), and it is why
+      // field discrim counts ran high. But the partner bound is only valid
+      // where the partner term DISCRIMINATES: inside a consecutive torn run
+      // BOTH sides match some neighbor's cached side (adjacent seams share
+      // instants), the partner gap collapses to zero, and accepting on it
+      // lets pass 1 commit prediction-ranked coin flips that poison the
+      // rebuilt track for pass 2 (measured: T13 repairs fell to 4). So:
+      // partner gap > 0.35·sep → bound the partner term; otherwise keep the
+      // strict sum bound — for ties and for prediction-only fallbacks alike,
+      // an honest invalidation beats a coin-flip repair.
       var rival = null;
       for (var hv = 1; hv < hyps.length; hv++) if (hyps[hv].side !== hyps[0].side) { rival = hyps[hv]; break; }
-      var clearWin = (!rival || hyps[0].d < discrim * rival.d) && hyps[0].d < 0.35 * sep;
+      var partnerSplits = rival && rival.dPart != null && hyps[0].dPart != null &&
+                          (rival.dPart - hyps[0].dPart) > 0.35 * sep;
+      var clearWin = (!rival || hyps[0].d < discrim * rival.d) &&
+                     (partnerSplits ? hyps[0].dPart < 0.35 * sep : hyps[0].d < 0.35 * sep);
       if (!clearWin) { stats.reasons.discrim++; invalidate(); continue; }
       e3.spec = hyps[0].spec;
       stats.repaired++;

@@ -168,7 +168,25 @@
     return p;
   }
 
-  var API = { defaultProfile: defaultProfile, profileV1: profileV1, validate: validate, sumAmp: sumAmp, sampleWindow: sampleWindow, deepMerge: deepMerge };
+  /* The 20 fps rate variant of v2 (walk-6 follow-on). Same geometry, same
+     rotation nominal_hz — the F1 flicker report is seconds-denominated, so it
+     is IDENTICAL to v2's — and the same frames_per_symbol, so the symbol rate
+     rises 3.75 → 5 sym/s (+33%) on every ring. 20 divides the 60 Hz refresh
+     (each frame holds exactly 3 vsyncs; 24 does not divide 60, which is why
+     20 goes first). Against 30 fps capture each emission frame gets 1.5 looks:
+     worst-phase cameras leave alternate frames with only a TORN look, so this
+     variant stands on F2 row-time repair where v2 stood on duplicate
+     selection. Slip margin improves (per-frame nominal advance shrinks 15/20). */
+  function profileV2r20(overrides) {
+    var p = defaultProfile();
+    p.profile_version = "phase0-v2r20";
+    p.frame_rate_hz = 20;
+    for (var i = 0; i < p.annuli.length; i++) p.annuli[i].rotation.rate_tier_fps = 20;
+    if (overrides) deepMerge(p, overrides);
+    return p;
+  }
+
+  var API = { defaultProfile: defaultProfile, profileV1: profileV1, profileV2r20: profileV2r20, validate: validate, sumAmp: sumAmp, sampleWindow: sampleWindow, deepMerge: deepMerge };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   global.OC = global.OC || {}; global.OC.profile = API;
 })(typeof window !== "undefined" ? window : globalThis);
