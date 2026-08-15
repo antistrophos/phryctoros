@@ -16,7 +16,7 @@
 <div id="status" class="dim">loading…</div>
 <table id="tbl"><tr>
   <th>clip</th><th>dur</th><th>src res</th><th>pre-scan reg</th><th>fiducial px (crop)</th>
-  <th>a0 (L0)</th><th>a1 (L1)</th><th>a2 (L2)</th>
+  <th>a0 (L0)</th><th>a1 (L1)</th><th>a2 (L2)</th><th>payload</th>
 </tr></table>
 <pre id="json">(pending)</pre>
 
@@ -41,6 +41,8 @@
 const OC = window.OC;
 const $ = id => document.getElementById(id);
 const rows = [];
+const PAYLOAD = new URLSearchParams(location.search).get("payload") === "1";
+const esc = s => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
 function lumFrom(ctx, w, h) {
   const d = ctx.getImageData(0, 0, w, h).data;
@@ -58,10 +60,25 @@ function cell(a) {
       ("no lock (carrier " + a.carrierRatio + "×)");
     return "<td class='bad'>" + short + "</td>";
   }
+  if (a.dropletsPassed != null) {
+    const cls = a.dropletsPassed > 0 ? "ok" : "warn";
+    return "<td class='" + cls + "'>" + a.dropletsPassed + "/" + a.dropletsTried + " droplets" +
+      " <span class='dim'>(" + a.alignMethod + " lag " + a.alignLag + ", car " + a.carrierRatio + "×)</span></td>";
+  }
   const cls = a.ok ? "ok" : "warn";
   return "<td class='" + cls + "'>" + (a.ok ? "DECODES" : "SER " + a.ser) +
     " <span class='dim'>(err " + a.errors + "/" + a.compared + ", eras " + a.erasures +
     ", " + a.alignMethod + " lag " + a.alignLag + ", car " + a.carrierRatio + "×)</span></td>";
+}
+
+function payloadCell(row) {
+  if (!row.annuli) return "<td class='dim'>—</td>";
+  if (!row.payload) return "<td class='dim'>(reference mode)</td>";
+  const p = row.payload;
+  if (p.ok) return "<td class='ok'>RECOVERED “" + esc(p.text) + "” <span class='dim'>(" +
+    p.recovered + "/" + p.K + " blocks from " + p.droplets + " droplets)</span></td>";
+  return "<td class='warn'>" + esc(p.reason) + " <span class='dim'>(" + (p.recovered || 0) + "/" + (p.K || "?") +
+    " blocks, " + (p.droplets != null ? p.droplets : (p.got || 0)) + " droplets)</span></td>";
 }
 
 async function runClip(name) {
@@ -131,14 +148,17 @@ async function runClip(name) {
   }
   $("status").textContent = name + ": decoding " + frames.length + " frames…";
   await new Promise(r => setTimeout(r, 10));
-  const res = OC.pipeline.decodeSequence(frames, profile, { aligned: false, loopSeconds: 60, handheld: true });
+  const res = OC.pipeline.decodeSequence(frames, profile, { aligned: false, loopSeconds: 60, handheld: true, payload: PAYLOAD });
   if (res.error) { row.error = res.error; row.annuli = null; }
   else {
     row.fidPx = res.emitters[0].fiducialWidthPx;
+    row.method = res.emitters[0].method;
+    row.payload = res.emitters[0].payload || null;
     row.annuli = res.emitters[0].annuli.map(a => ({
       annulus: a.annulus, layer: a.layer, present: a.present, ok: a.ok || false, ser: a.ser, errors: a.errors,
       compared: a.compared, erasures: a.erasures, alignMethod: a.alignMethod, alignLag: a.alignLag,
       carrierRatio: a.carrierRatio, error: a.error || null, snr: a.snr_db || null, contrast: a.contrast,
+      dropletsPassed: a.dropletsPassed, dropletsTried: a.dropletsTried, droplets: a.droplets,
       tear: a.tear || null
     }));
   }
@@ -155,8 +175,11 @@ async function main() {
     rows.push(row);
     const tr = document.createElement("tr");
     tr.innerHTML = "<td>" + row.clip + "</td><td>" + (row.dur || "—") + "</td><td>" + (row.res || "—") +
-      "</td><td>" + (row.preScanHits || "—") + "</td><td>" + (row.fidPx ? row.fidPx : (row.error ? "<span class='bad'>" + row.error + "</span>" : "—")) + "</td>" +
-      (row.annuli ? row.annuli.map(cell).join("") : "<td colspan='3' class='bad'>" + (row.error || "no decode") + "</td>");
+      "</td><td>" + (row.preScanHits || "—") + "</td><td>" +
+      (row.fidPx ? (row.fidPx + (row.method === "rings" ? " <span class='dim'>(ring-reg)</span>" : "")) :
+        (row.error ? "<span class='bad'>" + row.error + "</span>" : "—")) + "</td>" +
+      (row.annuli ? row.annuli.map(cell).join("") + payloadCell(row)
+                  : "<td colspan='4' class='bad'>" + (row.error || "no decode") + "</td>");
     $("tbl").appendChild(tr);
     $("json").textContent = JSON.stringify({ done: false, rows }, null, 1);
   }
