@@ -46,10 +46,11 @@
 </p>
 <p>
   <label>rate <select id="rateSel">
-    <option value="15">15 fps — v2 (the banker)</option>
-    <option value="20">20 fps — v2r20 (+33%, stands on tear repair)</option>
+    <option value="15">15 fps — v2 (the banker; film at 30 fps)</option>
+    <option value="20">20 fps — v2r20 (+33%; film at 30 fps, leans on tear repair)</option>
+    <option value="30">30 fps — v2r30 (+100%; MUST film at 60 fps — 2 looks/frame)</option>
   </select></label>
-  <span class="dim">rewrites the profile JSON below; receiver must decode with the matching profile</span>
+  <span class="dim">rewrites the profile JSON below; receiver must decode with the matching profile AND capture fps</span>
 </p>
 <details open><summary>Emission profile (JSON, editable)</summary>
   <textarea id="profileTxt"></textarea>
@@ -74,7 +75,9 @@ const $ = id => document.getElementById(id);
 let profile = OC.profile.defaultProfile();
 $("profileTxt").value = JSON.stringify(profile, null, 2);
 $("rateSel").onchange = () => {
-  profile = $("rateSel").value === "20" ? OC.profile.profileV2r20() : OC.profile.defaultProfile();
+  const v = $("rateSel").value;
+  profile = v === "30" ? OC.profile.profileV2r30()
+    : v === "20" ? OC.profile.profileV2r20() : OC.profile.defaultProfile();
   $("profileTxt").value = JSON.stringify(profile, null, 2);
 };
 let running = false, schedules = null, loopFrames = 0, t0 = 0, lastF = -1, fidCanvas = null;

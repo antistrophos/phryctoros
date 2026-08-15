@@ -186,7 +186,26 @@
     return p;
   }
 
-  var API = { defaultProfile: defaultProfile, profileV1: profileV1, profileV2r20: profileV2r20, validate: validate, sumAmp: sumAmp, sampleWindow: sampleWindow, deepMerge: deepMerge };
+  /* The 30 fps rate variant — REQUIRES 60 fps capture (the 24 fps design
+     note's condition, satisfied the clean way): 60/30 = the exact 2-looks-
+     per-frame geometry the proven 15@30 tear defense was designed around,
+     with duplicate SELECTION carrying tears again (rowtime stays backstop).
+     Same nominal_hz (flicker identical), same frames_per_symbol → symbol
+     rate 3.75 → 7.5 sym/s (+100% on every ring, droplet rate included);
+     slip margin improves further (L0 per-frame advance 81° → 63°). 30
+     divides the 60 Hz refresh (2 vsyncs/frame). Costs are capture-side and
+     physical: 1/60 s exposure halves per-frame light, 60 fps halves
+     per-frame codec bitrate — film LIT and well-framed. */
+  function profileV2r30(overrides) {
+    var p = defaultProfile();
+    p.profile_version = "phase0-v2r30";
+    p.frame_rate_hz = 30;
+    for (var i = 0; i < p.annuli.length; i++) p.annuli[i].rotation.rate_tier_fps = 30;
+    if (overrides) deepMerge(p, overrides);
+    return p;
+  }
+
+  var API = { defaultProfile: defaultProfile, profileV1: profileV1, profileV2r20: profileV2r20, profileV2r30: profileV2r30, validate: validate, sumAmp: sumAmp, sampleWindow: sampleWindow, deepMerge: deepMerge };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   global.OC = global.OC || {}; global.OC.profile = API;
 })(typeof window !== "undefined" ? window : globalThis);

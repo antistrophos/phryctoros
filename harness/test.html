@@ -672,6 +672,72 @@ async function main() {
       r19c.error ? r19c.error : JSON.stringify(pay19 && { ok: pay19.ok, rec: pay19.recovered, text: pay19.text }));
   }
 
+  // T20 — the 30 fps rate variant (v2r30, +100% symbol rate): REQUIRES 60 fps
+  // capture, which restores the exact 2-looks-per-frame geometry the proven
+  // 15@30 tear defense was designed around — duplicate SELECTION carries the
+  // tears again (rowtime stays backstop). 30 divides the 60 Hz refresh
+  // (2 vsyncs/frame); flicker is unchanged (rotation is Hz-denominated).
+  await tick("T20: 30 fps variant — rendering v2r30 stream…");
+  {
+    const p30 = OC.profile.profileV2r30({
+      render: { size_px: 768, scale_px_per_unit: 124 },
+      preamble_symbols: 4
+    });
+    const v30 = OC.profile.validate(p30);
+    record("T20 v2r30 profile validates (slip margin improves again, flicker unchanged)", v30.ok,
+      v30.errors.join("; ") || (v30.warnings.length + " warnings"));
+    const seq30 = OC.emission.renderSequence(p30, 76, {});
+    const c30 = seq30.frames;
+
+    await tick("T20a: v2r30 clean round trip…");
+    const r20a = OC.pipeline.decodeSequence(c30.slice(0, 72).map((fr, i) => ({ f: i, img: fr.img })), p30, { aligned: true });
+    let okA30 = true;
+    const detA30 = [0, 1, 2].map(L => {
+      const A = layerResult(r20a, 0, L);
+      if (!(A.present && A.ser === 0)) okA30 = false;
+      return "L" + L + ":" + fmt(A);
+    }).join("  ");
+    record("T20a v2r30 clean round trip: SER==0 on all three annuli at 30 fps", okA30, detA30);
+
+    await tick("T20b: 30@60 capture — 100% torn-duplicate pollution…");
+    // The T12 geometry at the doubled rate: every emission frame arrives as a
+    // clean look + a torn composite (rolling shutter straddling the update),
+    // in random order. Selection must keep the clean one, per ring, per frame.
+    const rng30 = OC.prng.mulberry32(303060);
+    const dup30 = [];
+    for (let f = 0; f < 72; f++) {
+      const clean = { f, img: c30[f].img };
+      const row = Math.floor(c30[f].img.h * (0.2 + 0.6 * rng30()));
+      const torn = { f, img: OC.degrade.tearComposite(c30[f].img, c30[f + 1].img, row) };
+      if (rng30() < 0.5) { dup30.push(torn); dup30.push(clean); } else { dup30.push(clean); dup30.push(torn); }
+    }
+    const r20b = OC.pipeline.decodeSequence(dup30, p30, { aligned: true });
+    const bars30 = [{ ser: 0, eras: 1 }, { ser: 0.08, eras: 2 }, { ser: 0.17, eras: 4 }];
+    let okB30 = true;
+    const detB30 = [0, 1, 2].map(L => {
+      const A = layerResult(r20b, 0, L);
+      if (!(A.present && A.ser <= bars30[L].ser && A.erasures <= bars30[L].eras)) okB30 = false;
+      return "L" + L + ":" + fmt(A);
+    }).join("  ");
+    record("T20b 30@60 tear defense: 100% torn-duplicate pollution — layer0 clean, enhancement layers within T12's layer-scaled bars",
+      okB30, detB30);
+
+    await tick("T20c: payload carriage at 30 fps…");
+    const p30p = OC.profile.profileV2r30({
+      render: { size_px: 768, scale_px_per_unit: 124 },
+      preamble_symbols: 4,
+      carriage: { droplet_bits: 24 }
+    });
+    const text20 = "PHAROS!";
+    const enc20 = OC.fountain.encodeCarousels(p30p, OC.fountain.textToBytes(text20));
+    const seq20p = OC.emission.renderSequence(p30p, 300, { carousels: enc20.carousels });
+    const r20c = OC.pipeline.decodeSequence(seq20p.frames.map((fr, i) => ({ f: i, img: fr.img })), p30p, { aligned: true, payload: true });
+    const pay20 = r20c.error ? null : r20c.emitters[0].payload;
+    record("T20c payload at 30 fps: pooled peel recovers \"" + text20 + "\" (300 frames = 10 s at the new rate)",
+      !!(pay20 && pay20.ok && pay20.text === text20),
+      r20c.error ? r20c.error : JSON.stringify(pay20 && { ok: pay20.ok, rec: pay20.recovered, text: pay20.text }));
+  }
+
   // Determinism spot-check: dtrig render of one frame is identical across two runs.
   await tick("determinism: dtrig double-render…");
   {

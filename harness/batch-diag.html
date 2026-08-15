@@ -90,9 +90,17 @@ async function runClip(name) {
   const seek = t => new Promise(r => { v.onseeked = () => r(); v.currentTime = t; });
   const row = { clip: name, dur: +v.duration.toFixed(1), res: v.videoWidth + "×" + v.videoHeight };
 
-  const pv = new URLSearchParams(location.search).get("profile");
+  const qs = new URLSearchParams(location.search);
+  const pv = qs.get("profile");
   const profile = pv === "v1" ? OC.profile.profileV1()
-    : pv === "v20" ? OC.profile.profileV2r20() : OC.profile.defaultProfile();
+    : pv === "v20" ? OC.profile.profileV2r20()
+    : pv === "v30" ? OC.profile.profileV2r30() : OC.profile.defaultProfile();
+  // capfps: the SEEK cadence — must match the clip's recording rate (a 60 fps
+  // clip stepped at 1/30 silently drops every other camera frame). anw: the
+  // analysis-crop width cap — raise to 2048 for 4K sources to keep module
+  // resolution instead of downscaling it away.
+  const capFps = +qs.get("capfps") || 30;
+  const ANW = +qs.get("anw") || 1024;
 
   // Pre-scan: registration + crop-union across probes, MULTI-SCALE (800 → 1600 →
   // native) — a zoomed/distant emitter invisible at 800 px can register at native.
@@ -130,13 +138,13 @@ async function runClip(name) {
   }
   const c = document.createElement("canvas");
   const ctx = c.getContext("2d", { willReadFrequently: true });
-  const W = Math.min(1024, sw), H = Math.round(sh * W / sw);
+  const W = Math.min(ANW, sw), H = Math.round(sh * W / sw);
   c.width = W; c.height = H;
 
   const fps = profile.frame_rate_hz;
   const frames = []; const perIdx = {};
   for (let i = 0; ; i++) {
-    const t = i / 30;
+    const t = i / capFps;
     if (t >= v.duration - 0.05) break;
     await seek(t);
     const idx = Math.round(t * fps);
