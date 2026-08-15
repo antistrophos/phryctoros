@@ -35,6 +35,7 @@ software loop the field harness sits on.</p>
 <script src="../src/emission.js"></script>
 <script src="../src/register.js"></script>
 <script src="../src/sample.js"></script>
+<script src="../src/conic.js"></script>
 <script src="../src/transform.js"></script>
 <script src="../src/separate.js"></script>
 <script src="../src/rowtime.js"></script>
@@ -736,6 +737,84 @@ async function main() {
     record("T20c payload at 30 fps: pooled peel recovers \"" + text20 + "\" (300 frames = 10 s at the new rate)",
       !!(pay20 && pay20.ok && pay20.text === text20),
       r20c.error ? r20c.error : JSON.stringify(pay20 && { ok: pay20.ok, rec: pay20.recovered, text: pay20.text }));
+  }
+
+  // T21 — the ellipse correction (conic.js). A camera off the screen normal
+  // leaves every ring's presumed circle on an ELLIPSE registration didn't
+  // absorb: the ring fallback is a similarity by design, and the finder
+  // affine is fit to the tiny central fiducial while perspective divergence
+  // grows with radius. The static k=2 lands ON a data harmonic and beats
+  // against the rotating modulation — the walk-7/8 outer-ring wreckage
+  // (carriers above AND below nominal, outermost first: the tilt term grows
+  // as e·r0, data amplitudes stay flat). Geometry here: register on the
+  // UNWARPED frame (a perfect similarity with zero knowledge of the warp —
+  // the ring-reg field case, fully deterministic), then decode frames warped
+  // by an area-preserving 20° tilt proxy (area-preserving because real
+  // registration measures scale from the warped rings themselves; only the
+  // RATIO survives as residual).
+  await tick("T21: ellipse correction — rendering + warping the tilt stream…");
+  {
+    const p21 = OC.profile.defaultProfile({
+      render: { size_px: 768, scale_px_per_unit: 124 },
+      preamble_symbols: 4
+    });
+    const seq21 = OC.emission.renderSequence(p21, 152, {});
+    const tau = 20 * Math.PI / 180, al = 30 * Math.PI / 180;
+    const ca = Math.cos(al), sa = Math.sin(al);
+    const s1 = 1 / Math.sqrt(Math.cos(tau)), s2 = Math.sqrt(Math.cos(tau));
+    const M21 = [ca * ca * s1 + sa * sa * s2, ca * sa * (s1 - s2),
+                 ca * sa * (s1 - s2), sa * sa * s1 + ca * ca * s2];
+    const warped = seq21.frames.map((fr, i) => ({ f: i, img: OC.degrade.warpAffine(fr.img, M21) }));
+    const regClean = seq21.frames[0].img;
+
+    await tick("T21: decoding WITHOUT the correction (must break)…");
+    const rOff = OC.pipeline.decodeSequence(warped, p21, { aligned: true, registerOn: regClean, conic: false });
+    const brokeDet = rOff.error ? rOff.error :
+      [0, 1, 2].map(L => "L" + L + ":" + fmt(layerResult(rOff, 0, L))).join("  ");
+    const A0off = rOff.error ? null : layerResult(rOff, 0, 0);
+    const broke = !!rOff.error || !A0off || !A0off.present || !!A0off.error ||
+      (typeof A0off.ser === "number" && A0off.ser > 0.05);
+    record("T21 without correction: 20° tilt residual under similarity registration wrecks the outer base ring (static k=2 ≈ 2× the data amplitude)",
+      broke, brokeDet);
+
+    await tick("T21: decoding WITH the correction…");
+    const rOn = OC.pipeline.decodeSequence(warped, p21, { aligned: true, registerOn: regClean });
+    const con = rOn.error ? null : rOn.emitters[0].conic;
+    let okOn = !rOn.error;
+    const detOn = rOn.error ? rOn.error : [0, 1, 2].map(L => {
+      const A = layerResult(rOn, 0, L);
+      if (!(A.present && A.ser === 0)) okOn = false;
+      return "L" + L + ":" + fmt(A);
+    }).join("  ");
+    const tiltOk = !!(con && con.applied && Math.abs(con.tiltDeg - 20) <= 6);
+    record("T21 with correction: gate trips, fitted tilt ≈ 20°, ONE composed affine restores SER==0 on all three annuli",
+      okOn && tiltOk,
+      detOn + "  conic " + JSON.stringify(con));
+  }
+
+  // T21b — the self-gate: on a clean capture the fitted k=2 sits under the
+  // noise floor, A stays the EXACT identity, and the decode is byte-identical
+  // to a run with the module disabled — no branch doubling, no thresholds
+  // tuned on synthetics (the criterion-hunt lesson made structural).
+  await tick("T21b: no tilt — gate stays closed, decode byte-identical…");
+  {
+    const p21b = OC.profile.defaultProfile({
+      render: { size_px: 768, scale_px_per_unit: 124 },
+      preamble_symbols: 4
+    });
+    const seqB = OC.emission.renderSequence(p21b, 72, {});
+    const frB = seqB.frames.map((f2, i) => ({ f: i, img: f2.img }));
+    const rA = OC.pipeline.decodeSequence(frB, p21b, { aligned: true });
+    const rB = OC.pipeline.decodeSequence(frB, p21b, { aligned: true, conic: false });
+    const conB = rA.error ? null : rA.emitters[0].conic;
+    const identical = !rA.error && !rB.error &&
+      JSON.stringify(rA.emitters[0].annuli) === JSON.stringify(rB.emitters[0].annuli);
+    const cleanOk = !rA.error && [0, 1, 2].every(L => {
+      const A = layerResult(rA, 0, L); return A.present && A.ser === 0;
+    });
+    record("T21b clean capture: fitted k2 under the self-gating floor, applied:false, annuli byte-identical with the module off",
+      !!(conB && conB.applied === false && identical && cleanOk),
+      (conB ? "conic " + JSON.stringify(conB) : "no diag") + "  identical:" + identical);
   }
 
   // Determinism spot-check: dtrig render of one frame is identical across two runs.

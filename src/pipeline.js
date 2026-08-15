@@ -79,6 +79,29 @@
         for (var ej = 0; ej < tracksH.length; ej++) tracksH[ej].Hs[fj] = emitters[ej].H;
     }
 
+    // Static-geometry correction (conic.js): a camera off the screen normal
+    // leaves each ring's presumed circle on an ellipse registration didn't
+    // absorb, and k=1/k=2 are DATA harmonics — the walk-7/8 outer-ring
+    // wreckage. Estimate the static k≤2 from frame-averaged boundaries and
+    // fold it into every per-frame H as ONE composition; everything below
+    // samples through applyH and inherits the fix. Self-gated: below the
+    // fit's own noise floor A stays the exact identity and this block
+    // changes nothing (no branch doubling — the criterion-hunt lesson).
+    var conicBriefs = null;
+    if (opts.conic !== false) {
+      var conicM = dep("conic");
+      conicBriefs = emitters.map(function (_, ce) {
+        var est = conicM.estimateStatic(groups, tracksH[ce].Hs, profile, opts.conicOpts);
+        if (est.applied) {
+          var HsC = tracksH[ce].Hs;
+          for (var ch = 0; ch < HsC.length; ch++) HsC[ch] = conicM.compose(HsC[ch], est.A);
+        }
+        var brief = {};
+        for (var bk in est) if (bk !== "A") brief[bk] = est[bk];
+        return brief;
+      });
+    }
+
     var results = emitters.map(function (em, emIdx) {
       var annuli = profile.annuli.map(function (a) {
         var kmax = Math.max.apply(null, a.boundary.harmonics) + 4;
@@ -271,7 +294,8 @@
         if (payload && payload.bytes) payload.hex = toHex(payload.bytes);
         if (payload) delete payload.bytes;
       }
-      return { fiducialWidthPx: Math.round(em.fiducialWidthPx * 10) / 10, method: em.method || "finder", annuli: annuli, payload: payload };
+      return { fiducialWidthPx: Math.round(em.fiducialWidthPx * 10) / 10, method: em.method || "finder",
+               conic: conicBriefs ? conicBriefs[emIdx] : undefined, annuli: annuli, payload: payload };
     });
 
     return { emitters: results, emitterCount: emitters.length, regFrame: regFrame };

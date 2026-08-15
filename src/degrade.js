@@ -72,6 +72,25 @@
     return out;
   }
 
+  /* Affine warp about the image centre (inverse-mapped, bilinear) — the tilt
+     proxy for the ellipse-correction suite: a camera off the screen normal
+     sees the emission's circles as ellipses. m = [a, b, c, d] is the FORWARD
+     linear map [[a, b], [c, d]] applied about the centre. */
+  function warpAffine(img, m) {
+    var a = m[0], b = m[1], c = m[2], d = m[3];
+    var det = a * d - b * c;
+    var ia = d / det, ib = -b / det, ic = -c / det, id = a / det;
+    var cx = img.w / 2, cy = img.h / 2;
+    var out = { w: img.w, h: img.h, data: new Float32Array(img.w * img.h) };
+    var g = G();
+    for (var y = 0; y < img.h; y++) for (var x = 0; x < img.w; x++) {
+      var dx = x + 0.5 - cx, dy = y + 0.5 - cy;
+      var sx = cx + ia * dx + ib * dy - 0.5, sy = cy + ic * dx + id * dy - 0.5;
+      out.data[y * img.w + x] = (sx < 0 || sy < 0 || sx > img.w - 1 || sy > img.h - 1) ? img.data[0] : g.bilinear(img, sx, sy);
+    }
+    return out;
+  }
+
   /* Exposure/white-balance ramp: gain and offset (C2 witness — must have no effect). */
   function exposure(img, gain, offset) {
     var out = clone(img);
@@ -124,7 +143,7 @@
     return s;
   }
 
-  var API = { clone: clone, blur: blur, addNoise: addNoise, flipH: flipH, rotate: rotate, exposure: exposure, resample: resample, composite2: composite2, tearComposite: tearComposite, dropSet: dropSet };
+  var API = { clone: clone, blur: blur, addNoise: addNoise, flipH: flipH, rotate: rotate, warpAffine: warpAffine, exposure: exposure, resample: resample, composite2: composite2, tearComposite: tearComposite, dropSet: dropSet };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   global.OC = global.OC || {}; global.OC.degrade = API;
 })(typeof window !== "undefined" ? window : globalThis);

@@ -28,6 +28,7 @@
 <script src="../src/emission.js"></script>
 <script src="../src/register.js"></script>
 <script src="../src/sample.js"></script>
+<script src="../src/conic.js"></script>
 <script src="../src/transform.js"></script>
 <script src="../src/separate.js"></script>
 <script src="../src/rowtime.js"></script>
@@ -162,6 +163,7 @@ async function runClip(name) {
   else {
     row.fidPx = res.emitters[0].fiducialWidthPx;
     row.method = res.emitters[0].method;
+    row.conic = res.emitters[0].conic || null;
     row.payload = res.emitters[0].payload || null;
     row.annuli = res.emitters[0].annuli.map(a => ({
       annulus: a.annulus, layer: a.layer, present: a.present, ok: a.ok || false, ser: a.ser, errors: a.errors,
@@ -185,7 +187,9 @@ async function main() {
     const tr = document.createElement("tr");
     tr.innerHTML = "<td>" + row.clip + "</td><td>" + (row.dur || "—") + "</td><td>" + (row.res || "—") +
       "</td><td>" + (row.preScanHits || "—") + "</td><td>" +
-      (row.fidPx ? (row.fidPx + (row.method === "rings" ? " <span class='dim'>(ring-reg)</span>" : "")) :
+      (row.fidPx ? (row.fidPx + (row.method === "rings" ? " <span class='dim'>(ring-reg)</span>" : "") +
+        (row.conic ? (row.conic.applied ? " <span class='warn'>(tilt " + row.conic.tiltDeg + "° corrected)</span>"
+                                        : " <span class='dim'>(k2 " + row.conic.k2 + " under floor " + row.conic.floor + ")</span>") : "")) :
         (row.error ? "<span class='bad'>" + row.error + "</span>" : "—")) + "</td>" +
       (row.annuli ? row.annuli.map(cell).join("") + payloadCell(row)
                   : "<td colspan='4' class='bad'>" + (row.error || "no decode") + "</td>");
