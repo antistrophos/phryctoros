@@ -5332,12 +5332,17 @@ async function harvestDecode(v, geo, file) {
     for (const k in locks) { const h = HV.predictLag(locks[k], cap.fBase); if (h) hints[k] = h; }
     setStatus("harvest w" + wrun + ": decoding " + cap.frames.length + " frames" +
       (getWorker() ? " (off-thread)" : "") + "…", "warn");
+    const isV3h = !!(profile.bands && profile.plate);
     const res = await decodeAsync(cap.frames, profile, {
       aligned: false, handheld: $("m_hand").checked,
       loopSeconds: +$("m_loop").value || 60,
       mirror: { receive: false },
-      maxEmitters: (profile.bands && profile.plate) ? 6 : 4,
-      payload: true, alignHints: hints
+      maxEmitters: isV3h ? 6 : 4,
+      payload: true, alignHints: hints,
+      // the per-frame solve was wired into the plain path only — the harvest
+      // (where angled captures actually live) never got it; field 1-up run
+      // showed the cost: k1 SNR +7 dB over the ladder, zero CRC passes
+      plateSolve: isV3h && $("m_solve").checked
     });
     let line = "w" + wrun + " [" + (wf0 / R).toFixed(1) + "–" + (wf1 / R).toFixed(1) + " s] " + cap.seeks + " seeks";
     let lockedAny = false;
