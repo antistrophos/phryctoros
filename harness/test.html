@@ -1357,6 +1357,7 @@ async function main() {
       emS ? "solved " + emS.plateSolve.solved + "/" + emS.plateSolve.frames + " resid " + emS.plateSolve.meanResidPx +
             "px droplets " + dropsB + " (static " + dropsA + ") → " + JSON.stringify(payS && { ok: payS.ok, text: (payS.text || "").slice(0, 10) + "…" })
           : "no emitter");
+    v3seq = null; v3res = null; // ~1.3 GB of frames — release before the T23 renders (the batch-diag heap lesson)
   }
 
   await tick("T22i: beacon round-trip — the control channel through the standard chain…");
@@ -1385,6 +1386,73 @@ async function main() {
     record("T22j auto-detect: resilient decode of a high-rate emission scores ~0 CRC passes, the high-rate pass clears the ≥2 bar, verdict = high-rate",
       auto.preset === "high-rate" && auto.passes >= 2,
       "preset " + auto.preset + " passes " + auto.passes);
+  }
+
+  // ——— T23: tiling (§7) — the density knob, tile identity, the cross-tile pool ———
+  await tick("T23a: 6-up render geometry (designated tile, gutter vertices, per-tile gauge)…");
+  {
+    // Reduced scale: geometry probes need no decode headroom.
+    const p6 = OC.profile.profileV3(undefined, { tiling: 6, render: { scale_px_per_unit: 60 } });
+    const v6 = OC.profile.validate(p6);
+    const img = OC.emission.renderFrame(p6, 0, {});
+    const sc = 60, pitch = 7.2;
+    const at = (xu, yu) => img.data[Math.round(yu * sc - 0.5) * img.w + Math.round(xu * sc - 0.5)];
+    const c0x = 0.5 * pitch, c1x = 1.5 * pitch, cy = 0.5 * pitch;
+    const c5x = 2.5 * pitch, c5y = 1.5 * pitch;
+    const probes = [
+      { v: at(c0x + 0.75, cy), want: p6.plate.shade, name: "tile0 breaker" },
+      { v: at(c1x + 0.75, cy), want: p6.render.background, name: "tile1 no-breaker" },
+      { v: at(c1x, cy), want: p6.plate.shade, name: "tile1 center disc" },
+      { v: at(pitch, pitch), want: p6.plate.shade, name: "gutter vertex disc" },
+      { v: at(pitch, 0.5 * pitch), want: p6.render.background, name: "gutter midline" }
+    ];
+    const bad = probes.filter(pr => Math.abs(pr.v - pr.want) > 0.03);
+    // per-tile flat gauge on the far tile (5): local +x crossing at 3.00
+    let cross = null, prev = null;
+    for (let ru = 2.90; ru <= 3.10; ru += 0.004) {
+      const v = at(c5x + ru, c5y);
+      if (prev !== null && prev < 0.47 && v >= 0.47) { cross = ru; break; }
+      prev = v;
+    }
+    record("T23a 6-up: validates, canvas 3×2·pitch, breaker on tile 0 ONLY, gutter-vertex bullseye present, tile-5 flat gauge at 3.00",
+      v6.ok && img.w === Math.round(3 * pitch * sc) && img.h === Math.round(2 * pitch * sc) &&
+      bad.length === 0 && cross !== null && Math.abs(cross - 3.00) < 0.04,
+      (v6.ok ? "" : v6.errors[0] + " | ") + img.w + "×" + img.h +
+      (bad.length ? " bad: " + bad.map(b => b.name + "=" + b.v.toFixed(3)).join(" ") : " 5 probes ok") +
+      " gauge " + (cross && cross.toFixed(3)));
+  }
+
+  await tick("T23b: 6-up registration — six tiles, one designated…");
+  {
+    const p6 = OC.profile.profileV3(undefined, { tiling: 6, render: { scale_px_per_unit: 60 } });
+    const img = OC.emission.renderFrame(p6, 0, {});
+    const reg = OC.register.registerAll(img, { profile: p6, maxEmitters: 6 });
+    let breakers = 0;
+    for (const em of reg.emitters) {
+      const b = OC.plate.findBullseye(img, em.H, 0, 0, p6.plate.center.r_out, { breaker: p6.plate.breaker });
+      if (b && b.breaker) breakers++;
+    }
+    record("T23b 6-up registration: ring path finds 6 tiles, exactly one carries the breaker (the count asymmetry = tile identity)",
+      reg.emitters.length === 6 && breakers === 1,
+      reg.emitters.length + " emitters (method " + (reg.method || "finder") + "), " + breakers + " breaker(s)");
+  }
+
+  await tick("T23c: 2-up pooled optical decode — one peel over two tile-seeded carousels…");
+  {
+    const p2 = OC.profile.profileV3(undefined, { tiling: 2, render: { scale_px_per_unit: 100 } });
+    const msg2 = "V3!";
+    const seq2 = OC.emission.renderSequence(p2, 200, { payloadBytes: OC.fountain.textToBytes(msg2) });
+    const res2 = OC.pipeline.decodeSequence(seq2.frames, p2, { payload: true, maxEmitters: 6 });
+    const ems = res2.error ? [] : res2.emitters;
+    const tiles = ems.map(e => e.tile).sort().join(",");
+    const perDrops = ems.map(e => e.payload ? e.payload.droplets : 0);
+    const pooled = res2.pooled;
+    record("T23c 2-up: both tiles register and identify (0,1), the cross-tile pool peels the payload with more droplets than either tile alone",
+      ems.length === 2 && tiles === "0,1" && res2.designatedTile !== undefined &&
+      !!(pooled && pooled.ok === true && pooled.text === msg2 && pooled.droplets > Math.max.apply(null, perDrops)),
+      ems.length + " tiles [" + tiles + "] designated " + res2.designatedTile +
+      " per-tile droplets " + perDrops.join("/") +
+      " pooled " + JSON.stringify(pooled && { ok: pooled.ok, droplets: pooled.droplets, text: pooled.text }));
   }
 
   // Determinism spot-check: dtrig render of one frame is identical across two runs.

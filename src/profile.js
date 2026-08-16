@@ -238,6 +238,14 @@
       // the quiet-inclusive half-DIAGONAL stays inside the 0.90 donut budget.
       qr: { modules: 25, quiet_modules: 2, width_units: 1.08, dark: 0.05, seed: 909 },
       session32: 0,                 // emit page stamps the real session id
+      // §7 density knob: 1 / 2 / 6-up (grid beats hex on 16:9 to 2 rows).
+      // §5: gutter ≥ 1.2 between flat circles → tile pitch ≥ 7.2. Tile 0 is
+      // the DESIGNATED tile — the only one carrying the breaker ring pair and
+      // the beacon (§5's count asymmetry doing tile identity); gutter-vertex
+      // bullseyes (0.40) sit on the shared lattice. Tiles carry the same
+      // blocks under tile-shifted seeds (fountain.tileSeed).
+      tiling: 1,
+      tile_pitch: 7.2,
       // §1 edge table. B's edges share nominal φ (same nominal_hz), distinct data
       // (distinct seeds) — the differential-pair demod is the decoder follow-on.
       annuli: [
@@ -386,6 +394,13 @@
       errors.push("beacon amplitude sum " + beaconSum.toFixed(3) + " exceeds the ring-gap bound 0.045");
     else if (beaconSum > 0.030 + 1e-9)
       warnings.push("beacon amplitude sum " + beaconSum.toFixed(3) + " above 0.030 — quiet-zone margin thins");
+
+    // Tiling (§7): the knob is 1/2/6; the pitch keeps §5's 1.2-unit gutter.
+    var tn = p.tiling || 1;
+    if (tn !== 1 && tn !== 2 && tn !== 6)
+      errors.push("tiling " + tn + " is not a contract density (1 / 2 / 6-up)");
+    if (tn > 1 && (p.tile_pitch || 0) < p.flat_circle_r * 2 + 1.2 - 1e-9)
+      errors.push("tile_pitch " + p.tile_pitch + " under " + (p.flat_circle_r * 2 + 1.2) + " — the 1.2-unit gutter is the §5 floor");
 
     // Countdown (§6): freeze ≥ 1 s is the optical-intrinsic floor (AF/AE settle
     // + motion-onset anchor); the envelope is the only movable function.

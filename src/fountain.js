@@ -183,7 +183,14 @@
     return { len: len, type: bytes[2], bytes: bytes.subarray(4, 4 + len) };
   }
 
-  /* The emitter side: per-annulus symbol carousels (period L·D symbols). */
+  /* Tile t's ring seed (v3 multi-tile): same blocks, tile-distinct subsets —
+     the (ringSeed, c) dedupe key is tile-safe because seeds never collide
+     across tiles. Both ends derive it; the wire carries nothing. */
+  function tileSeed(seed, t) { return (seed + 7919 * (t || 0)) >>> 0; }
+
+  /* The emitter side: per-annulus symbol carousels (period L·D symbols).
+     opts.tile: encode tile t's carousels (seed-shifted; forced degree-1
+     slots stay the same blocks by design — the peel seeds every tile). */
   function encodeCarousels(profile, payloadBytes, opts) {
     var g = geom(profile);
     var framed = !!(profile.carriage && profile.carriage.self_framing);
@@ -191,11 +198,12 @@
     var tb = toBlocks(payloadBytes, g);
     if (tb.K > 200) throw new Error("payload too large: K=" + tb.K + " blocks (cap 200 — " + (200 * g.dataBytes) + " bytes at this droplet size)");
     var L = carouselLen(tb.K);
+    var tShift = opts && opts.tile ? opts.tile : 0;
     var carousels = profile.annuli.map(function (a) {
       var D = ringD(a, g);
       var syms = new Uint8Array(L * D);
       for (var c = 0; c < L; c++) {
-        var dr = dropletBytes(c, tb.blocks, tb.K, a.rotation.seed, payloadBytes, g);
+        var dr = dropletBytes(c, tb.blocks, tb.K, tileSeed(a.rotation.seed, tShift), payloadBytes, g);
         syms.set(bitsToSymbols(dr.data, dr.crc, a, g), c * D);
       }
       return syms;
@@ -371,7 +379,7 @@
               geom: geom, ringD: ringD, carouselLen: carouselLen, subsetFor: subsetFor,
               isHeaderSlot: isHeaderSlot, parseHeader: parseHeader, HEADER_EVERY: HEADER_EVERY,
               crc8: crc8, crc16: crc16, toGray: toGray, fromGray: fromGray,
-              selfFrame: selfFrame, unframe: unframe,
+              selfFrame: selfFrame, unframe: unframe, tileSeed: tileSeed,
               textToBytes: textToBytes, bytesToText: bytesToText, MAGIC: MAGIC };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   global.OC = global.OC || {}; global.OC.fountain = API;

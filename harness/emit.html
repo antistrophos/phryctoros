@@ -53,6 +53,11 @@
     <option value="v3hr">30 fps — V3 high-rate (M=32 close-range preset, 48-bit droplets; film at 60 fps)</option>
   </select></label>
   <span class="dim">rewrites the profile JSON below; receiver must decode with the matching profile AND capture fps</span>
+  <label style="margin-left:.8rem">tiling <select id="tileSel">
+    <option value="1">1-up</option>
+    <option value="2">2-up (2×1)</option>
+    <option value="6">6-up (3×2, the docked desk mode)</option>
+  </select></label>
 </p>
 <details open><summary>Emission profile (JSON, editable)</summary>
   <textarea id="profileTxt"></textarea>
@@ -86,7 +91,7 @@ $("rateSel").onchange = () => {
 };
 let running = false, schedules = null, loopFrames = 0, t0 = 0, lastF = -1, fidCanvas = null;
 let drawn = 0, fpsWindow = [], ticker = null;
-let beaconSchedule = null, qrCanvas = null, effLoopFrames = 0; // v3 state
+let beaconSchedule = null, qrCanvas = null, effLoopFrames = 0, schedulesT = null; // v3 state
 
 function gray(v) { const g = Math.round(v * 255); return "rgb(" + g + "," + g + "," + g + ")"; }
 
@@ -211,15 +216,14 @@ function bullseyeLive(ctx, cx, cy, Rpx, shade, bg) {
   ctx.fillStyle = gray(shade); ctx.beginPath(); ctx.arc(cx, cy, 0.4 * Rpx, 0, 2 * Math.PI); ctx.fill();
 }
 
-function v3PlateBase(ctx, f) {
-  // bands + corners; center face differs between steady and countdown
-  const R = profile.render, size = R.size_px, scale = R.scale_px_per_unit, half = size / 2;
+function v3PlateBase(ctx, f, cx, cy, sched) {
+  // one tile's bands + corners at (cx, cy); center face differs by caller
+  const R = profile.render, scale = R.scale_px_per_unit;
   const pl = profile.plate, shade = pl.shade !== undefined ? pl.shade : R.fill;
-  ctx.fillStyle = gray(R.background); ctx.fillRect(0, 0, size, size);
   const N = 512;
   const contourFn = (edgeIdx) => {
     const a = profile.annuli[edgeIdx];
-    const phi = OC.emission.phaseAt(a, schedules[edgeIdx], profile.frame_rate_hz, f);
+    const phi = OC.emission.phaseAt(a, sched[edgeIdx], profile.frame_rate_hz, f);
     return th => {
       let r = a.r0;
       for (let j = 0; j < a.boundary.harmonics.length; j++)
@@ -235,71 +239,117 @@ function v3PlateBase(ctx, f) {
     if (hasHiEdge) {
       for (let i = 0; i <= N; i++) {
         const th = 2 * Math.PI * i / N, r = hi(th);
-        const x = half + r * scale * Math.cos(th), y = half + r * scale * Math.sin(th);
+        const x = cx + r * scale * Math.cos(th), y = cy + r * scale * Math.sin(th);
         if (i === 0) path.moveTo(x, y); else path.lineTo(x, y);
       }
       path.closePath();
-    } else path.arc(half, half, band.hi.fixed * scale, 0, 2 * Math.PI); // the flat gauge: a true circle
+    } else path.arc(cx, cy, band.hi.fixed * scale, 0, 2 * Math.PI); // the flat gauge: a true circle
     if (hasLoEdge) {
       const p2 = new Path2D();
       for (let i = 0; i <= N; i++) {
         const th = 2 * Math.PI * i / N, r = lo(th);
-        const x = half + r * scale * Math.cos(th), y = half + r * scale * Math.sin(th);
+        const x = cx + r * scale * Math.cos(th), y = cy + r * scale * Math.sin(th);
         if (i === 0) p2.moveTo(x, y); else p2.lineTo(x, y);
       }
       p2.closePath();
       path.addPath(p2);
-    } else path.arc(half, half, band.lo.fixed * scale, 0, 2 * Math.PI);
+    } else path.arc(cx, cy, band.lo.fixed * scale, 0, 2 * Math.PI);
     ctx.fillStyle = gray(R.fill);
     ctx.fill(path, "evenodd");
   });
   for (const sx of [-1, 1]) for (const sy of [-1, 1])
-    bullseyeLive(ctx, half + sx * pl.corners.at * scale, half + sy * pl.corners.at * scale,
+    bullseyeLive(ctx, cx + sx * pl.corners.at * scale, cy + sy * pl.corners.at * scale,
                  pl.corners.r_out * scale, shade, R.background);
-  return { size, scale, half, pl, shade };
+  return { scale, pl, shade };
+}
+
+function v3TileCenters() {
+  const layout = OC.emission.tileLayout(profile);
+  const scale = profile.render.scale_px_per_unit;
+  if (layout.n <= 1) {
+    const half = profile.render.size_px / 2;
+    return { layout, centers: [{ cx: half, cy: half }], w: profile.render.size_px, h: profile.render.size_px };
+  }
+  const centers = [];
+  for (let r = 0; r < layout.rows; r++)
+    for (let c = 0; c < layout.cols; c++)
+      centers.push({ cx: (c + 0.5) * layout.pitch * scale, cy: (r + 0.5) * layout.pitch * scale });
+  return { layout, centers,
+           w: Math.round(layout.cols * layout.pitch * scale),
+           h: Math.round(layout.rows * layout.pitch * scale) };
 }
 
 function drawFrameV3(f) {
   const ctx = $("cv").getContext("2d");
-  const { scale, half, pl, shade } = v3PlateBase(ctx, f);
-  bullseyeLive(ctx, half, half, pl.center.r_out * scale, shade, profile.render.background);
-  // the beacon ring pair: both edges carry the SAME δ — constant width, wiggling
-  const bphi = OC.emission.phaseAt({ rotation: profile.beacon.rotation }, beaconSchedule, profile.frame_rate_hz, f);
-  const del = th => {
-    let d0 = 0;
-    for (let j = 0; j < profile.beacon.harmonics.length; j++)
-      d0 += profile.beacon.amplitudes[j] * Math.cos(profile.beacon.harmonics[j] * (th - bphi) + profile.beacon.phases_deg[j] * Math.PI / 180);
-    return d0;
-  };
-  const N = 256, bp = new Path2D();
-  for (let i = 0; i <= N; i++) {
-    const th = 2 * Math.PI * i / N, r = pl.breaker.r_out + del(th);
-    const x = half + r * scale * Math.cos(th), y = half + r * scale * Math.sin(th);
-    if (i === 0) bp.moveTo(x, y); else bp.lineTo(x, y);
+  const { layout, centers } = v3TileCenters();
+  const R = profile.render, scale = R.scale_px_per_unit;
+  ctx.fillStyle = gray(R.background); ctx.fillRect(0, 0, $("cv").width, $("cv").height);
+  let pl0 = null, shade0 = null;
+  centers.forEach((c, t) => {
+    const sched = layout.n > 1 ? schedulesT[t] : schedules;
+    const { pl, shade } = v3PlateBase(ctx, f, c.cx, c.cy, sched);
+    pl0 = pl; shade0 = shade;
+    bullseyeLive(ctx, c.cx, c.cy, pl.center.r_out * scale, shade, R.background);
+    if (t === 0) {
+      // the beacon ring pair, designated tile only: both edges share one δ
+      const bphi = OC.emission.phaseAt({ rotation: profile.beacon.rotation }, beaconSchedule, profile.frame_rate_hz, f);
+      const del = th => {
+        let d0 = 0;
+        for (let j = 0; j < profile.beacon.harmonics.length; j++)
+          d0 += profile.beacon.amplitudes[j] * Math.cos(profile.beacon.harmonics[j] * (th - bphi) + profile.beacon.phases_deg[j] * Math.PI / 180);
+        return d0;
+      };
+      const N = 256, bp = new Path2D();
+      for (let i = 0; i <= N; i++) {
+        const th = 2 * Math.PI * i / N, r = pl.breaker.r_out + del(th);
+        const x = c.cx + r * scale * Math.cos(th), y = c.cy + r * scale * Math.sin(th);
+        if (i === 0) bp.moveTo(x, y); else bp.lineTo(x, y);
+      }
+      bp.closePath();
+      const bp2 = new Path2D();
+      for (let i = 0; i <= N; i++) {
+        const th = 2 * Math.PI * i / N, r = pl.breaker.r_in + del(th);
+        const x = c.cx + r * scale * Math.cos(th), y = c.cy + r * scale * Math.sin(th);
+        if (i === 0) bp2.moveTo(x, y); else bp2.lineTo(x, y);
+      }
+      bp2.closePath();
+      bp.addPath(bp2);
+      ctx.fillStyle = gray(shade);
+      ctx.fill(bp, "evenodd");
+    }
+  });
+  if (layout.n > 1 && pl0) {
+    // interior gutter-vertex bullseyes on the shared lattice (§5)
+    for (let vc = 1; vc < layout.cols; vc++)
+      for (let vr = 1; vr < layout.rows; vr++)
+        bullseyeLive(ctx, vc * layout.pitch * scale, vr * layout.pitch * scale,
+                     pl0.corners.r_out * scale, shade0, R.background);
   }
-  bp.closePath();
-  const bp2 = new Path2D();
-  for (let i = 0; i <= N; i++) {
-    const th = 2 * Math.PI * i / N, r = pl.breaker.r_in + del(th);
-    const x = half + r * scale * Math.cos(th), y = half + r * scale * Math.sin(th);
-    if (i === 0) bp2.moveTo(x, y); else bp2.lineTo(x, y);
-  }
-  bp2.closePath();
-  bp.addPath(bp2);
-  ctx.fillStyle = gray(shade);
-  ctx.fill(bp, "evenodd");
 }
 
 function drawCountdownV3(f, secsLeft) {
   const ctx = $("cv").getContext("2d");
-  const { scale, half } = v3PlateBase(ctx, f); // bands frozen at f, corners kept
-  ctx.drawImage(qrCanvas, half - qrCanvas.width / 2, half - qrCanvas.height / 2);
-  // small digit in the countdown face's empty ring zone (the beacon's steady
-  // home — vacant during freeze); page chrome, not part of the reference face
+  const { layout, centers } = v3TileCenters();
+  const R = profile.render, scale = R.scale_px_per_unit;
+  ctx.fillStyle = gray(R.background); ctx.fillRect(0, 0, $("cv").width, $("cv").height);
+  let pl0 = null, shade0 = null;
+  centers.forEach((c, t) => {
+    const sched = layout.n > 1 ? schedulesT[t] : schedules;
+    const base = v3PlateBase(ctx, f, c.cx, c.cy, sched); // bands frozen at f, corners kept
+    pl0 = base.pl; shade0 = base.shade;
+    ctx.drawImage(qrCanvas, c.cx - qrCanvas.width / 2, c.cy - qrCanvas.height / 2);
+  });
+  if (layout.n > 1 && pl0) {
+    for (let vc = 1; vc < layout.cols; vc++)
+      for (let vr = 1; vr < layout.rows; vr++)
+        bullseyeLive(ctx, vc * layout.pitch * scale, vr * layout.pitch * scale,
+                     pl0.corners.r_out * scale, shade0, R.background);
+  }
+  // small digit in the designated tile's vacant beacon zone; page chrome
   ctx.fillStyle = gray(profile.render.fill);
   ctx.textAlign = "center"; ctx.textBaseline = "middle";
   ctx.font = "700 " + Math.round(0.22 * scale) + "px system-ui, sans-serif";
-  ctx.fillText(String(secsLeft), half, half + 0.75 * scale);
+  ctx.fillText(String(secsLeft), centers[0].cx, centers[0].cy + 0.75 * scale);
 }
 
 function buildQrCanvas(envBytes) {
@@ -402,27 +452,39 @@ function startV3() {
   const fps = profile.frame_rate_hz;
   profile.countdown.loop_s = Math.max(10, +$("loopSecs").value || 60);
   profile.countdown.freeze_s = Math.max(1, Math.min(+$("cdSecs").value || 3, profile.countdown.loop_s - 1));
+  profile.tiling = +$("tileSel").value || 1;
   profile.session32 = (Math.random() * 4294967296) >>> 0;
-  let carousels = null, envInfo = null;
+  const layout = OC.emission.tileLayout(profile);
+  let carousels = null, envInfo = null, payloadBytes = null;
   if ($("payloadChk").checked) {
     try {
-      const bytes = OC.fountain.textToBytes($("payloadTxt").value || " ");
-      const enc = OC.fountain.encodeCarousels(profile, bytes);
+      payloadBytes = OC.fountain.textToBytes($("payloadTxt").value || " ");
+      const enc = OC.fountain.encodeCarousels(profile, payloadBytes);
       carousels = enc.carousels;
-      const wire = OC.fountain.selfFrame(bytes);
+      const wire = OC.fountain.selfFrame(payloadBytes);
       envInfo = { K: enc.K, len: wire.length, pcrc: OC.fountain.crc16(wire), capability: 1 };
       $("payloadInfo").textContent = "K=" + enc.K + " blocks (self-framed), carousel " + enc.L +
-        " droplets — receiver must use v3 payload mode";
+        " droplets" + (layout.n > 1 ? " × " + layout.n + " tile-seeded carousels" : "") +
+        " — receiver must use v3 payload mode";
     } catch (e) { $("payloadInfo").textContent = String(e.message); return; }
   } else $("payloadInfo").textContent = "";
   const envBytes = OC.emission.envelopeBytes(profile, envInfo);
   const freezeF = Math.round(profile.countdown.freeze_s * fps);
   effLoopFrames = Math.max(1, Math.round(profile.countdown.loop_s * fps) - freezeF);
   schedules = OC.emission.buildSchedules(profile, effLoopFrames, carousels);
+  schedulesT = null;
+  if (layout.n > 1) {
+    schedulesT = [];
+    for (let t = 0; t < layout.n; t++) {
+      const carT = payloadBytes ? OC.fountain.encodeCarousels(profile, payloadBytes, { tile: t }).carousels : carousels;
+      schedulesT.push(OC.emission.buildSchedules(profile, effLoopFrames, carT));
+    }
+  }
   beaconSchedule = OC.emission.buildBeaconSchedule(profile, effLoopFrames, envBytes);
   qrCanvas = buildQrCanvas(envBytes);
   const cv = $("cv");
-  cv.width = profile.render.size_px; cv.height = profile.render.size_px;
+  const geom3 = v3TileCenters();
+  cv.width = geom3.w; cv.height = geom3.h;
   cv.style.display = "";
   running = true; t0 = performance.now(); lastF = -1;
   $("stopBtn").disabled = false; $("fsBtn").disabled = false;

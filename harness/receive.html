@@ -32,7 +32,8 @@
   <label>camera <select id="m_cam"><option>rear</option><option>front</option></select></label>
   <label>handheld <input id="m_hand" type="checkbox" checked></label>
   <label>emitter loop (s) <input id="m_loop" type="number" value="60" style="width:4rem"></label>
-  <label>profile <select id="m_prof"><option value="v2">v2 (current)</option><option value="v2p">v2 + payload (Phase 1)</option><option value="v20">v2 @20 fps</option><option value="v20p">v2 @20 fps + payload</option><option value="v30">v2 @30 fps</option><option value="v30p">v2 @30 fps + payload</option><option value="v1">v1 (legacy clips)</option></select></label>
+  <label>profile <select id="m_prof"><option value="v2">v2 (current)</option><option value="v2p">v2 + payload (Phase 1)</option><option value="v20">v2 @20 fps</option><option value="v20p">v2 @20 fps + payload</option><option value="v30">v2 @30 fps</option><option value="v30p">v2 @30 fps + payload</option><option value="v3">V3 resilient (payload; film at 60 fps)</option><option value="v3hr">V3 high-rate (payload; film at 60 fps)</option><option value="v3a">V3 auto-detect preset (payload)</option><option value="v1">v1 (legacy clips)</option></select></label>
+  <label id="v3opts" style="display:none"><input id="m_solve" type="checkbox" checked> plate solve <input id="m_beacon" type="checkbox" checked> beacon</label>
   <label>capture fps <select id="m_capfps"><option value="30">30</option><option value="60">60</option></select></label>
   <label>notes <input id="m_notes" style="width:12rem"></label>
 </fieldset>
@@ -73,6 +74,7 @@
 <script src="../src/profile.js"></script>
 <script src="../src/emission.js"></script>
 <script src="../src/register.js"></script>
+<script src="../src/plate.js"></script>
 <script src="../src/sample.js"></script>
 <script src="../src/conic.js"></script>
 <script src="../src/transform.js"></script>
@@ -95,9 +97,13 @@ function currentProfile() {
   if (v === "v1") return OC.profile.profileV1();
   if (v === "v20" || v === "v20p") return OC.profile.profileV2r20();
   if (v === "v30" || v === "v30p") return OC.profile.profileV2r30();
+  if (v === "v3" || v === "v3a") return OC.profile.profileV3();
+  if (v === "v3hr") return OC.profile.profileV3("high-rate");
   return OC.profile.defaultProfile();
 }
-function payloadMode() { const v = $("m_prof") && $("m_prof").value; return v === "v2p" || v === "v20p" || v === "v30p"; }
+function payloadMode() { const v = $("m_prof") && $("m_prof").value; return v === "v2p" || v === "v20p" || v === "v30p" || v3Mode(); }
+function v3Mode() { const v = $("m_prof") && $("m_prof").value; return v === "v3" || v === "v3hr" || v === "v3a"; }
+if ($("m_prof")) $("m_prof").onchange = () => { $("v3opts").style.display = v3Mode() ? "" : "none"; };
 // The file path SEEKS at the capture cadence — a 60 fps clip stepped at 1/30
 // silently drops every other camera frame and starves the duplicate defense.
 function captureFps() { return +($("m_capfps") && $("m_capfps").value) || 30; }
@@ -123,6 +129,11 @@ function toLumFromCanvas(ctx, w, h) {
 function layerSummary(res) {
   if (res.error) return "<span class='bad'>" + res.error + "</span>";
   let html = "";
+  if (res.pooled) {
+    html += res.pooled.ok
+      ? "<p class='ok' style='font-size:15px'><b>POOLED ACROSS TILES</b> (" + res.pooled.recovered + "/" + res.pooled.K + " blocks, " + res.pooled.droplets + " droplets): “" + res.pooled.text + "”</p>"
+      : "<p class='warn'><b>tile pool incomplete</b> — " + (res.pooled.reason || "collecting") + " (" + (res.pooled.recovered || 0) + "/" + (res.pooled.K || "?") + " blocks, " + (res.pooled.droplets || 0) + " droplets)</p>";
+  }
   res.emitters.forEach((em, ei) => {
     if (em.payload) {
       const p = em.payload;
@@ -131,12 +142,16 @@ function layerSummary(res) {
         : "<p class='warn'><b>payload incomplete</b> — " + (p.reason || "collecting") +
           (p.K ? " (" + (p.recovered || 0) + "/" + p.K + " blocks, " + (p.droplets || 0) + " droplets — film longer or closer)" : " (" + (p.got || 0) + " droplets so far)") + "</p>";
     }
-    html += "<table><tr><th colspan='10'>emitter " + ei + " — fiducial " + em.fiducialWidthPx + "px" + (em.method === "rings" ? " (ring-registered)" : "") + "</th></tr>" +
+    html += "<table><tr><th colspan='10'>emitter " + ei + " — fiducial " + em.fiducialWidthPx + "px" + (em.method === "rings" ? " (ring-registered)" : "") +
+      (em.tile !== undefined ? " · tile " + (em.tile < 0 ? "?" : em.tile) + (res.designatedTile === ei ? " (designated)" : "") : "") +
+      (em.plateSolve ? " · solved " + em.plateSolve.solved + "/" + em.plateSolve.frames + (em.plateSolve.meanResidPx != null ? " @" + em.plateSolve.meanResidPx + "px" : "") : "") +
+      "</th></tr>" +
       "<tr><th>annulus</th><th>layer</th><th>present</th><th>carrier</th><th>SER</th><th>erasures</th><th>lock</th><th>contrast</th><th>SNR/harmonic (dB)</th><th>verdict</th></tr>";
     em.annuli.forEach(a => {
       const snr = a.snr_db ? Object.entries(a.snr_db).map(([k, v]) => "k" + k + ":" + v).join(" ") : "—";
       const lock = a.alignMethod ? (a.alignMethod + " lag " + a.alignLag + (a.alignMatchFrac ? " (" + a.alignMatchFrac + ")" : "")) : "—";
       const verdict = !a.present ? "<span class='dim'>unresolved</span>" :
+        a.beacon && a.envelope ? "<span class='ok'>ENVELOPE " + a.envelope + "</span>" :
         a.error ? "<span class='bad'>" + a.error + "</span>" :
         a.dropletsPassed != null ? "<span class='" + (a.dropletsPassed > 0 ? "ok" : "warn") + "'>" + a.dropletsPassed + "/" + a.dropletsTried + " droplets</span>" :
         a.ok ? "<span class='ok'>DECODES</span>" : "<span class='warn'>degraded</span>";
@@ -177,15 +192,27 @@ function decodeFrames(frames, source, fpsMeasured) {
   setStatus("decoding " + frames.length + " frames (" + currentProfile().profile_version + ")…", "warn");
   setTimeout(() => {
     try {
-      const res = OC.pipeline.decodeSequence(frames, currentProfile(), {
+      const isV3 = v3Mode();
+      const opts = {
         aligned: false, handheld: $("m_hand").checked,
         loopSeconds: +$("m_loop").value || 60,
-        mirror: { receive: false }, maxEmitters: 4,
-        payload: payloadMode()
-      });
-      $("results").innerHTML = layerSummary(res);
+        mirror: { receive: false }, maxEmitters: isV3 ? 6 : 4,
+        payload: payloadMode(),
+        plateSolve: isV3 && $("m_solve").checked,
+        beacon: isV3 && $("m_beacon").checked
+      };
+      let res, preset = null;
+      if ($("m_prof").value === "v3a") {
+        const auto = OC.pipeline.decodeV3Auto(frames, opts);
+        res = auto.result;
+        preset = auto.preset;
+        setStatus("auto-detect: preset " + (preset || "UNDETERMINED") + " (" + auto.passes + " CRC passes)", preset ? "ok" : "warn");
+      } else {
+        res = OC.pipeline.decodeSequence(frames, currentProfile(), opts);
+      }
+      $("results").innerHTML = (preset ? "<p class='" + (preset ? "ok" : "warn") + "'>auto-detect verdict: <b>" + (preset || "undetermined") + "</b></p>" : "") + layerSummary(res);
       logRow(res, source, fpsMeasured, frames.length);
-      setStatus(res.error ? "decode failed: " + res.error : "decode complete", res.error ? "bad" : "ok");
+      if (!preset) setStatus(res.error ? "decode failed: " + res.error : "decode complete", res.error ? "bad" : "ok");
     } catch (e) { setStatus("decode error: " + e.message, "bad"); console.error(e); }
   }, 30);
 }

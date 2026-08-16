@@ -478,6 +478,20 @@
      (the fiducial dies before the rings — walks 4–5). */
   function registerAll(img, opts) {
     opts = opts || {};
+    // v3: the steady plate carries NO fiducial — its band silhouette is the
+    // PRIMARY registration. The corner bullseyes sit at exactly a virtual
+    // fiducial's TL/TR/BL layout (dark centers, right angle), so on a
+    // multi-tile plate the finder scan can chance-accept decoy triples —
+    // T23b caught two on the 6-up frame (the AF-collar decoy lesson, third
+    // appearance). Rings first; the finder path remains the COUNTDOWN
+    // assist — QR frames, the far-field envelope rung, where rings may die
+    // while the QR still reads.
+    var pV3 = opts.profile;
+    var isV3reg = !!(pV3 && pV3.bands && pV3.plate);
+    if (isV3reg && !opts.noRings) {
+      var ringed3 = ringRegisterAll(img, pV3, opts);
+      if (ringed3.length) return { emitters: ringed3, candidates: [], method: "rings" };
+    }
     var cands = findFinderCandidates(img, opts);
     var triples = groupTriples(cands);
     var scored = [];
@@ -508,7 +522,7 @@
         if (s.structureScore >= 0.7) emitters.push(s);
       } else if (s.timingScore >= 0.6 && s.structureScore >= 0.7) emitters.push(s);
     }
-    if (!emitters.length && opts.profile && !opts.noRings) {
+    if (!emitters.length && opts.profile && !opts.noRings && !isV3reg) {
       var ringed = ringRegisterAll(img, opts.profile, opts);
       if (ringed.length) return { emitters: ringed, candidates: cands, method: "rings" };
     }

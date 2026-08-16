@@ -322,6 +322,178 @@
     return img;
   }
 
+  /* §7 tiling layout: 1 / 2 / 6-up as a grid (2×1, 3×2 — grid beats hex on
+     16:9 to two rows). Tile 0 = top-left = the DESIGNATED tile: the only one
+     carrying the breaker pair + beacon (§5's count asymmetry is the decoder's
+     tile identity). Gutter-vertex bullseyes sit on INTERIOR lattice vertices
+     (border vertices would clip half a bullseye off the canvas; 2-up has no
+     interior vertex and leans on its ten plate bullseyes). */
+  function tileLayout(p) {
+    var n = p.tiling || 1;
+    if (n <= 1) return { n: 1, cols: 1, rows: 1, pitch: 0 };
+    var cols = n === 2 ? 2 : 3, rows = n === 2 ? 1 : 2;
+    return { n: n, cols: cols, rows: rows, pitch: p.tile_pitch || 7.2 };
+  }
+
+  /* The tiled analytic renderer. f is the effective frame; opts.schedulesT =
+     per-tile per-edge schedules (tile-seeded carousels); opts.countdown puts
+     the envelope QR on EVERY tile center (any tile in frame carries the
+     envelope; per-tile matched-mean stays inside the 0.05 bound with and
+     without the breaker: Δ≈0.026/0.029). Beacon renders on tile 0 only. */
+  function renderFrameV3Tiled(profile, f, opts) {
+    opts = opts || {};
+    var sin = opts.trig ? opts.trig.sin : Math.sin;
+    var cos = opts.trig ? opts.trig.cos : Math.cos;
+    var atan2 = opts.trig ? opts.trig.atan2 : Math.atan2;
+    var layout = tileLayout(profile);
+    var R = profile.render, scale = R.scale_px_per_unit;
+    var wPx = Math.round(layout.cols * layout.pitch * scale);
+    var hPx = Math.round(layout.rows * layout.pitch * scale);
+    var img = { w: wPx, h: hPx, data: new Float32Array(wPx * hPx) };
+    var bg = R.background, fill = R.fill, soft = R.edge_soft_px;
+    var fps = profile.frame_rate_hz;
+    var pad = (soft / scale) * 2 + 0.01;
+    var pl = profile.plate, shade = pl.shade !== undefined ? pl.shade : fill;
+
+    var schedulesT = opts.schedulesT;
+    if (!schedulesT) {
+      schedulesT = [];
+      for (var t0 = 0; t0 < layout.n; t0++) schedulesT.push(buildSchedules(profile, f + 1, undefined));
+    }
+    function betasFor(t) {
+      return profile.annuli.map(function (a, ai) {
+        var phi = phaseAt(a, schedulesT[t][ai], fps, f);
+        return a.boundary.harmonics.map(function (k, j) {
+          return { k: k, a: a.boundary.amplitudes[j], beta: a.boundary.phases_deg[j] * Math.PI / 180 - k * phi };
+        });
+      });
+    }
+    var edgesT = [], bandsT = [];
+    for (var tb = 0; tb < layout.n; tb++) {
+      var eb = betasFor(tb);
+      edgesT.push(eb);
+      bandsT.push(profile.bands.map(function (band) {
+        function res(ref) {
+          if (ref.edge !== undefined) {
+            var a = profile.annuli[ref.edge], sum = 0;
+            for (var j = 0; j < a.boundary.amplitudes.length; j++) sum += a.boundary.amplitudes[j];
+            return { r0: a.r0, betas: eb[ref.edge], sum: sum };
+          }
+          return { r0: ref.fixed, betas: null, sum: 0 };
+        }
+        var lo = res(band.lo), hi = res(band.hi);
+        return { lo: lo, hi: hi, rMin: lo.r0 - lo.sum - pad, rMax: hi.r0 + hi.sum + pad };
+      }));
+    }
+    function evalB(betas, th) {
+      if (!betas) return 0;
+      var s = 0;
+      for (var h = 0; h < betas.length; h++) s += betas[h].a * cos(betas[h].k * th + betas[h].beta);
+      return s;
+    }
+
+    var beacon = null;
+    if (!opts.countdown) {
+      var bs = opts.beaconSchedule;
+      if (bs === undefined) bs = buildBeaconSchedule(profile, f + 1, opts.envBytes || envelopeBytes(profile, opts.payloadInfo || null));
+      var phiB = bs ? phaseAt({ rotation: profile.beacon.rotation }, bs, fps, f) : 0;
+      var bSum = 0;
+      for (var q = 0; q < profile.beacon.amplitudes.length; q++) bSum += profile.beacon.amplitudes[q];
+      beacon = {
+        sum: bSum,
+        betas: profile.beacon.harmonics.map(function (k, j) {
+          return { k: k, a: profile.beacon.amplitudes[j], beta: profile.beacon.phases_deg[j] * Math.PI / 180 - k * phiB };
+        })
+      };
+    }
+    var qrm = null, qrHalf = 0, qrModU = 0, qrN = 0;
+    if (opts.countdown) {
+      qrm = opts.qrModules || envelopeModules(profile.qr, opts.envBytes || envelopeBytes(profile, opts.payloadInfo || null));
+      qrN = profile.qr.modules;
+      qrHalf = profile.qr.width_units / 2;
+      qrModU = profile.qr.width_units / qrN;
+    }
+
+    // interior gutter-lattice vertices, canvas units
+    var verts = [];
+    for (var vc = 1; vc < layout.cols; vc++)
+      for (var vr = 1; vr < layout.rows; vr++)
+        verts.push({ x: vc * layout.pitch, y: vr * layout.pitch });
+    var vR = pl.corners.r_out;
+
+    var cAt = pl.corners.at, cR = pl.corners.r_out;
+    var d = img.data, pitch = layout.pitch;
+    for (var py = 0; py < hPx; py++) {
+      var yG = (py + 0.5) / scale;
+      var rowOff = py * wPx;
+      for (var px = 0; px < wPx; px++) {
+        var xG = (px + 0.5) / scale;
+        var v = bg;
+        var owned = false;
+        for (var vi = 0; vi < verts.length; vi++) {
+          var dvx = xG - verts[vi].x, dvy = yG - verts[vi].y;
+          if (dvx >= -vR - pad && dvx <= vR + pad && dvy >= -vR - pad && dvy <= vR + pad) {
+            var rv = Math.sqrt(dvx * dvx + dvy * dvy);
+            var covV = bullseyeCov(rv, vR, scale, soft);
+            if (covV > 0) v = bg + (shade - bg) * covV;
+            owned = true;
+            break;
+          }
+        }
+        if (!owned) {
+          var col = Math.floor(xG / pitch); if (col >= layout.cols) col = layout.cols - 1;
+          var row = Math.floor(yG / pitch); if (row >= layout.rows) row = layout.rows - 1;
+          var t = row * layout.cols + col;
+          var x = xG - (col + 0.5) * pitch, y = yG - (row + 0.5) * pitch;
+          var r = Math.sqrt(x * x + y * y);
+          if (r <= pl.quiet_r + pad) {
+            if (opts.countdown) {
+              var ax = x < 0 ? -x : x, ay = y < 0 ? -y : y;
+              if (ax <= qrHalf && ay <= qrHalf) {
+                var mx = Math.floor((x + qrHalf) / qrModU); if (mx >= qrN) mx = qrN - 1;
+                var my = Math.floor((y + qrHalf) / qrModU); if (my >= qrN) my = qrN - 1;
+                if (qrm[my * qrN + mx]) v = profile.qr.dark;
+              }
+            } else {
+              var cov = bullseyeCov(r, pl.center.r_out, scale, soft);
+              if (t === 0) {
+                var loB = pl.breaker.r_in, hiBk = pl.breaker.r_out;
+                var reach = beacon ? beacon.sum : 0;
+                if (r >= loB - reach - pad && r <= hiBk + reach + pad) {
+                  var dlt = beacon ? evalB(beacon.betas, atan2(y, x)) : 0;
+                  var covB = clamp01((r - (loB + dlt)) * scale / soft + 0.5) * clamp01(((hiBk + dlt) - r) * scale / soft + 0.5);
+                  if (covB > cov) cov = covB;
+                }
+              }
+              if (cov > 0) v = bg + (shade - bg) * cov;
+            }
+          } else {
+            var axc = (x < 0 ? -x : x) - cAt, ayc = (y < 0 ? -y : y) - cAt;
+            if (axc >= -cR - pad && axc <= cR + pad && ayc >= -cR - pad && ayc <= cR + pad) {
+              var rc = Math.sqrt(axc * axc + ayc * ayc);
+              var covK = bullseyeCov(rc, cR, scale, soft);
+              if (covK > 0) v = bg + (shade - bg) * covK;
+            } else {
+              var bands = bandsT[t];
+              for (var bi2 = 0; bi2 < bands.length; bi2++) {
+                var B = bands[bi2];
+                if (r < B.rMin || r > B.rMax) continue;
+                var th = atan2(y, x);
+                var bLo = B.lo.r0 + evalB(B.lo.betas, th);
+                var bHi = B.hi.r0 + evalB(B.hi.betas, th);
+                var cov2 = clamp01((bHi - r) * scale / soft + 0.5) * clamp01((r - bLo) * scale / soft + 0.5);
+                if (cov2 > 0) v = bg + (fill - bg) * cov2;
+                break;
+              }
+            }
+          }
+        }
+        d[rowOff + px] = v;
+      }
+    }
+    return img;
+  }
+
   /* Matched-mean arithmetic (§5): exact areas for the steady face, the actual
      module map for the countdown face. The validator errors past 0.05; T22
      re-checks the same bound on rendered pixels. */
@@ -346,7 +518,10 @@
   /* Render frame f to {w,h,data} luminance. opts: { trig: {sin,cos,atan2} } for the
      deterministic golden path; defaults to native Math. */
   function renderFrame(profile, f, opts) {
-    if (isV3(profile)) return renderFrameV3(profile, f, opts);
+    if (isV3(profile)) {
+      return tileLayout(profile).n > 1 ? renderFrameV3Tiled(profile, f, opts)
+                                       : renderFrameV3(profile, f, opts);
+    }
     opts = opts || {};
     var sin = opts.trig ? opts.trig.sin : Math.sin;
     var cos = opts.trig ? opts.trig.cos : Math.cos;
@@ -431,6 +606,24 @@
       // timeline(). One beacon schedule and one envelope serve every frame.
       var envB = opts.envBytes || envelopeBytes(profile, opts.payloadInfo || null);
       var beaconSchedule = opts.beaconSchedule !== undefined ? opts.beaconSchedule : buildBeaconSchedule(profile, n, envB);
+      var layout = tileLayout(profile);
+      if (layout.n > 1) {
+        // Per-tile carousels (tile-shifted seeds; same payload blocks) and
+        // per-tile schedules. opts.payloadBytes triggers payload mode; a
+        // seeded reference stream per tile otherwise.
+        var FN2 = FN();
+        var schedulesT = [];
+        for (var tt = 0; tt < layout.n; tt++) {
+          var carT = opts.payloadBytes !== undefined && opts.payloadBytes !== null
+            ? FN2.encodeCarousels(profile, opts.payloadBytes, { tile: tt }).carousels
+            : (opts.carouselsT ? opts.carouselsT[tt] : undefined);
+          schedulesT.push(buildSchedules(profile, n, carT));
+        }
+        var framesT = [];
+        for (var ft = 0; ft < n; ft++)
+          framesT.push({ f: ft, img: renderFrameV3Tiled(profile, ft, { trig: opts.trig, schedulesT: schedulesT, beaconSchedule: beaconSchedule, envBytes: envB }) });
+        return { frames: framesT, schedulesT: schedulesT, beaconSchedule: beaconSchedule };
+      }
       var frames3 = [];
       for (var f3 = 0; f3 < n; f3++)
         frames3.push({ f: f3, img: renderFrameV3(profile, f3, { trig: opts.trig, schedules: schedules, beaconSchedule: beaconSchedule, envBytes: envB }) });
@@ -459,8 +652,8 @@
     renderSequence: renderSequence, toImageData: toImageData, TAU: TAU,
     isV3: isV3, envelopeBytes: envelopeBytes, envelopeModules: envelopeModules,
     beaconSymbols: beaconSymbols, buildBeaconSchedule: buildBeaconSchedule,
-    timeline: timeline, renderFrameV3: renderFrameV3, centerMeans: centerMeans,
-    bullseyeCov: bullseyeCov
+    timeline: timeline, renderFrameV3: renderFrameV3, renderFrameV3Tiled: renderFrameV3Tiled,
+    tileLayout: tileLayout, centerMeans: centerMeans, bullseyeCov: bullseyeCov
   };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   global.OC = global.OC || {}; global.OC.emission = API;

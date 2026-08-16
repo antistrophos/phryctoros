@@ -132,6 +132,38 @@
     var channels = profile.annuli;
     if (opts.beacon && profile.plate) channels = channels.concat([dep("plate").beaconAnnulus(profile)]);
 
+    // Multi-tile identity (§5): exactly one tile carries the breaker pair —
+    // find it, then read every other tile's grid offset in the designated
+    // tile's own frame (tile 0 renders top-left, so offsets are non-negative
+    // in emission coords; mirror stays config, never auto-detected). Tiles
+    // differ ONLY by carousel seeds, so decode proceeds identically and the
+    // tile index matters exactly twice: the assemble seed, and the pool.
+    var tileOf = null, designatedIdx = -1;
+    var tilesN = profile.plate ? (profile.tiling || 1) : 1;
+    if (tilesN > 1 && emitters.length) {
+      var plateT = dep("plate");
+      var imgT = opts.registerOn || groups[regFrame].imgs[0];
+      tileOf = emitters.map(function () { return -1; });
+      for (var de = 0; de < emitters.length; de++) {
+        var bT = plateT.findBullseye(imgT, emitters[de].H, 0, 0, profile.plate.center.r_out, { breaker: profile.plate.breaker });
+        if (bT && bT.breaker && designatedIdx < 0) designatedIdx = de;
+      }
+      if (designatedIdx >= 0) {
+        var gT = dep("geom");
+        var HinvT = gT.invertH(emitters[designatedIdx].H);
+        var colsT = tilesN === 2 ? 2 : 3;
+        for (var te = 0; te < emitters.length; te++) {
+          var cT = gT.applyH(emitters[te].H, 0, 0);
+          var uT = gT.applyH(HinvT, cT[0], cT[1]);
+          var gx = Math.round(uT[0] / (profile.tile_pitch || 7.2));
+          var gy = Math.round(uT[1] / (profile.tile_pitch || 7.2));
+          var tt = gy * colsT + gx;
+          tileOf[te] = (gx >= 0 && gx < colsT && tt >= 0 && tt < tilesN) ? tt : -1;
+        }
+      }
+    }
+    var ringsByEmitter = tilesN > 1 && opts.payload ? [] : null;
+
     var results = emitters.map(function (em, emIdx) {
       var annuli = channels.map(function (a) {
         var kmax = Math.max.apply(null, a.boundary.harmonics) + 4;
@@ -338,21 +370,41 @@
       if (opts.payload) {
         // beacon rides last in channels — profile.annuli[ri] stays aligned
         // for the data rows; the beacon banks no droplets and joins no peel.
+        // Tile seeds: this emitter's droplets were encoded under its tile's
+        // shifted seeds — the assemble subsets must match.
+        var emTile = tileOf ? tileOf[emIdx] : 0;
+        var FNp = dep("fountain");
         var rings = annuli.map(function (r, ri) {
-          return r.beacon ? null : { seed: profile.annuli[ri].rotation.seed, droplets: r._droplets || [] };
+          return r.beacon ? null : { seed: FNp.tileSeed(profile.annuli[ri].rotation.seed, emTile >= 0 ? emTile : 0), droplets: r._droplets || [] };
         }).filter(function (x) { return x; });
         annuli.forEach(function (r) { delete r._droplets; });
-        payload = dep("fountain").assemble(rings, profile);
+        if (ringsByEmitter) ringsByEmitter[emIdx] = emTile >= 0 ? rings : null;
+        payload = FNp.assemble(rings, profile);
         if (payload && payload.bytes) payload.hex = toHex(payload.bytes);
         if (payload) delete payload.bytes;
       }
       return { fiducialWidthPx: Math.round(em.fiducialWidthPx * 10) / 10, method: em.method || "finder",
                conic: conicBriefs ? conicBriefs[emIdx] : undefined,
                plateSolve: solveBriefs ? solveBriefs[emIdx] : undefined,
+               tile: tileOf ? tileOf[emIdx] : undefined,
                annuli: annuli, payload: payload };
     });
 
-    return { emitters: results, emitterCount: emitters.length, regFrame: regFrame };
+    // The multi-tile prize: one peel over every tile's verified droplets —
+    // tile-distinct seeds make the (ringSeed, c) dedupe key collision-free
+    // across the pool, so this is a longer rings list, nothing more.
+    var pooled;
+    if (ringsByEmitter) {
+      var allRings = [];
+      ringsByEmitter.forEach(function (rr) { if (rr) allRings = allRings.concat(rr); });
+      if (allRings.length) {
+        pooled = dep("fountain").assemble(allRings, profile);
+        if (pooled && pooled.bytes) { pooled.hex = toHex(pooled.bytes); delete pooled.bytes; }
+      }
+    }
+
+    return { emitters: results, emitterCount: emitters.length, regFrame: regFrame,
+             designatedTile: designatedIdx >= 0 ? designatedIdx : undefined, pooled: pooled };
   }
 
   /* v3 preset auto-detect (§2, as ruled: binary, dual-geometry, ≥2 agreeing

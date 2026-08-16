@@ -34,7 +34,8 @@
   <label>camera <select id="m_cam"><option>rear</option><option>front</option></select></label>
   <label>handheld <input id="m_hand" type="checkbox" checked></label>
   <label>emitter loop (s) <input id="m_loop" type="number" value="60" style="width:4rem"></label>
-  <label>profile <select id="m_prof"><option value="v2">v2 (current)</option><option value="v2p">v2 + payload (Phase 1)</option><option value="v20">v2 @20 fps</option><option value="v20p">v2 @20 fps + payload</option><option value="v30">v2 @30 fps</option><option value="v30p">v2 @30 fps + payload</option><option value="v1">v1 (legacy clips)</option></select></label>
+  <label>profile <select id="m_prof"><option value="v2">v2 (current)</option><option value="v2p">v2 + payload (Phase 1)</option><option value="v20">v2 @20 fps</option><option value="v20p">v2 @20 fps + payload</option><option value="v30">v2 @30 fps</option><option value="v30p">v2 @30 fps + payload</option><option value="v3">V3 resilient (payload; film at 60 fps)</option><option value="v3hr">V3 high-rate (payload; film at 60 fps)</option><option value="v3a">V3 auto-detect preset (payload)</option><option value="v1">v1 (legacy clips)</option></select></label>
+  <label id="v3opts" style="display:none"><input id="m_solve" type="checkbox" checked> plate solve <input id="m_beacon" type="checkbox" checked> beacon</label>
   <label>capture fps <select id="m_capfps"><option value="30">30</option><option value="60">60</option></select></label>
   <label>notes <input id="m_notes" style="width:12rem"></label>
 </fieldset>
@@ -246,6 +247,32 @@
     return new Float64Array([h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], 1]);
   }
 
+  // Overdetermined DLT (≥4 correspondences, least squares via normal equations):
+  // the v3 plate solve fits center + four corner bullseyes (5 points, 8 DOF).
+  function homographyFromPointsN(src, dst) {
+    var n = src.length;
+    if (n < 4) return null;
+    if (n === 4) return homographyFromPoints(src, dst);
+    var AtA = new Float64Array(64), Atb = new Float64Array(8);
+    var row = new Float64Array(8);
+    function accum(rhs) {
+      for (var a = 0; a < 8; a++) {
+        Atb[a] += row[a] * rhs;
+        for (var b = 0; b < 8; b++) AtA[a * 8 + b] += row[a] * row[b];
+      }
+    }
+    for (var i = 0; i < n; i++) {
+      var x = src[i][0], y = src[i][1], X = dst[i][0], Y = dst[i][1];
+      row[0] = x; row[1] = y; row[2] = 1; row[3] = 0; row[4] = 0; row[5] = 0; row[6] = -x * X; row[7] = -y * X;
+      accum(X);
+      row[0] = 0; row[1] = 0; row[2] = 0; row[3] = x; row[4] = y; row[5] = 1; row[6] = -x * Y; row[7] = -y * Y;
+      accum(Y);
+    }
+    var h = solve(AtA, Atb, 8);
+    if (!h) return null;
+    return new Float64Array([h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], 1]);
+  }
+
   function applyH(H, x, y) {
     var w = H[6] * x + H[7] * y + H[8];
     return [(H[0] * x + H[1] * y + H[2]) / w, (H[3] * x + H[4] * y + H[5]) / w];
@@ -274,7 +301,7 @@
 
   function makeImage(w, h) { return { w: w, h: h, data: new Float32Array(w * h) }; }
 
-  var API = { solve: solve, homographyFromPoints: homographyFromPoints, applyH: applyH, invertH: invertH, bilinear: bilinear, makeImage: makeImage };
+  var API = { solve: solve, homographyFromPoints: homographyFromPoints, homographyFromPointsN: homographyFromPointsN, applyH: applyH, invertH: invertH, bilinear: bilinear, makeImage: makeImage };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   global.OC = global.OC || {}; global.OC.geom = API;
 })(typeof window !== "undefined" ? window : globalThis);
@@ -436,6 +463,7 @@
 
   /* validate(profile) -> { ok, errors[], warnings[], flicker } */
   function validate(p) {
+    if (isV3(p)) return validateV3(p);
     var errors = [], warnings = [];
     var fps = p.frame_rate_hz;
     var halfSizeUnits = (p.render.size_px / 2) / p.render.scale_px_per_unit;
@@ -549,7 +577,234 @@
     return p;
   }
 
-  var API = { defaultProfile: defaultProfile, profileV1: profileV1, profileV2r20: profileV2r20, profileV2r30: profileV2r30, validate: validate, sumAmp: sumAmp, sampleWindow: sampleWindow, deepMerge: deepMerge };
+  /* THE V3 CONTRACT (frozen 2026-08-16, corpus technical/phryctoros-v3-contract.md):
+     trough-packed tiles on a self-anchoring calibration plate. Four boundary-CPM
+     EDGE channels in three dark bands — the entries in `annuli` are now EDGES
+     (r0 = edge base radius, crossing = luminance sense walking outward: "up" =
+     fill→bg, "down" = bg→fill, the sampler's flipped mode) so every per-channel
+     machine (schedules, fountain carousels, demap) rides unchanged. Bands are
+     the render primitive; each references its lo/hi boundary as a fixed radius
+     or an edge index. UNITS SELF-ANCHOR: the unmodulated outer circle ≡ 3.00
+     units, measured every frame with nothing to average — no fiducial-width
+     anchor, QR-free steady state. Presets (§2): ONE toggle, session-atomic;
+     the base edge never upgrades (must-decode tier + the M≤4 carrier gate). */
+  function profileV3(preset, overrides) {
+    var hi = preset === "high-rate";
+    var p = {
+      profile_version: hi ? "v3-hr" : "v3",
+      units: "flat-circle-3.00",
+      preset: hi ? "high-rate" : "resilient",
+      frame_rate_hz: 30,            // §7: 30 fps emission @ 60 fps capture baseline
+      render: {
+        size_px: 1024,
+        scale_px_per_unit: 166,     // half-size 3.084 units; corners at 2.65+0.40=3.05 fit (§5 amended)
+        background: 0.62,
+        fill: 0.32,                 // contrast 0.30 — the F1 dividend, carried from v2
+        edge_soft_px: 1.6
+      },
+      preamble_symbols: 8,          // §1: preamble as v2
+      carriage: { droplet_bits: hi ? 48 : 24, self_framing: true },  // §2/§3
+      countdown: { freeze_s: 3, loop_s: 60 },  // §6: defaults 3/60, floor freeze ≥ 1
+      // §6 envelope QR (recurring, internal format, dark-on-gray). Width chosen so
+      // the quiet-inclusive half-DIAGONAL stays inside the 0.90 donut budget.
+      qr: { modules: 25, quiet_modules: 2, width_units: 1.08, dark: 0.05, seed: 909 },
+      session32: 0,                 // emit page stamps the real session id
+      // §7 density knob: 1 / 2 / 6-up (grid beats hex on 16:9 to 2 rows).
+      // §5: gutter ≥ 1.2 between flat circles → tile pitch ≥ 7.2. Tile 0 is
+      // the DESIGNATED tile — the only one carrying the breaker ring pair and
+      // the beacon (§5's count asymmetry doing tile identity); gutter-vertex
+      // bullseyes (0.40) sit on the shared lattice. Tiles carry the same
+      // blocks under tile-shifted seeds (fountain.tileSeed).
+      tiling: 1,
+      tile_pitch: 7.2,
+      // §1 edge table. B's edges share nominal φ (same nominal_hz), distinct data
+      // (distinct seeds) — the differential-pair demod is the decoder follow-on.
+      annuli: [
+        { index: 0, layer: 3, band: 0, edge: "A-outer", crossing: "up", r0: 1.42,
+          rotation: { nominal_hz: 0.75, rate_tier_fps: 30, constellation: hi ? "d32psk" : "d16psk", M: hi ? 32 : 16, gray: true, frames_per_symbol: 4, seed: 401 },
+          boundary: { harmonics: [1, 2, 3, 5, 8, 13], amplitudes: [0.030, 0.012, 0.012, 0.012, 0.012, 0.012], phases_deg: [0, 25, 50, 75, 100, 125] } },
+        { index: 1, layer: 2, band: 1, edge: "B-inner", crossing: "down", r0: 1.80,
+          rotation: { nominal_hz: 1.0, rate_tier_fps: 30, constellation: hi ? "d32psk" : "d16psk", M: hi ? 32 : 16, gray: true, frames_per_symbol: 4, seed: 402 },
+          boundary: { harmonics: [1, 2, 3, 5, 8, 13], amplitudes: [0.030, 0.012, 0.012, 0.012, 0.012, 0.012], phases_deg: [0, 30, 60, 90, 120, 150] } },
+        { index: 2, layer: 1, band: 1, edge: "B-outer", crossing: "up", r0: 2.30,
+          rotation: { nominal_hz: 1.0, rate_tier_fps: 30, constellation: hi ? "d16psk" : "d8psk", M: hi ? 16 : 8, gray: true, frames_per_symbol: 4, seed: 403 },
+          boundary: { harmonics: [1, 2, 3, 5, 8], amplitudes: [0.030, 0.015, 0.015, 0.015, 0.015], phases_deg: [0, 35, 70, 105, 140] } },
+        { index: 3, layer: 0, band: 2, edge: "C-inner", crossing: "down", r0: 2.68,
+          rotation: { nominal_hz: 1.5, rate_tier_fps: 30, constellation: "dqpsk", M: 4, gray: true, frames_per_symbol: 4, seed: 404 },
+          boundary: { harmonics: [1, 2, 3], amplitudes: [0.030, 0.030, 0.030], phases_deg: [0, 40, 80] } }
+      ],
+      bands: [
+        { index: 0, name: "A", lo: { fixed: 1.05 }, hi: { edge: 0 } },
+        { index: 1, name: "B", lo: { edge: 1 }, hi: { edge: 2 } },
+        { index: 2, name: "C", lo: { edge: 3 }, hi: { fixed: 3.00, flat: true } }
+      ],
+      flat_circle_r: 3.00,
+      // §5 plate, as amended: corners plain 0.40 at (±2.65, ±2.65); center 2:1:2
+      // to 0.60 plus the breaker ring pair to 0.80 (= the count asymmetry AND the
+      // beacon carrier); donut budget 0.90 with 0.15 quiet to A-inner. The plate
+      // renders at the FILL shade (contrast 0.30, same as the bands): a full-dark
+      // bullseye field would make the center an AE sink no countdown QR could
+      // match-mean against — detection is self-normalized and the structures are
+      // huge, so the F1-dividend contrast is the right spend here too.
+      plate: {
+        shade: 0.32,
+        corners: { r_out: 0.40, at: 2.65 },
+        center: { r_out: 0.60 },
+        breaker: { r_in: 0.70, r_out: 0.80 },
+        quiet_r: 0.90
+      },
+      // §5 THE BEACON RING: boundary-CPM on the breaker pair, both edges carrying
+      // the SAME offset (constant ring width → luminance-constant; temporal keying
+      // would land in the F1 band — wiggle is forced). M=2 default / 4 negotiable;
+      // 7.5–15 bit/s = the acoustic FSK rate class. Near-field tier by physics.
+      beacon: {
+        rotation: { nominal_hz: 0.75, rate_tier_fps: 30, constellation: "beacon-cpm", M: 2, gray: false, frames_per_symbol: 4, seed: 505 },
+        harmonics: [1, 2, 3], amplitudes: [0.010, 0.008, 0.007], phases_deg: [0, 45, 90]
+      },
+      layers: [
+        { index: 0, role: "base" },          // C-inner: best radius, most robust M, carrier gate
+        { index: 1, role: "mid" },           // B-outer
+        { index: 2, role: "enhancement" },   // B-inner (close-range)
+        { index: 3, role: "enhancement" }    // A-outer (close-range)
+      ]
+    };
+    if (overrides) deepMerge(p, overrides);
+    return p;
+  }
+
+  function isV3(p) { return !!(p && p.bands && p.plate); }
+
+  /* Resolve a band boundary ref to { r0, sum, edge } (sum = worst excursion). */
+  function bandBoundary(p, ref) {
+    if (ref.edge !== undefined) { var a = p.annuli[ref.edge]; return { r0: a.r0, sum: sumAmp(a), edge: a }; }
+    return { r0: ref.fixed, sum: 0, edge: null };
+  }
+
+  /* The v3 validator. Geometry rules derive from the ACTUAL numbers (a probe
+     variant with smaller amps passes on its own geometry); deviations from the
+     frozen contract numbers warn rather than error, so §1's "amendments = v3.1"
+     stays a human rule, not a code gate. */
+  function validateV3(p) {
+    var errors = [], warnings = [];
+    var fps = p.frame_rate_hz;
+    var halfSizeUnits = (p.render.size_px / 2) / p.render.scale_px_per_unit;
+    var softU = p.render.edge_soft_px / p.render.scale_px_per_unit;
+    var APPROACH_MIN = 0.20, PINCH_MIN = 0.23, CONTRACT_SUM = 0.090;
+
+    for (var i = 0; i < p.annuli.length; i++) {
+      var a = p.annuli[i], tag = "edge " + (a.edge || a.index) + ": ";
+      var s = sumAmp(a);
+      if (a.boundary.harmonics.length !== a.boundary.amplitudes.length ||
+          a.boundary.harmonics.length !== a.boundary.phases_deg.length)
+        errors.push(tag + "harmonics/amplitudes/phases_deg length mismatch");
+      if (a.crossing !== "up" && a.crossing !== "down")
+        errors.push(tag + "crossing must be 'up' or 'down'");
+      var hasOdd = a.boundary.harmonics.some(function (k) { return k % 2 === 1; });
+      if (!hasOdd) errors.push(tag + "all harmonics even — half-turn symmetry halves the slip bound (F5c)");
+      if (a.boundary.harmonics[0] !== 1)
+        errors.push(tag + "k=1 pilot must lead the ladder (the pose-trap anchor, field-priced)");
+      else if (a.boundary.amplitudes[0] < 0.030 - 1e-9)
+        warnings.push(tag + "k=1 pilot " + a.boundary.amplitudes[0] + " under 0.030 — below the field-priced pose-trap margin (the 0.020 ring was the wander's first victim)");
+      if (Math.abs(s - CONTRACT_SUM) > 1e-9)
+        warnings.push(tag + "amplitude sum " + s.toFixed(3) + " ≠ frozen " + CONTRACT_SUM + " (contract sums are frozen by geometry, zero slack)");
+      for (var j = 0; j < a.boundary.amplitudes.length; j++)
+        if (a.boundary.amplitudes[j] * p.render.scale_px_per_unit < 1.5)
+          warnings.push(tag + "harmonic k=" + a.boundary.harmonics[j] + " amplitude under ~1.5 px at this scale (accepted deliberately for the 0.012 tails — 6-up is the close mode)");
+      var nomDeg = 360 * a.rotation.nominal_hz / fps;
+      var devDeg = 180 / a.rotation.frames_per_symbol;
+      var per = nomDeg + devDeg;
+      if (per > 150) errors.push(tag + "per-frame advance " + per.toFixed(1) + "° breaks the slip bound");
+      else if (per > 90) warnings.push(tag + "per-frame advance " + per.toFixed(1) + "° leaves little headroom");
+    }
+
+    // Trough guards: within-band pinch ≥ 0.23 (C sits exactly at the bound in
+    // the frozen numbers), facing-edge approach across each trough ≥ 0.20.
+    for (var b = 0; b < p.bands.length; b++) {
+      var band = p.bands[b];
+      var lo = bandBoundary(p, band.lo), hiB = bandBoundary(p, band.hi);
+      var pinch = (hiB.r0 - hiB.sum) - (lo.r0 + lo.sum);
+      if (pinch < PINCH_MIN - 1e-9)
+        errors.push("band " + band.name + " pinch " + pinch.toFixed(3) + " under " + PINCH_MIN + " — the fill vanishes at worst excursion");
+      if (b > 0) {
+        var prevHi = bandBoundary(p, p.bands[b - 1].hi);
+        var approach = (lo.r0 - lo.sum) - (prevHi.r0 + prevHi.sum);
+        if (approach < APPROACH_MIN - 1e-9)
+          errors.push("trough " + p.bands[b - 1].name + "→" + band.name + " facing-edge approach " + approach.toFixed(3) + " under " + APPROACH_MIN);
+      }
+    }
+    var outer = p.bands[p.bands.length - 1].hi;
+    if (!outer.flat || Math.abs(outer.fixed - p.flat_circle_r) > 1e-9)
+      warnings.push("outermost boundary is not the flat units anchor — the self-anchoring gauge (units ≡ flat " + p.flat_circle_r + ") is the v3 identity");
+    if (p.flat_circle_r + softU * 2 + 0.01 > halfSizeUnits)
+      errors.push("flat circle " + p.flat_circle_r + " + soft margin exceeds render half-size " + halfSizeUnits.toFixed(3));
+
+    // Plate containment (§5 as amended — the axis-containment repair is exactly
+    // what this check exists to hold).
+    var pl = p.plate;
+    var beaconSum = 0;
+    for (var k2 = 0; k2 < p.beacon.amplitudes.length; k2++) beaconSum += p.beacon.amplitudes[k2];
+    if (pl.corners.at + pl.corners.r_out + softU > halfSizeUnits)
+      errors.push("corner bullseye " + pl.corners.r_out + " at ±" + pl.corners.at + " fails axis containment (needs " + (pl.corners.at + pl.corners.r_out).toFixed(3) + " vs half-size " + halfSizeUnits.toFixed(3) + ")");
+    if (Math.hypot(pl.corners.at, pl.corners.at) - pl.corners.r_out < p.flat_circle_r + 0.03)
+      errors.push("corner bullseye intrudes on the flat circle + 0.03 margin");
+    if (pl.center.r_out + 0.02 > pl.breaker.r_in - beaconSum)
+      errors.push("beacon excursion erodes the center-bullseye/breaker gap (0.60→0.70 must hold at worst wiggle)");
+    if (pl.breaker.r_out + beaconSum > pl.quiet_r)
+      errors.push("breaker + beacon excursion " + (pl.breaker.r_out + beaconSum).toFixed(3) + " exceeds the donut budget " + pl.quiet_r);
+    var innermostLo = bandBoundary(p, p.bands[0].lo);
+    if (pl.quiet_r + 0.15 > innermostLo.r0 - innermostLo.sum + 1e-9)
+      errors.push("donut budget " + pl.quiet_r + " leaves under 0.15 quiet to the innermost band edge");
+
+    // Beacon (§5): M ∈ {2,4}; amplitude bound keeps the ring's quiet gaps.
+    if (p.beacon.rotation.M !== 2 && p.beacon.rotation.M !== 4)
+      errors.push("beacon M must be 2 (default) or 4 (negotiable)");
+    if (p.beacon.harmonics.length !== p.beacon.amplitudes.length ||
+        p.beacon.harmonics.length !== p.beacon.phases_deg.length)
+      errors.push("beacon harmonics/amplitudes/phases_deg length mismatch");
+    if (beaconSum > 0.045 + 1e-9)
+      errors.push("beacon amplitude sum " + beaconSum.toFixed(3) + " exceeds the ring-gap bound 0.045");
+    else if (beaconSum > 0.030 + 1e-9)
+      warnings.push("beacon amplitude sum " + beaconSum.toFixed(3) + " above 0.030 — quiet-zone margin thins");
+
+    // Tiling (§7): the knob is 1/2/6; the pitch keeps §5's 1.2-unit gutter.
+    var tn = p.tiling || 1;
+    if (tn !== 1 && tn !== 2 && tn !== 6)
+      errors.push("tiling " + tn + " is not a contract density (1 / 2 / 6-up)");
+    if (tn > 1 && (p.tile_pitch || 0) < p.flat_circle_r * 2 + 1.2 - 1e-9)
+      errors.push("tile_pitch " + p.tile_pitch + " under " + (p.flat_circle_r * 2 + 1.2) + " — the 1.2-unit gutter is the §5 floor");
+
+    // Countdown (§6): freeze ≥ 1 s is the optical-intrinsic floor (AF/AE settle
+    // + motion-onset anchor); the envelope is the only movable function.
+    var cd = p.countdown;
+    if (!cd || !(cd.freeze_s >= 1))
+      errors.push("freeze_s under the 1 s floor (AF/AE settle + onset anchor are optical-intrinsic)");
+    else {
+      if (!(cd.loop_s > cd.freeze_s)) errors.push("loop_s must exceed freeze_s");
+      else if (cd.freeze_s / cd.loop_s > 0.10)
+        warnings.push("freeze airtime " + Math.round(100 * cd.freeze_s / cd.loop_s) + "% over 10% — the envelope is an accelerant, not a tax");
+    }
+
+    // Matched-mean (§5): countdown-center vs steady-center within 0.05 — the
+    // QR↔bullseye swap must not kick AE. Exact when the emission module is
+    // loadable (it owns the QR module map); T22 re-checks on rendered pixels.
+    var em = (global.OC && global.OC.emission) ||
+             (typeof require !== "undefined" && typeof module !== "undefined" && module.exports ? require("./emission.js") : null);
+    if (em && em.centerMeans) {
+      var mm = em.centerMeans(p);
+      var dm = Math.abs(mm.steady - mm.countdown);
+      if (dm > 0.05) errors.push("matched-mean: countdown center " + mm.countdown.toFixed(3) + " vs steady " + mm.steady.toFixed(3) + " differ by " + dm.toFixed(3) + " (> 0.05) — the swap will kick AE");
+      else if (dm > 0.035) warnings.push("matched-mean margin thin: |" + mm.countdown.toFixed(3) + " − " + mm.steady.toFixed(3) + "| = " + dm.toFixed(3));
+    } else warnings.push("matched-mean unchecked — emission module not loaded");
+
+    var flicker = (global.OC && global.OC.flicker) ? global.OC.flicker.report(p)
+      : (typeof require !== "undefined" ? require("./flicker.js").report(p) : null);
+    if (flicker && flicker.worstBandHit && p.render.background - p.render.fill > 0.35)
+      warnings.push("flicker: harmonic content lands in the 3–60 Hz band at contrast > 0.35 — drop contrast or slow rotation (F1)");
+
+    return { ok: errors.length === 0, errors: errors, warnings: warnings, flicker: flicker };
+  }
+
+  var API = { defaultProfile: defaultProfile, profileV1: profileV1, profileV2r20: profileV2r20, profileV2r30: profileV2r30, profileV3: profileV3, isV3: isV3, bandBoundary: bandBoundary, validate: validate, sumAmp: sumAmp, sampleWindow: sampleWindow, deepMerge: deepMerge };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   global.OC = global.OC || {}; global.OC.profile = API;
 })(typeof window !== "undefined" ? window : globalThis);
@@ -641,9 +896,446 @@
     return m;
   }
 
+  /* ————— v3: the calibration plate that happens to carry data —————
+     Contract technical/phryctoros-v3-contract.md. Three dark bands, four
+     modulated EDGES (bands B carries two — its inner boundary wiggles too),
+     the unmodulated outer circle at exactly flat_circle_r (the units anchor
+     and per-frame conic gauge), a 2:1:2 bullseye at three deployments, the
+     breaker/beacon ring pair on the center bullseye, and a recurring
+     countdown QR whose center-mean matches the steady face (§5). */
+
+  function isV3(p) { return !!(p && p.bands && p.plate); }
+
+  function FN() { return (typeof module !== "undefined" && module.exports) ? require("./fountain.js") : global.OC.fountain; }
+
+  /* §6 envelope, internal format v1, 20 bytes. info: { K, len, pcrc, capability }
+     for an attached payload (null → zeros: identity-only envelope). */
+  function envelopeBytes(profile, info) {
+    var F = FN();
+    var b = new Uint8Array(20);
+    b[0] = 1;                                        // envelope format version
+    b[1] = 3;                                        // profile family: v3
+    b[2] = profile.preset === "high-rate" ? 1 : 0;   // §2: the ONE toggle rides the envelope
+    var s32 = (profile.session32 || 0) >>> 0;
+    b[3] = s32 >>> 24; b[4] = (s32 >>> 16) & 255; b[5] = (s32 >>> 8) & 255; b[6] = s32 & 255;
+    if (info) {
+      b[7] = info.K & 255;
+      b[8] = (info.len >> 8) & 255; b[9] = info.len & 255;
+      b[10] = (info.pcrc >> 8) & 255; b[11] = info.pcrc & 255;
+    }
+    b[12] = (info && info.capability !== undefined) ? info.capability : 1; // bit0 = 60 fps capture
+    b[13] = profile.countdown ? Math.round(profile.countdown.freeze_s * 10) & 255 : 0; // deciseconds
+    b[14] = profile.countdown ? profile.countdown.loop_s & 255 : 0;
+    b[15] = profile.tiling || 1;
+    // [16..17] control-plane reservations (DR/BDR, ceremony/login, rate reports)
+    var crc = F.crc16(b.subarray(0, 18));
+    b[18] = crc >> 8; b[19] = crc & 255;
+    return b;
+  }
+
+  /* Countdown QR module map: finders TL/TR/BL + separators + timing (the same
+     shape the v2 fiducial scan already registers), data cells = the envelope
+     bit stream repeated and WHITENED to ~50% density (the matched-mean rule
+     leans on that density; repetition is the v0 FEC). 1 = dark. */
+  function envelopeModules(qr, envBytes) {
+    var n = qr.modules, m = new Uint8Array(n * n), reserved = new Uint8Array(n * n);
+    var rng = P().mulberry32(qr.seed);
+    function setIf(x, y, v) { if (x >= 0 && y >= 0 && x < n && y < n) m[y * n + x] = v; }
+    function finder(ox, oy) {
+      for (var j = 0; j < 7; j++) for (var i = 0; i < 7; i++) {
+        var d = Math.max(Math.abs(i - 3), Math.abs(j - 3));
+        m[(oy + j) * n + (ox + i)] = (d === 3 || d <= 1) ? 1 : 0;
+      }
+      for (var q = -1; q <= 7; q++) { setIf(ox + q, oy - 1, 0); setIf(ox + q, oy + 7, 0); setIf(ox - 1, oy + q, 0); setIf(ox + 7, oy + q, 0); }
+      for (var yy = oy - 1; yy <= oy + 7; yy++) for (var xx = ox - 1; xx <= ox + 7; xx++)
+        if (xx >= 0 && yy >= 0 && xx < n && yy < n) reserved[yy * n + xx] = 1;
+    }
+    finder(0, 0); finder(n - 7, 0); finder(0, n - 7);
+    for (var t = 8; t <= n - 9; t++) {
+      m[6 * n + t] = (t % 2 === 0) ? 1 : 0; reserved[6 * n + t] = 1;
+      m[t * n + 6] = (t % 2 === 0) ? 1 : 0; reserved[t * n + 6] = 1;
+    }
+    var bi = 0, nBytes = envBytes.length;
+    for (var y2 = 0; y2 < n; y2++) for (var x2 = 0; x2 < n; x2++) {
+      var idx = y2 * n + x2;
+      if (reserved[idx]) continue;
+      var bit = (envBytes[(bi >> 3) % nBytes] >> (7 - (bi & 7))) & 1;
+      m[idx] = bit ^ (rng() < 0.5 ? 1 : 0);
+      bi++;
+    }
+    return m;
+  }
+
+  /* §5 beacon control carousel v0: the envelope mirror — magic, length, envelope
+     bytes, CRC8 — as M=2 bits (M=4: Gray pairs), cycled by the schedule. */
+  function beaconSymbols(envBytes, M) {
+    var F = FN();
+    var payload = new Uint8Array(envBytes.length + 3);
+    payload[0] = 0xB3; payload[1] = envBytes.length & 255;
+    payload.set(envBytes, 2);
+    payload[payload.length - 1] = F.crc8(payload, payload.length - 1);
+    var bitsPer = M === 4 ? 2 : 1, nBits = payload.length * 8;
+    var syms = new Uint8Array(Math.ceil(nBits / bitsPer));
+    for (var s = 0; s < syms.length; s++) {
+      var v = 0;
+      for (var b = 0; b < bitsPer; b++) {
+        var i = s * bitsPer + b;
+        v = (v << 1) | (i < nBits ? (payload[i >> 3] >> (7 - (i & 7))) & 1 : 0);
+      }
+      syms[s] = M === 4 ? F.toGray(v) : v;
+    }
+    return syms;
+  }
+
+  function buildBeaconSchedule(profile, nFrames, envBytes) {
+    return buildSchedule({ rotation: profile.beacon.rotation }, profile.frame_rate_hz, nFrames,
+                         profile.preamble_symbols, beaconSymbols(envBytes, profile.beacon.rotation.M));
+  }
+
+  /* §6 recurring countdown: wall-clock frame → { freeze, eff }. The emission
+     clock PAUSES during freeze (v2's frozen-frame-0 scheme, recurring): eff is
+     the schedule position, so a mid-loop joiner sees motion resume exactly
+     where the plate froze. */
+  function timeline(profile, wallF) {
+    var cd = profile.countdown;
+    if (!cd) return { freeze: false, eff: wallF, loopIdx: 0, inLoop: wallF };
+    var fps = profile.frame_rate_hz;
+    var loopF = Math.max(2, Math.round(cd.loop_s * fps)), freezeF = Math.min(loopF - 1, Math.round(cd.freeze_s * fps));
+    var loopIdx = Math.floor(wallF / loopF), inLoop = wallF - loopIdx * loopF;
+    var effBase = loopIdx * (loopF - freezeF);
+    if (inLoop < freezeF) return { freeze: true, eff: effBase, loopIdx: loopIdx, inLoop: inLoop };
+    return { freeze: false, eff: effBase + (inLoop - freezeF), loopIdx: loopIdx, inLoop: inLoop };
+  }
+
+  /* 2:1:2 bullseye coverage (chord 2:1:4:1:2): dark disc to 0.4·R, light gap,
+     dark ring 0.6·R → R. Anti-QR twice over (outer:inner runs 2:1 vs QR's 1:1,
+     center 4 vs 3). */
+  function bullseyeCov(rr, R, scale, soft) {
+    var covDisc = clamp01((0.4 * R - rr) * scale / soft + 0.5);
+    var covRing = clamp01((rr - 0.6 * R) * scale / soft + 0.5) * clamp01((R - rr) * scale / soft + 0.5);
+    return covDisc > covRing ? covDisc : covRing;
+  }
+
+  /* The v3 renderer. f is the EFFECTIVE frame (schedule position — the caller
+     maps wall clock through timeline()). opts.countdown renders the freeze
+     face: bands frozen at f, corners kept, center = envelope QR (the swap the
+     matched-mean rule governs — no bullseye, no beacon, no data flow).
+     opts.beaconSchedule: undefined → built from the default envelope
+     (deterministic); null → static breaker ring (δ = 0). */
+  function renderFrameV3(profile, f, opts) {
+    opts = opts || {};
+    var sin = opts.trig ? opts.trig.sin : Math.sin;
+    var cos = opts.trig ? opts.trig.cos : Math.cos;
+    var atan2 = opts.trig ? opts.trig.atan2 : Math.atan2;
+    var schedules = opts.schedules || buildSchedules(profile, f + 1, opts.carousels);
+
+    var R = profile.render, size = R.size_px, scale = R.scale_px_per_unit;
+    var img = { w: size, h: size, data: new Float32Array(size * size) };
+    var bg = R.background, fill = R.fill, soft = R.edge_soft_px;
+    var fps = profile.frame_rate_hz;
+    var pad = (soft / scale) * 2 + 0.01;
+    var pl = profile.plate, shade = pl.shade !== undefined ? pl.shade : fill;
+
+    var edges = profile.annuli.map(function (a, ai) {
+      var phi = phaseAt(a, schedules[ai], fps, f);
+      return a.boundary.harmonics.map(function (k, j) {
+        return { k: k, a: a.boundary.amplitudes[j], beta: a.boundary.phases_deg[j] * Math.PI / 180 - k * phi };
+      });
+    });
+    function resolveB(ref) {
+      if (ref.edge !== undefined) {
+        var a = profile.annuli[ref.edge], sum = 0;
+        for (var j = 0; j < a.boundary.amplitudes.length; j++) sum += a.boundary.amplitudes[j];
+        return { r0: a.r0, betas: edges[ref.edge], sum: sum };
+      }
+      return { r0: ref.fixed, betas: null, sum: 0 };
+    }
+    var bands = profile.bands.map(function (band) {
+      var lo = resolveB(band.lo), hi = resolveB(band.hi);
+      return { lo: lo, hi: hi, rMin: lo.r0 - lo.sum - pad, rMax: hi.r0 + hi.sum + pad };
+    });
+    function evalBetas(betas, th) {
+      if (!betas) return 0;
+      var s = 0;
+      for (var h = 0; h < betas.length; h++) s += betas[h].a * cos(betas[h].k * th + betas[h].beta);
+      return s;
+    }
+
+    var beacon = null;
+    if (!opts.countdown) {
+      var bs = opts.beaconSchedule;
+      if (bs === undefined) bs = buildBeaconSchedule(profile, f + 1, opts.envBytes || envelopeBytes(profile, opts.payloadInfo || null));
+      var phiB = bs ? phaseAt({ rotation: profile.beacon.rotation }, bs, fps, f) : 0;
+      var bSum = 0;
+      for (var q = 0; q < profile.beacon.amplitudes.length; q++) bSum += profile.beacon.amplitudes[q];
+      beacon = {
+        sum: bSum,
+        betas: profile.beacon.harmonics.map(function (k, j) {
+          return { k: k, a: profile.beacon.amplitudes[j], beta: profile.beacon.phases_deg[j] * Math.PI / 180 - k * phiB };
+        })
+      };
+    }
+    var qrm = null, qrHalf = 0, qrModU = 0, qrN = 0;
+    if (opts.countdown) {
+      qrm = opts.qrModules || envelopeModules(profile.qr, opts.envBytes || envelopeBytes(profile, opts.payloadInfo || null));
+      qrN = profile.qr.modules;
+      qrHalf = profile.qr.width_units / 2;
+      qrModU = profile.qr.width_units / qrN;
+    }
+
+    var cAt = pl.corners.at, cR = pl.corners.r_out;
+    var half = size / 2, d = img.data;
+    for (var py = 0; py < size; py++) {
+      var y = (py + 0.5 - half) / scale;
+      var rowOff = py * size;
+      for (var px = 0; px < size; px++) {
+        var x = (px + 0.5 - half) / scale;
+        var v = bg;
+        var r = Math.sqrt(x * x + y * y);
+        if (r <= pl.quiet_r + pad) {
+          if (opts.countdown) {
+            var ax = x < 0 ? -x : x, ay = y < 0 ? -y : y;
+            if (ax <= qrHalf && ay <= qrHalf) {
+              var mx = Math.floor((x + qrHalf) / qrModU); if (mx >= qrN) mx = qrN - 1;
+              var my = Math.floor((y + qrHalf) / qrModU); if (my >= qrN) my = qrN - 1;
+              if (qrm[my * qrN + mx]) v = profile.qr.dark;
+            }
+          } else {
+            var cov = bullseyeCov(r, pl.center.r_out, scale, soft);
+            var loB = pl.breaker.r_in, hiBk = pl.breaker.r_out;
+            var reach = beacon ? beacon.sum : 0;
+            if (r >= loB - reach - pad && r <= hiBk + reach + pad) {
+              var dlt = beacon ? evalBetas(beacon.betas, atan2(y, x)) : 0;
+              var covB = clamp01((r - (loB + dlt)) * scale / soft + 0.5) * clamp01(((hiBk + dlt) - r) * scale / soft + 0.5);
+              if (covB > cov) cov = covB;
+            }
+            if (cov > 0) v = bg + (shade - bg) * cov;
+          }
+        } else {
+          var axc = (x < 0 ? -x : x) - cAt, ayc = (y < 0 ? -y : y) - cAt;
+          if (axc >= -cR - pad && axc <= cR + pad && ayc >= -cR - pad && ayc <= cR + pad) {
+            var rc = Math.sqrt(axc * axc + ayc * ayc);
+            var covK = bullseyeCov(rc, cR, scale, soft);
+            if (covK > 0) v = bg + (shade - bg) * covK;
+          } else {
+            for (var bi2 = 0; bi2 < bands.length; bi2++) {
+              var B = bands[bi2];
+              if (r < B.rMin || r > B.rMax) continue;
+              var th = atan2(y, x);
+              var bLo = B.lo.r0 + evalBetas(B.lo.betas, th);
+              var bHi = B.hi.r0 + evalBetas(B.hi.betas, th);
+              var cov2 = clamp01((bHi - r) * scale / soft + 0.5) * clamp01((r - bLo) * scale / soft + 0.5);
+              if (cov2 > 0) v = bg + (fill - bg) * cov2;
+              break; // bands are disjoint by the trough guards
+            }
+          }
+        }
+        d[rowOff + px] = v;
+      }
+    }
+    return img;
+  }
+
+  /* §7 tiling layout: 1 / 2 / 6-up as a grid (2×1, 3×2 — grid beats hex on
+     16:9 to two rows). Tile 0 = top-left = the DESIGNATED tile: the only one
+     carrying the breaker pair + beacon (§5's count asymmetry is the decoder's
+     tile identity). Gutter-vertex bullseyes sit on INTERIOR lattice vertices
+     (border vertices would clip half a bullseye off the canvas; 2-up has no
+     interior vertex and leans on its ten plate bullseyes). */
+  function tileLayout(p) {
+    var n = p.tiling || 1;
+    if (n <= 1) return { n: 1, cols: 1, rows: 1, pitch: 0 };
+    var cols = n === 2 ? 2 : 3, rows = n === 2 ? 1 : 2;
+    return { n: n, cols: cols, rows: rows, pitch: p.tile_pitch || 7.2 };
+  }
+
+  /* The tiled analytic renderer. f is the effective frame; opts.schedulesT =
+     per-tile per-edge schedules (tile-seeded carousels); opts.countdown puts
+     the envelope QR on EVERY tile center (any tile in frame carries the
+     envelope; per-tile matched-mean stays inside the 0.05 bound with and
+     without the breaker: Δ≈0.026/0.029). Beacon renders on tile 0 only. */
+  function renderFrameV3Tiled(profile, f, opts) {
+    opts = opts || {};
+    var sin = opts.trig ? opts.trig.sin : Math.sin;
+    var cos = opts.trig ? opts.trig.cos : Math.cos;
+    var atan2 = opts.trig ? opts.trig.atan2 : Math.atan2;
+    var layout = tileLayout(profile);
+    var R = profile.render, scale = R.scale_px_per_unit;
+    var wPx = Math.round(layout.cols * layout.pitch * scale);
+    var hPx = Math.round(layout.rows * layout.pitch * scale);
+    var img = { w: wPx, h: hPx, data: new Float32Array(wPx * hPx) };
+    var bg = R.background, fill = R.fill, soft = R.edge_soft_px;
+    var fps = profile.frame_rate_hz;
+    var pad = (soft / scale) * 2 + 0.01;
+    var pl = profile.plate, shade = pl.shade !== undefined ? pl.shade : fill;
+
+    var schedulesT = opts.schedulesT;
+    if (!schedulesT) {
+      schedulesT = [];
+      for (var t0 = 0; t0 < layout.n; t0++) schedulesT.push(buildSchedules(profile, f + 1, undefined));
+    }
+    function betasFor(t) {
+      return profile.annuli.map(function (a, ai) {
+        var phi = phaseAt(a, schedulesT[t][ai], fps, f);
+        return a.boundary.harmonics.map(function (k, j) {
+          return { k: k, a: a.boundary.amplitudes[j], beta: a.boundary.phases_deg[j] * Math.PI / 180 - k * phi };
+        });
+      });
+    }
+    var edgesT = [], bandsT = [];
+    for (var tb = 0; tb < layout.n; tb++) {
+      var eb = betasFor(tb);
+      edgesT.push(eb);
+      bandsT.push(profile.bands.map(function (band) {
+        function res(ref) {
+          if (ref.edge !== undefined) {
+            var a = profile.annuli[ref.edge], sum = 0;
+            for (var j = 0; j < a.boundary.amplitudes.length; j++) sum += a.boundary.amplitudes[j];
+            return { r0: a.r0, betas: eb[ref.edge], sum: sum };
+          }
+          return { r0: ref.fixed, betas: null, sum: 0 };
+        }
+        var lo = res(band.lo), hi = res(band.hi);
+        return { lo: lo, hi: hi, rMin: lo.r0 - lo.sum - pad, rMax: hi.r0 + hi.sum + pad };
+      }));
+    }
+    function evalB(betas, th) {
+      if (!betas) return 0;
+      var s = 0;
+      for (var h = 0; h < betas.length; h++) s += betas[h].a * cos(betas[h].k * th + betas[h].beta);
+      return s;
+    }
+
+    var beacon = null;
+    if (!opts.countdown) {
+      var bs = opts.beaconSchedule;
+      if (bs === undefined) bs = buildBeaconSchedule(profile, f + 1, opts.envBytes || envelopeBytes(profile, opts.payloadInfo || null));
+      var phiB = bs ? phaseAt({ rotation: profile.beacon.rotation }, bs, fps, f) : 0;
+      var bSum = 0;
+      for (var q = 0; q < profile.beacon.amplitudes.length; q++) bSum += profile.beacon.amplitudes[q];
+      beacon = {
+        sum: bSum,
+        betas: profile.beacon.harmonics.map(function (k, j) {
+          return { k: k, a: profile.beacon.amplitudes[j], beta: profile.beacon.phases_deg[j] * Math.PI / 180 - k * phiB };
+        })
+      };
+    }
+    var qrm = null, qrHalf = 0, qrModU = 0, qrN = 0;
+    if (opts.countdown) {
+      qrm = opts.qrModules || envelopeModules(profile.qr, opts.envBytes || envelopeBytes(profile, opts.payloadInfo || null));
+      qrN = profile.qr.modules;
+      qrHalf = profile.qr.width_units / 2;
+      qrModU = profile.qr.width_units / qrN;
+    }
+
+    // interior gutter-lattice vertices, canvas units
+    var verts = [];
+    for (var vc = 1; vc < layout.cols; vc++)
+      for (var vr = 1; vr < layout.rows; vr++)
+        verts.push({ x: vc * layout.pitch, y: vr * layout.pitch });
+    var vR = pl.corners.r_out;
+
+    var cAt = pl.corners.at, cR = pl.corners.r_out;
+    var d = img.data, pitch = layout.pitch;
+    for (var py = 0; py < hPx; py++) {
+      var yG = (py + 0.5) / scale;
+      var rowOff = py * wPx;
+      for (var px = 0; px < wPx; px++) {
+        var xG = (px + 0.5) / scale;
+        var v = bg;
+        var owned = false;
+        for (var vi = 0; vi < verts.length; vi++) {
+          var dvx = xG - verts[vi].x, dvy = yG - verts[vi].y;
+          if (dvx >= -vR - pad && dvx <= vR + pad && dvy >= -vR - pad && dvy <= vR + pad) {
+            var rv = Math.sqrt(dvx * dvx + dvy * dvy);
+            var covV = bullseyeCov(rv, vR, scale, soft);
+            if (covV > 0) v = bg + (shade - bg) * covV;
+            owned = true;
+            break;
+          }
+        }
+        if (!owned) {
+          var col = Math.floor(xG / pitch); if (col >= layout.cols) col = layout.cols - 1;
+          var row = Math.floor(yG / pitch); if (row >= layout.rows) row = layout.rows - 1;
+          var t = row * layout.cols + col;
+          var x = xG - (col + 0.5) * pitch, y = yG - (row + 0.5) * pitch;
+          var r = Math.sqrt(x * x + y * y);
+          if (r <= pl.quiet_r + pad) {
+            if (opts.countdown) {
+              var ax = x < 0 ? -x : x, ay = y < 0 ? -y : y;
+              if (ax <= qrHalf && ay <= qrHalf) {
+                var mx = Math.floor((x + qrHalf) / qrModU); if (mx >= qrN) mx = qrN - 1;
+                var my = Math.floor((y + qrHalf) / qrModU); if (my >= qrN) my = qrN - 1;
+                if (qrm[my * qrN + mx]) v = profile.qr.dark;
+              }
+            } else {
+              var cov = bullseyeCov(r, pl.center.r_out, scale, soft);
+              if (t === 0) {
+                var loB = pl.breaker.r_in, hiBk = pl.breaker.r_out;
+                var reach = beacon ? beacon.sum : 0;
+                if (r >= loB - reach - pad && r <= hiBk + reach + pad) {
+                  var dlt = beacon ? evalB(beacon.betas, atan2(y, x)) : 0;
+                  var covB = clamp01((r - (loB + dlt)) * scale / soft + 0.5) * clamp01(((hiBk + dlt) - r) * scale / soft + 0.5);
+                  if (covB > cov) cov = covB;
+                }
+              }
+              if (cov > 0) v = bg + (shade - bg) * cov;
+            }
+          } else {
+            var axc = (x < 0 ? -x : x) - cAt, ayc = (y < 0 ? -y : y) - cAt;
+            if (axc >= -cR - pad && axc <= cR + pad && ayc >= -cR - pad && ayc <= cR + pad) {
+              var rc = Math.sqrt(axc * axc + ayc * ayc);
+              var covK = bullseyeCov(rc, cR, scale, soft);
+              if (covK > 0) v = bg + (shade - bg) * covK;
+            } else {
+              var bands = bandsT[t];
+              for (var bi2 = 0; bi2 < bands.length; bi2++) {
+                var B = bands[bi2];
+                if (r < B.rMin || r > B.rMax) continue;
+                var th = atan2(y, x);
+                var bLo = B.lo.r0 + evalB(B.lo.betas, th);
+                var bHi = B.hi.r0 + evalB(B.hi.betas, th);
+                var cov2 = clamp01((bHi - r) * scale / soft + 0.5) * clamp01((r - bLo) * scale / soft + 0.5);
+                if (cov2 > 0) v = bg + (fill - bg) * cov2;
+                break;
+              }
+            }
+          }
+        }
+        d[rowOff + px] = v;
+      }
+    }
+    return img;
+  }
+
+  /* Matched-mean arithmetic (§5): exact areas for the steady face, the actual
+     module map for the countdown face. The validator errors past 0.05; T22
+     re-checks the same bound on rendered pixels. */
+  function centerMeans(profile) {
+    var pl = profile.plate, bg = profile.render.background;
+    var shade = pl.shade !== undefined ? pl.shade : profile.render.fill;
+    var donut = Math.PI * pl.quiet_r * pl.quiet_r;
+    var c = pl.center.r_out;
+    var darkSteady = Math.PI * (0.16 * c * c + (c * c - 0.36 * c * c) +
+                                (pl.breaker.r_out * pl.breaker.r_out - pl.breaker.r_in * pl.breaker.r_in));
+    var env = envelopeBytes(profile, null);
+    var m = envelopeModules(profile.qr, env);
+    var darkCells = 0;
+    for (var i = 0; i < m.length; i++) if (m[i]) darkCells++;
+    var cell = profile.qr.width_units / profile.qr.modules;
+    return {
+      steady: bg + (shade - bg) * (darkSteady / donut),
+      countdown: bg + (profile.qr.dark - bg) * (darkCells * cell * cell / donut)
+    };
+  }
+
   /* Render frame f to {w,h,data} luminance. opts: { trig: {sin,cos,atan2} } for the
      deterministic golden path; defaults to native Math. */
   function renderFrame(profile, f, opts) {
+    if (isV3(profile)) {
+      return tileLayout(profile).n > 1 ? renderFrameV3Tiled(profile, f, opts)
+                                       : renderFrameV3(profile, f, opts);
+    }
     opts = opts || {};
     var sin = opts.trig ? opts.trig.sin : Math.sin;
     var cos = opts.trig ? opts.trig.cos : Math.cos;
@@ -723,6 +1415,34 @@
   function renderSequence(profile, n, opts) {
     opts = opts || {};
     var schedules = buildSchedules(profile, n, opts.carousels);
+    if (isV3(profile)) {
+      // Steady-state sequence; countdown weaving is the emit page's job via
+      // timeline(). One beacon schedule and one envelope serve every frame.
+      var envB = opts.envBytes || envelopeBytes(profile, opts.payloadInfo || null);
+      var beaconSchedule = opts.beaconSchedule !== undefined ? opts.beaconSchedule : buildBeaconSchedule(profile, n, envB);
+      var layout = tileLayout(profile);
+      if (layout.n > 1) {
+        // Per-tile carousels (tile-shifted seeds; same payload blocks) and
+        // per-tile schedules. opts.payloadBytes triggers payload mode; a
+        // seeded reference stream per tile otherwise.
+        var FN2 = FN();
+        var schedulesT = [];
+        for (var tt = 0; tt < layout.n; tt++) {
+          var carT = opts.payloadBytes !== undefined && opts.payloadBytes !== null
+            ? FN2.encodeCarousels(profile, opts.payloadBytes, { tile: tt }).carousels
+            : (opts.carouselsT ? opts.carouselsT[tt] : undefined);
+          schedulesT.push(buildSchedules(profile, n, carT));
+        }
+        var framesT = [];
+        for (var ft = 0; ft < n; ft++)
+          framesT.push({ f: ft, img: renderFrameV3Tiled(profile, ft, { trig: opts.trig, schedulesT: schedulesT, beaconSchedule: beaconSchedule, envBytes: envB }) });
+        return { frames: framesT, schedulesT: schedulesT, beaconSchedule: beaconSchedule };
+      }
+      var frames3 = [];
+      for (var f3 = 0; f3 < n; f3++)
+        frames3.push({ f: f3, img: renderFrameV3(profile, f3, { trig: opts.trig, schedules: schedules, beaconSchedule: beaconSchedule, envBytes: envB }) });
+      return { frames: frames3, schedules: schedules, beaconSchedule: beaconSchedule };
+    }
     var modules = fiducialModules(profile.fiducial);
     var frames = [];
     for (var f = 0; f < n; f++)
@@ -743,7 +1463,11 @@
   var API = {
     wrapSigned: wrapSigned, buildSchedule: buildSchedule, buildSchedules: buildSchedules,
     phaseAt: phaseAt, fiducialModules: fiducialModules, renderFrame: renderFrame,
-    renderSequence: renderSequence, toImageData: toImageData, TAU: TAU
+    renderSequence: renderSequence, toImageData: toImageData, TAU: TAU,
+    isV3: isV3, envelopeBytes: envelopeBytes, envelopeModules: envelopeModules,
+    beaconSymbols: beaconSymbols, buildBeaconSchedule: buildBeaconSchedule,
+    timeline: timeline, renderFrameV3: renderFrameV3, renderFrameV3Tiled: renderFrameV3Tiled,
+    tileLayout: tileLayout, centerMeans: centerMeans, bullseyeCov: bullseyeCov
   };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   global.OC = global.OC || {}; global.OC.emission = API;
@@ -982,8 +1706,33 @@
     opts = opts || {};
     var maxE = opts.maxEmitters || 4;
     var annuli = profile.annuli;
-    var outerA = annuli[annuli.length - 1];
-    var rOutU = outerA.r0;
+    // Dark-band spans + the outer radius + the refine target. v2: annuli ARE
+    // bands (r_inner→r0), outer ring's modulated boundary refines. v3: annuli
+    // are EDGES — bands come from profile.bands at nominal radii, and the
+    // refine target is THE FLAT CIRCLE at 3.00 (the units anchor, §4: measured
+    // every frame with no modulation to average — sampleBoundary with an empty
+    // harmonic set and sum 0 is exactly that gauge).
+    var isV3 = !!(profile.bands && profile.plate);
+    var spans, rOutU, refineA, refineR;
+    if (isV3) {
+      spans = profile.bands.map(function (b) {
+        var lo = b.lo.edge !== undefined ? annuli[b.lo.edge].r0 : b.lo.fixed;
+        var hi = b.hi.edge !== undefined ? annuli[b.hi.edge].r0 : b.hi.fixed;
+        return [lo, hi];
+      });
+      rOutU = profile.flat_circle_r;
+      refineR = rOutU;
+      // amplitudes here only widen sampleWindow's search span (±0.14): the
+      // NCC scale grid steps ~3%, and a 3% error puts the crossing outside a
+      // bare ±0.08 window. The circle itself is unmodulated.
+      refineA = { r0: rOutU, crossing: "up", boundary: { harmonics: [], amplitudes: [0.06], phases_deg: [] } };
+    } else {
+      spans = annuli.map(function (a) { return [a.r_inner, a.r0]; });
+      var outerA = annuli[annuli.length - 1];
+      rOutU = outerA.r0;
+      refineR = rOutU;
+      refineA = outerA;
+    }
 
     // --- decimate for the vote/profile passes ---
     var dec = Math.max(1, Math.ceil(Math.max(img.w, img.h) / 640));
@@ -1068,8 +1817,8 @@
       return lum[i0] * (1 - tx) * (1 - ty) + lum[i0 + 1] * tx * (1 - ty) + lum[i0 + W] * (1 - tx) * ty + lum[i0 + W + 1] * tx * ty;
     };
     var inBand = function (u) {
-      for (var bi2 = 0; bi2 < annuli.length; bi2++)
-        if (u >= annuli[bi2].r_inner && u <= annuli[bi2].r0) return true;
+      for (var bi2 = 0; bi2 < spans.length; bi2++)
+        if (u >= spans[bi2][0] && u <= spans[bi2][1]) return true;
       return false;
     };
     var found = [];
@@ -1131,10 +1880,10 @@
       // coverage: per annulus, band midpoint darker than the gap beyond it, per angle
       var covs = [], covSum = 0;
       var okCov = true;
-      for (var a8 = 0; a8 < annuli.length; a8++) {
-        var an8 = annuli[a8];
-        var rBand = ((an8.r_inner + an8.r0) / 2) * best.s;
-        var gapU = a8 + 1 < annuli.length ? (an8.r0 + annuli[a8 + 1].r_inner) / 2 : an8.r0 + 0.35;
+      for (var a8 = 0; a8 < spans.length; a8++) {
+        var sp8 = spans[a8];
+        var rBand = ((sp8[0] + sp8[1]) / 2) * best.s;
+        var gapU = a8 + 1 < spans.length ? (sp8[1] + spans[a8 + 1][0]) / 2 : sp8[1] + 0.35;
         var rGap = gapU * best.s;
         var hits = 0, tries = 0;
         for (var a9 = 0; a9 < NANG; a9++) {
@@ -1148,7 +1897,7 @@
         covs.push(cov); covSum += cov;
         if (cov < 0.6) okCov = false;
       }
-      if (!okCov || covSum / annuli.length < 0.72) continue;
+      if (!okCov || covSum / spans.length < 0.72) continue;
 
       // --- promote to full-res similarity H, then physics refinement ---
       var sFull = best.s * dec;
@@ -1157,7 +1906,7 @@
       var Hc = mkH(cxF, cyF, sFull);
       var samp = SAMP();
       for (var it = 0; it < 3; it++) {
-        var sb = samp.sampleBoundary(img, Hc, outerA);
+        var sb = samp.sampleBoundary(img, Hc, refineA);
         if (sb.found < sb.N * 0.5) break;
         var n9 = 0, mean9 = 0;
         for (var i9 = 0; i9 < sb.N; i9++) if (!isNaN(sb.r[i9])) { mean9 += sb.r[i9]; n9++; }
@@ -1171,9 +1920,9 @@
         }
         dxU *= 2 / n9; dyU *= 2 / n9;
         cxF += sFull * dxU; cyF += sFull * dyU;
-        sFull *= mean9 / outerA.r0;
+        sFull *= mean9 / refineR;
         Hc = mkH(cxF, cyF, sFull);
-        if (Math.abs(dxU) < 0.003 && Math.abs(dyU) < 0.003 && Math.abs(mean9 / outerA.r0 - 1) < 0.003) break;
+        if (Math.abs(dxU) < 0.003 && Math.abs(dyU) < 0.003 && Math.abs(mean9 / refineR - 1) < 0.003) break;
       }
       // duplicate suppression vs already-found (full-res coords)
       var dup = false;
@@ -1182,7 +1931,7 @@
         if (Math.hypot(g10.cx - cxF, g10.cy - cyF) < 1.5 * Math.max(sFull, g10.s)) { dup = true; break; }
       }
       if (dup) continue;
-      found.push({ cx: cxF, cy: cyF, s: sFull, ncc: best.ncc, coverage: covSum / annuli.length, H: Hc });
+      found.push({ cx: cxF, cy: cyF, s: sFull, ncc: best.ncc, coverage: covSum / spans.length, H: Hc });
     }
 
     // --- emitter objects shaped like the finder path's ---
@@ -1207,6 +1956,20 @@
      (the fiducial dies before the rings — walks 4–5). */
   function registerAll(img, opts) {
     opts = opts || {};
+    // v3: the steady plate carries NO fiducial — its band silhouette is the
+    // PRIMARY registration. The corner bullseyes sit at exactly a virtual
+    // fiducial's TL/TR/BL layout (dark centers, right angle), so on a
+    // multi-tile plate the finder scan can chance-accept decoy triples —
+    // T23b caught two on the 6-up frame (the AF-collar decoy lesson, third
+    // appearance). Rings first; the finder path remains the COUNTDOWN
+    // assist — QR frames, the far-field envelope rung, where rings may die
+    // while the QR still reads.
+    var pV3 = opts.profile;
+    var isV3reg = !!(pV3 && pV3.bands && pV3.plate);
+    if (isV3reg && !opts.noRings) {
+      var ringed3 = ringRegisterAll(img, pV3, opts);
+      if (ringed3.length) return { emitters: ringed3, candidates: [], method: "rings" };
+    }
     var cands = findFinderCandidates(img, opts);
     var triples = groupTriples(cands);
     var scored = [];
@@ -1217,6 +1980,18 @@
       e.structureScore = structureScore(img, e.H);
       scored.push(e);
     }
+    // v3 countdown frames: the envelope QR spans qr.width_units (≠ 1) in
+    // plate units, but the triple's H maps QR-width units. Rescale so every
+    // consumer keeps sampling in plate units — applyH(H', x, y) ≡
+    // applyH(H, x/w, y/w).
+    var p3 = opts.profile;
+    if (p3 && p3.bands && p3.plate && p3.qr && p3.qr.width_units !== 1) {
+      var w3 = p3.qr.width_units;
+      for (var si = 0; si < scored.length; si++) {
+        var Hs = scored[si].H;
+        scored[si].H = [Hs[0] / w3, Hs[1] / w3, Hs[2], Hs[3] / w3, Hs[4] / w3, Hs[5], Hs[6] / w3, Hs[7] / w3, Hs[8]];
+      }
+    }
     scored.sort(function (a, b) { return (b.timingScore + b.structureScore) - (a.timingScore + a.structureScore); });
     var emitters = [];
     for (var k = 0; k < scored.length; k++) {
@@ -1225,7 +2000,7 @@
         if (s.structureScore >= 0.7) emitters.push(s);
       } else if (s.timingScore >= 0.6 && s.structureScore >= 0.7) emitters.push(s);
     }
-    if (!emitters.length && opts.profile && !opts.noRings) {
+    if (!emitters.length && opts.profile && !opts.noRings && !isV3reg) {
       var ringed = ringRegisterAll(img, opts.profile, opts);
       if (ringed.length) return { emitters: ringed, candidates: cands, method: "rings" };
     }
@@ -1235,6 +2010,255 @@
   var API = { registerAll: registerAll, ringRegisterAll: ringRegisterAll, findFinderCandidates: findFinderCandidates, groupTriples: groupTriples, threshold: threshold, FC: FC };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   global.OC = global.OC || {}; global.OC.register = API;
+})(typeof window !== "undefined" ? window : globalThis);
+
+</script>
+<script>
+/* inlined: plate.js */
+/* plate.js — v3 decoder rung 2 (contract §5/§9): the bullseye constellation as
+   a per-frame registration instrument, and the beacon ring as a channel.
+
+   The 2:1:2 template read radially from a bullseye's center is three circle
+   edges — disc→gap at 0.4·R (up), gap→ring at 0.6·R (down), ring→out at R
+   (up). Each edge is fit the way ring registration fits the flat circle: per-
+   angle subpixel crossings, first-harmonic center correction (k=1 IS the
+   centering error — F5b's diagnostic as corrector), mean radius as scale.
+   Three edges × five deployments = fifteen circle fits per frame; the solve
+   turns the verified centers into one least-squares homography (the §9
+   "per-frame plate solve" rung — the center-shift field across bullseyes is
+   the measured perspective k=1, so the DLT absorbs exactly the term the
+   static conic can only average).
+
+   The beacon (§5) needs no machinery of its own: the breaker ring's OUTER
+   edge is one more boundary-CPM channel — an annulus-shaped descriptor sends
+   it through the same sample→DFT→track→demap chain as the data edges, and
+   the only beacon-specific code is the byte framing (magic, len, envelope,
+   CRC8) laid over the decoded bit stream. */
+(function (global) {
+  "use strict";
+
+  function G() { return (typeof module !== "undefined" && module.exports) ? require("./geom.js") : global.OC.geom; }
+
+  var TAU = Math.PI * 2;
+
+  /* Fit one circle edge around center (cx,cy) px: per-angle subpixel crossing
+     nearest rExp px (searched within ±tol·rExp), direction "up" (dark→light
+     walking outward) or "down". Returns { n, mean, dx, dy } px or null. */
+  function fitCircleEdge(img, cx, cy, rExp, dir, tol, NANG) {
+    var g = G();
+    var norm = img.norm || 1;
+    var lo = rExp * (1 - tol), hi = rExp * (1 + tol);
+    var step = Math.max(0.35, (hi - lo) / 24);
+    var S = Math.max(8, Math.ceil((hi - lo) / step) + 1);
+    var found = 0, sum = 0, sxr = 0, syr = 0, sct = 0, sst = 0;
+    var prof = new Float64Array(S);
+    for (var a = 0; a < NANG; a++) {
+      var th = TAU * a / NANG, ct = Math.cos(th), st = Math.sin(th);
+      var pLo = Infinity, pHi = -Infinity;
+      for (var s = 0; s < S; s++) {
+        var r = lo + s * step;
+        var v = g.bilinear(img, cx + r * ct, cy + r * st);
+        prof[s] = v;
+        if (v < pLo) pLo = v; if (v > pHi) pHi = v;
+      }
+      if ((pHi - pLo) / norm < 0.05) continue;
+      var bestIdx = -1, bestSlope = 0;
+      var qPrev = (prof[0] - pLo) / (pHi - pLo);
+      for (var s2 = 1; s2 < S; s2++) {
+        var q = (prof[s2] - pLo) / (pHi - pLo);
+        if (dir === "down" ? (qPrev >= 0.5 && q < 0.5) : (qPrev < 0.5 && q >= 0.5)) {
+          var slope = dir === "down" ? qPrev - q : q - qPrev;
+          if (slope > bestSlope) { bestSlope = slope; bestIdx = s2; }
+        }
+        qPrev = q;
+      }
+      if (bestIdx < 0) continue;
+      var q0 = (prof[bestIdx - 1] - pLo) / (pHi - pLo), q1 = (prof[bestIdx] - pLo) / (pHi - pLo);
+      var frac = (0.5 - q0) / (q1 - q0);
+      var rEdge = lo + (bestIdx - 1 + frac) * step;
+      found++;
+      sum += rEdge;
+      sxr += rEdge * ct; syr += rEdge * st; sct += ct; sst += st;
+    }
+    if (found < NANG * 0.55) return null;
+    var mean = sum / found;
+    // First radial harmonic ≈ center offset (the ring-reg refine identity).
+    // Subtract the mean's projection so missing angles (Σcosθ ≠ 0 over a
+    // partial circle) don't leak the radius into the offset.
+    return { n: found, mean: mean, dx: 2 * (sxr - mean * sct) / found, dy: 2 * (syr - mean * sst) / found };
+  }
+
+  /* Find one bullseye near the H-projected unit position. R in units; the
+     breaker option verifies the center bullseye's extra ring pair (±30%
+     radial tolerance — it wiggles by design). Returns
+     { ok, cx, cy, pxPerUnit, edges, breaker } or null. */
+  function findBullseye(img, H, ux, uy, R, opts) {
+    opts = opts || {};
+    var g = G();
+    var p0 = g.applyH(H, ux, uy);
+    var o = g.applyH(H, 0, 0), u1 = g.applyH(H, 1, 0), u2 = g.applyH(H, 0, 1);
+    var sPx = (Math.hypot(u1[0] - o[0], u1[1] - o[1]) + Math.hypot(u2[0] - o[0], u2[1] - o[1])) / 2;
+    var cx = p0[0], cy = p0[1];
+    var NANG = opts.NANG || 40;
+    var edges = null;
+    for (var it = 0; it < 3; it++) {
+      var e1 = fitCircleEdge(img, cx, cy, 0.4 * R * sPx, "up", 0.35, NANG);
+      var e2 = fitCircleEdge(img, cx, cy, 0.6 * R * sPx, "down", 0.28, NANG);
+      var e3 = fitCircleEdge(img, cx, cy, 1.0 * R * sPx, "up", 0.22, NANG);
+      var got = [e1, e2, e3].filter(function (e) { return e; });
+      if (got.length < 2) return null;
+      var dx = 0, dy = 0;
+      for (var i = 0; i < got.length; i++) { dx += got[i].dx; dy += got[i].dy; }
+      dx /= got.length; dy /= got.length;
+      cx += dx; cy += dy;
+      edges = { e1: e1, e2: e2, e3: e3 };
+      if (Math.hypot(dx, dy) < 0.05 * sPx) break;
+    }
+    if (!edges || !edges.e3) return null;
+    // radial-symmetry verify: the template's frozen ratios, ±0.08 absolute
+    var r10 = edges.e3.mean;
+    var ratio1 = edges.e1 ? edges.e1.mean / r10 : null;
+    var ratio2 = edges.e2 ? edges.e2.mean / r10 : null;
+    if (ratio1 !== null && Math.abs(ratio1 - 0.4) > 0.08) return null;
+    if (ratio2 !== null && Math.abs(ratio2 - 0.6) > 0.08) return null;
+    if (ratio1 === null && ratio2 === null) return null;
+    var pxPerUnit = r10 / R;
+    var out = { ok: true, cx: cx, cy: cy, pxPerUnit: pxPerUnit, edges: [edges.e1 ? 1 : 0, edges.e2 ? 1 : 0, 1] };
+    if (opts.breaker) {
+      // the wiggling pair: presence check at ±30% — annular mean inside the
+      // ring's worst reach vs the quiet gap beyond it
+      var bIn = opts.breaker.r_in * pxPerUnit, bOut = opts.breaker.r_out * pxPerUnit;
+      var mid = (bIn + bOut) / 2, gap = (opts.breaker.r_out + 0.09) * pxPerUnit;
+      var sm = 0, sg = 0, n = 0;
+      for (var a2 = 0; a2 < NANG; a2++) {
+        var th2 = TAU * a2 / NANG;
+        sm += g.bilinear(img, cx + mid * Math.cos(th2), cy + mid * Math.sin(th2));
+        sg += g.bilinear(img, cx + gap * Math.cos(th2), cy + gap * Math.sin(th2));
+        n++;
+      }
+      out.breaker = (sg - sm) / n / (img.norm || 1) > 0.05;
+    }
+    return out;
+  }
+
+  /* The §9 plate solve: measure every deployed bullseye, least-squares a
+     fresh homography from the verified centers. HIERARCHICAL, because the
+     seed H's scale error is levered by the corner arm (2% scale × 2.65 u ×
+     166 px ≈ 9 px of corner displacement — past the edge-fit windows): fit
+     the CENTER bullseye first (small arm, and §5's crop-survival anchor),
+     fold its measured center + px-per-unit into the working H, then seed the
+     corners — their residual is rotation/perspective only. Needs ≥ minPoints
+     (default 4). Returns { H, used, points, residPx } or null. */
+  function plateSolve(img, H, profile, opts) {
+    opts = opts || {};
+    var g = G();
+    var pl = profile.plate;
+    var src = [], dst = [], points = [];
+
+    // Stage 1: center → similarity pre-correction of the working H.
+    var c0 = findBullseye(img, H, 0, 0, pl.center.r_out, { breaker: pl.breaker });
+    points.push(c0 ? { ux: 0, uy: 0, cx: c0.cx, cy: c0.cy, breaker: c0.breaker } : null);
+    var Hwork = H;
+    if (c0) {
+      src.push([0, 0]); dst.push([c0.cx, c0.cy]);
+      var o = g.applyH(H, 0, 0), u1 = g.applyH(H, 1, 0), u2 = g.applyH(H, 0, 1);
+      var sH = (Math.hypot(u1[0] - o[0], u1[1] - o[1]) + Math.hypot(u2[0] - o[0], u2[1] - o[1])) / 2;
+      var k = c0.pxPerUnit / sH;
+      Hwork = [H[0] * k, H[1] * k, H[2], H[3] * k, H[4] * k, H[5], H[6] * k, H[7] * k, H[8]];
+      var oW = g.applyH(Hwork, 0, 0);
+      Hwork[2] += c0.cx - oW[0];
+      Hwork[5] += c0.cy - oW[1];
+    }
+
+    // Stage 2: corners from the corrected seed.
+    var wantC = [
+      { ux: pl.corners.at, uy: pl.corners.at },
+      { ux: -pl.corners.at, uy: pl.corners.at },
+      { ux: pl.corners.at, uy: -pl.corners.at },
+      { ux: -pl.corners.at, uy: -pl.corners.at }
+    ];
+    for (var i = 0; i < wantC.length; i++) {
+      var w = wantC[i];
+      var b = findBullseye(img, Hwork, w.ux, w.uy, pl.corners.r_out, {});
+      points.push(b ? { ux: w.ux, uy: w.uy, cx: b.cx, cy: b.cy } : null);
+      if (b) { src.push([w.ux, w.uy]); dst.push([b.cx, b.cy]); }
+    }
+    if (src.length < (opts.minPoints || 4)) return null;
+    var Hs = g.homographyFromPointsN(src, dst);
+    if (!Hs) return null;
+    var resid = 0;
+    for (var j = 0; j < src.length; j++) {
+      var p = g.applyH(Hs, src[j][0], src[j][1]);
+      resid += Math.hypot(p[0] - dst[j][0], p[1] - dst[j][1]);
+    }
+    return { H: Hs, used: src.length, points: points, residPx: resid / src.length };
+  }
+
+  /* The beacon as a channel: an annulus-shaped descriptor for the breaker
+     ring's OUTER edge — the whole existing chain (sampleWindow, sampleBoundary
+     "up", DFT, trackPhase, findAlignment on the all-flips preamble, demap at
+     M=2/4) runs it unmodified. layer −1 keeps it out of every layer lookup. */
+  function beaconAnnulus(profile) {
+    return {
+      index: "beacon", layer: -1, beacon: true, edge: "beacon", crossing: "up",
+      r0: profile.plate.breaker.r_out,
+      rotation: profile.beacon.rotation,
+      boundary: { harmonics: profile.beacon.harmonics, amplitudes: profile.beacon.amplitudes, phases_deg: profile.beacon.phases_deg }
+    };
+  }
+
+  /* Decoded beacon symbols → the control carousel's bytes. Framing per the
+     emitter (emission.beaconSymbols): magic 0xB3, len, envelope bytes, CRC8
+     over everything before it; the carousel cycles, so scan every byte offset
+     in the reassembled absolute stream. Erasures poison their byte. */
+  function beaconDecode(decoded, lag, M) {
+    var F = (typeof module !== "undefined" && module.exports) ? require("./fountain.js") : global.OC.fountain;
+    var bitsPer = M === 4 ? 2 : 1;
+    var bits = {};
+    var maxPos = -1;
+    for (var i = 0; i < decoded.length; i++) {
+      var s = decoded[i].s;
+      if (s === null || s === undefined) continue;
+      var v = M === 4 ? F.fromGray(s) : s;
+      var pos = (i + lag) * bitsPer;
+      for (var b = 0; b < bitsPer; b++) {
+        bits[pos + b] = (v >> (bitsPer - 1 - b)) & 1;
+        if (pos + b > maxPos) maxPos = pos + b;
+      }
+    }
+    var nBytes = Math.floor((maxPos + 1) / 8);
+    var bytes = new Array(nBytes);
+    for (var k = 0; k < nBytes; k++) {
+      var val = 0, ok = true;
+      for (var b2 = 0; b2 < 8; b2++) {
+        var bit = bits[k * 8 + b2];
+        if (bit === undefined) { ok = false; break; }
+        val = (val << 1) | bit;
+      }
+      bytes[k] = ok ? val : null;
+    }
+    for (var at = 0; at + 2 < nBytes; at++) {
+      if (bytes[at] !== 0xB3) continue;
+      var len = bytes[at + 1];
+      if (len === null || len < 1 || len > 64) continue; // bounds guarded in the copy loop
+      var frame = [];
+      var whole = true;
+      for (var m = 0; m < 2 + len + 1; m++) {
+        if (at + m >= nBytes || bytes[at + m] === null) { whole = false; break; }
+        frame.push(bytes[at + m]);
+      }
+      if (!whole) continue;
+      var u8 = new Uint8Array(frame);
+      if (F.crc8(u8, u8.length - 1) !== u8[u8.length - 1]) continue;
+      return { envelope: u8.subarray(2, 2 + len), at: at, len: len };
+    }
+    return null;
+  }
+
+  var API = { findBullseye: findBullseye, plateSolve: plateSolve, fitCircleEdge: fitCircleEdge,
+              beaconAnnulus: beaconAnnulus, beaconDecode: beaconDecode };
+  if (typeof module !== "undefined" && module.exports) module.exports = API;
+  global.OC = global.OC || {}; global.OC.plate = API;
 })(typeof window !== "undefined" ? window : globalThis);
 
 </script>
@@ -1292,13 +2316,18 @@
       contrastSum += contrast;
       if (contrast < 0.03) { r[i] = NaN; continue; }
 
-      // Light 3-tap smooth, then normalized upward crossing with the strongest slope.
+      // Light 3-tap smooth, then normalized crossing with the strongest slope.
+      // v2 annuli and outward-facing v3 edges cross UPWARD (fill→bg walking out);
+      // v3 inner-facing edges (crossing: "down") cross bg→fill — the flipped
+      // mode the contract's §10 sampler item names. Same subpixel math, sense
+      // inverted; everything downstream reads the contour identically.
+      var down = annulus.crossing === "down";
       var bestIdx = -1, bestSlope = 0;
       var qPrev = norm(prof, 0, lo, hi);
       for (var s2 = 1; s2 < S; s2++) {
         var q = norm(prof, s2, lo, hi);
-        if (qPrev < 0.5 && q >= 0.5) {
-          var slope = q - qPrev;
+        if (down ? (qPrev >= 0.5 && q < 0.5) : (qPrev < 0.5 && q >= 0.5)) {
+          var slope = down ? qPrev - q : q - qPrev;
           if (slope > bestSlope) { bestSlope = slope; bestIdx = s2; }
         }
         qPrev = q;
@@ -2553,7 +3582,11 @@
     var db = (profile.carriage && profile.carriage.droplet_bits) || 48;
     return { dropletBits: db, dataBits: db - 8, dataBytes: (db - 8) / 8 };
   }
-  function ringD(annulus, g) { return g.dropletBits / log2M(annulus.rotation.M); }
+  // D = symbols per droplet. Ceil: droplet_bits divisible by 12 covers the
+  // 2/3/4-bit constellations exactly; M=32 (5 bits, the v3 high-rate preset)
+  // pads the tail symbol with zero bits — the block universe stays global
+  // (ruling 1), only the wire pads.
+  function ringD(annulus, g) { return Math.ceil(g.dropletBits / log2M(annulus.rotation.M)); }
   // A capture window is short; the header must RECUR or mid-loop assembly
   // would wait a whole carousel (~minutes on the base ring). Every 8th
   // droplet is a header — 12.5% overhead buys a header sighting every few
@@ -2647,10 +3680,11 @@
   function bitsToSymbols(bytes, crc, annulus, g) {
     var b = log2M(annulus.rotation.M);
     var totalBits = g.dropletBits;
-    var bits = new Uint8Array(totalBits);
+    var nSyms = Math.ceil(totalBits / b);
+    var bits = new Uint8Array(nSyms * b); // zero pad past totalBits (M=32 tail)
     for (var i = 0; i < g.dataBits; i++) bits[i] = (bytes[i >> 3] >> (7 - (i & 7))) & 1;
     for (var j = 0; j < 8; j++) bits[g.dataBits + j] = (crc >> (7 - j)) & 1;
-    var syms = new Uint8Array(totalBits / b);
+    var syms = new Uint8Array(nSyms);
     for (var s = 0; s < syms.length; s++) {
       var v = 0;
       for (var k = 0; k < b; k++) v = (v << 1) | bits[s * b + k];
@@ -2659,22 +3693,50 @@
     return syms;
   }
 
-  /* The emitter side: per-annulus symbol carousels (period L·D symbols). */
-  function encodeCarousels(profile, payloadBytes) {
+  /* v3 §3 payload self-framing: block 0 opens with len16 + type8 + reserved8,
+     paid once per payload — the true length (and a type lane) ride the wire
+     itself, so delivery NEVER depends on envelope sighting. The 24-mode header
+     is just [magic, K]; this is where its length lives. */
+  function selfFrame(payloadBytes, type) {
+    var out = new Uint8Array(payloadBytes.length + 4);
+    out[0] = (payloadBytes.length >> 8) & 255; out[1] = payloadBytes.length & 255;
+    out[2] = (type || 0) & 255; out[3] = 0;
+    out.set(payloadBytes, 4);
+    return out;
+  }
+  function unframe(bytes) {
+    if (bytes.length < 4) return null;
+    var len = (bytes[0] << 8) | bytes[1];
+    if (len > bytes.length - 4) return null;
+    return { len: len, type: bytes[2], bytes: bytes.subarray(4, 4 + len) };
+  }
+
+  /* Tile t's ring seed (v3 multi-tile): same blocks, tile-distinct subsets —
+     the (ringSeed, c) dedupe key is tile-safe because seeds never collide
+     across tiles. Both ends derive it; the wire carries nothing. */
+  function tileSeed(seed, t) { return (seed + 7919 * (t || 0)) >>> 0; }
+
+  /* The emitter side: per-annulus symbol carousels (period L·D symbols).
+     opts.tile: encode tile t's carousels (seed-shifted; forced degree-1
+     slots stay the same blocks by design — the peel seeds every tile). */
+  function encodeCarousels(profile, payloadBytes, opts) {
     var g = geom(profile);
+    var framed = !!(profile.carriage && profile.carriage.self_framing);
+    if (framed) payloadBytes = selfFrame(payloadBytes, opts && opts.type);
     var tb = toBlocks(payloadBytes, g);
     if (tb.K > 200) throw new Error("payload too large: K=" + tb.K + " blocks (cap 200 — " + (200 * g.dataBytes) + " bytes at this droplet size)");
     var L = carouselLen(tb.K);
+    var tShift = opts && opts.tile ? opts.tile : 0;
     var carousels = profile.annuli.map(function (a) {
       var D = ringD(a, g);
       var syms = new Uint8Array(L * D);
       for (var c = 0; c < L; c++) {
-        var dr = dropletBytes(c, tb.blocks, tb.K, a.rotation.seed, payloadBytes, g);
+        var dr = dropletBytes(c, tb.blocks, tb.K, tileSeed(a.rotation.seed, tShift), payloadBytes, g);
         syms.set(bitsToSymbols(dr.data, dr.crc, a, g), c * D);
       }
       return syms;
     });
-    return { carousels: carousels, K: tb.K, L: L, geom: g };
+    return { carousels: carousels, K: tb.K, L: L, geom: g, framed: framed, wireLen: payloadBytes.length };
   }
 
   /* Decoder side: decoded symbol list (+erasures) at a known lag → verified
@@ -2706,7 +3768,7 @@
       for (var p2 = 0; p2 < D; p2++) if (bu.syms[p2] === null || bu.syms[p2] === undefined) { ok = false; break; }
       if (!ok) continue;
       tried++;
-      var bits = new Uint8Array(g.dropletBits);
+      var bits = new Uint8Array(D * b); // D·b ≥ dropletBits; pad bits ignored below
       for (var s2 = 0; s2 < D; s2++) {
         var v = fromGray(bu.syms[s2]);
         for (var k2 = 0; k2 < b; k2++) bits[s2 * b + k2] = (v >> (b - 1 - k2)) & 1;
@@ -2813,9 +3875,17 @@
     var out = new Uint8Array(len);
     for (var b3 = 0; b3 < len; b3++) out[b3] = blocks[Math.floor(b3 / g.dataBytes)][b3 % g.dataBytes];
     var ok = true, why = null;
+    // The header's len/pcrc (48-mode) cover the WIRE — framed when self-framing
+    // is on — so the CRC check precedes unframing.
     if (header.pcrc !== null && header.pcrcBits === 16 && crc16(out) !== header.pcrc) { ok = false; why = "payload CRC16 mismatch"; }
+    var ftype;
+    if (ok && profile.carriage && profile.carriage.self_framing) {
+      var fr = unframe(out);
+      if (!fr) { ok = false; why = "self-framing parse failed (block 0 len16 out of range)"; }
+      else { out = fr.bytes; ftype = fr.type; }
+    }
     return { ok: ok, reason: why, K: K, recovered: recovered, droplets: uniq.length, bytes: out,
-             text: bytesToText(out) };
+             ftype: ftype, text: bytesToText(out) };
   }
 
   function bytesToText(bytes) {
@@ -2837,6 +3907,7 @@
               geom: geom, ringD: ringD, carouselLen: carouselLen, subsetFor: subsetFor,
               isHeaderSlot: isHeaderSlot, parseHeader: parseHeader, HEADER_EVERY: HEADER_EVERY,
               crc8: crc8, crc16: crc16, toGray: toGray, fromGray: fromGray,
+              selfFrame: selfFrame, unframe: unframe, tileSeed: tileSeed,
               textToBytes: textToBytes, bytesToText: bytesToText, MAGIC: MAGIC };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   global.OC = global.OC || {}; global.OC.fountain = API;
@@ -3548,8 +4619,67 @@
       });
     }
 
+    // Per-frame plate solve (v3 §9, the ladder's second rung): re-fit H from
+    // the measured bullseye constellation on every frame — the center-shift
+    // field IS the perspective k=1, so the DLT absorbs per-frame what the
+    // static conic could only average. Runs AFTER the conic composition:
+    // frames where the solve verifies replace their H; frames where it fails
+    // keep the conic-corrected track (each rung degrades to the one below).
+    var solveBriefs = null;
+    if (opts.plateSolve && profile.plate) {
+      var plateM = dep("plate");
+      solveBriefs = emitters.map(function (_, pe) {
+        var HsP = tracksH[pe].Hs, solved = 0, residSum = 0, usedMin = 9;
+        for (var pf = 0; pf < groups.length; pf++) {
+          var sol = plateM.plateSolve(groups[pf].imgs[0], HsP[pf], profile);
+          if (sol) { HsP[pf] = sol.H; solved++; residSum += sol.residPx; if (sol.used < usedMin) usedMin = sol.used; }
+        }
+        return { solved: solved, frames: groups.length, usedMin: solved ? usedMin : null,
+                 meanResidPx: solved ? Math.round(residSum / solved * 100) / 100 : null };
+      });
+    }
+
+    // The beacon rides as one more channel (§5): the breaker ring's outer
+    // edge through the identical sample→track→align→demap chain; only the
+    // byte framing downstream is beacon-specific. layer −1 = out of every
+    // layer lookup; excluded from the payload pool.
+    var channels = profile.annuli;
+    if (opts.beacon && profile.plate) channels = channels.concat([dep("plate").beaconAnnulus(profile)]);
+
+    // Multi-tile identity (§5): exactly one tile carries the breaker pair —
+    // find it, then read every other tile's grid offset in the designated
+    // tile's own frame (tile 0 renders top-left, so offsets are non-negative
+    // in emission coords; mirror stays config, never auto-detected). Tiles
+    // differ ONLY by carousel seeds, so decode proceeds identically and the
+    // tile index matters exactly twice: the assemble seed, and the pool.
+    var tileOf = null, designatedIdx = -1;
+    var tilesN = profile.plate ? (profile.tiling || 1) : 1;
+    if (tilesN > 1 && emitters.length) {
+      var plateT = dep("plate");
+      var imgT = opts.registerOn || groups[regFrame].imgs[0];
+      tileOf = emitters.map(function () { return -1; });
+      for (var de = 0; de < emitters.length; de++) {
+        var bT = plateT.findBullseye(imgT, emitters[de].H, 0, 0, profile.plate.center.r_out, { breaker: profile.plate.breaker });
+        if (bT && bT.breaker && designatedIdx < 0) designatedIdx = de;
+      }
+      if (designatedIdx >= 0) {
+        var gT = dep("geom");
+        var HinvT = gT.invertH(emitters[designatedIdx].H);
+        var colsT = tilesN === 2 ? 2 : 3;
+        for (var te = 0; te < emitters.length; te++) {
+          var cT = gT.applyH(emitters[te].H, 0, 0);
+          var uT = gT.applyH(HinvT, cT[0], cT[1]);
+          var gx = Math.round(uT[0] / (profile.tile_pitch || 7.2));
+          var gy = Math.round(uT[1] / (profile.tile_pitch || 7.2));
+          var tt = gy * colsT + gx;
+          tileOf[te] = (gx >= 0 && gx < colsT && tt >= 0 && tt < tilesN) ? tt : -1;
+        }
+      }
+    }
+    var ringsByEmitter = tilesN > 1 && opts.payload ? [] : null;
+
     var results = emitters.map(function (em, emIdx) {
-      var annuli = profile.annuli.map(function (a) {
+      var annuli = channels.map(function (a) {
         var kmax = Math.max.apply(null, a.boundary.harmonics) + 4;
         // Presence is judged over the ACTIVE span (first valid frame onward) — a
         // capture that starts on the countdown freeze has honest dead frames first.
@@ -3634,11 +4764,15 @@
           var maxLagSym = Math.ceil(((opts.loopSeconds || 60) * profile.frame_rate_hz) / a.rotation.frames_per_symbol) + profile.preamble_symbols;
           var align = opts.aligned ? { offset: 0, lag: 0, score: null, method: "aligned" } : demap.findAlignment(track, a, profile, syncBase);
           if (align && !align.method) align.method = "preamble";
-          if (!align) {
+          if (!align && !a.beacon) {
             // Payload mode has no reference stream — CRC-pass scanning is the
             // mid-loop sync (fountain.js); reference mode correlates the seeds.
             // opts.alignHints[annulus index] = {min,max} predicted-lag band
             // (harvest hop windows price their own lag from the bootstrap lock).
+            // The beacon has neither fallback (its data is the control
+            // carousel, not the seeded stream, and it carries no droplets):
+            // preamble lock or an honest no-lock row — v0 limitation, mid-
+            // cycle beacon joins wait on a framing-based aligner.
             align = opts.payload
               ? dep("fountain").crcAlign(track, a, profile, syncBase, maxLagSym,
                   opts.alignHints && opts.alignHints[a.index])
@@ -3649,6 +4783,19 @@
                      carrierRatio: carrierRatio, tear: tearBrief(tearX),
                      error: "no lock — symbols match neither preamble nor stream at any lag (carrier " + carrierRatio + "× expected" + (carrierRatio !== null && carrierRatio < 0.5 ? "; low carrier — see the layer-0 row" : "") + ")" };
           var decoded = demap.decode(track, a, profile, align.offset);
+
+          if (a.beacon) {
+            var env = dep("plate").beaconDecode(decoded, align.lag, a.rotation.M);
+            return {
+              annulus: a.index, layer: a.layer, present: true, beacon: true,
+              contrast: round3(meanContrast), validFrames: valid,
+              carrierRatio: carrierRatio, alignMethod: align.method || "preamble",
+              alignOffset: align.offset, alignLag: align.lag,
+              envelope: env ? toHex(env.envelope) : null,
+              envelopeAt: env ? env.at : null,
+              error: env ? undefined : "beacon locked but no framed envelope in the captured span"
+            };
+          }
 
           var sigma = averageNoise(seriesX, a, kmax, transform);
           var snr = {};
@@ -3735,19 +4882,82 @@
       // Payload mode: pool every ring's verified droplets into one peel.
       var payload;
       if (opts.payload) {
+        // beacon rides last in channels — profile.annuli[ri] stays aligned
+        // for the data rows; the beacon banks no droplets and joins no peel.
+        // Tile seeds: this emitter's droplets were encoded under its tile's
+        // shifted seeds — the assemble subsets must match.
+        var emTile = tileOf ? tileOf[emIdx] : 0;
+        var FNp = dep("fountain");
         var rings = annuli.map(function (r, ri) {
-          return { seed: profile.annuli[ri].rotation.seed, droplets: r._droplets || [] };
-        });
+          return r.beacon ? null : { seed: FNp.tileSeed(profile.annuli[ri].rotation.seed, emTile >= 0 ? emTile : 0), droplets: r._droplets || [] };
+        }).filter(function (x) { return x; });
         annuli.forEach(function (r) { delete r._droplets; });
-        payload = dep("fountain").assemble(rings, profile);
+        if (ringsByEmitter) ringsByEmitter[emIdx] = emTile >= 0 ? rings : null;
+        payload = FNp.assemble(rings, profile);
         if (payload && payload.bytes) payload.hex = toHex(payload.bytes);
         if (payload) delete payload.bytes;
       }
       return { fiducialWidthPx: Math.round(em.fiducialWidthPx * 10) / 10, method: em.method || "finder",
-               conic: conicBriefs ? conicBriefs[emIdx] : undefined, annuli: annuli, payload: payload };
+               conic: conicBriefs ? conicBriefs[emIdx] : undefined,
+               plateSolve: solveBriefs ? solveBriefs[emIdx] : undefined,
+               tile: tileOf ? tileOf[emIdx] : undefined,
+               annuli: annuli, payload: payload };
     });
 
-    return { emitters: results, emitterCount: emitters.length, regFrame: regFrame };
+    // The multi-tile prize: one peel over every tile's verified droplets —
+    // tile-distinct seeds make the (ringSeed, c) dedupe key collision-free
+    // across the pool, so this is a longer rings list, nothing more.
+    var pooled;
+    if (ringsByEmitter) {
+      var allRings = [];
+      ringsByEmitter.forEach(function (rr) { if (rr) allRings = allRings.concat(rr); });
+      if (allRings.length) {
+        pooled = dep("fountain").assemble(allRings, profile);
+        if (pooled && pooled.bytes) { pooled.hex = toHex(pooled.bytes); delete pooled.bytes; }
+      }
+    }
+
+    return { emitters: results, emitterCount: emitters.length, regFrame: regFrame,
+             designatedTile: designatedIdx >= 0 ? designatedIdx : undefined, pooled: pooled };
+  }
+
+  /* v3 preset auto-detect (§2, as ruled: binary, dual-geometry, ≥2 agreeing
+     CRC passes). The presets share every optical stage — only M and droplet
+     geometry differ — so the mechanism is decode-under-both and let the CRC
+     passes vote: the wrong geometry's chance rate is 1/256 per droplet.
+     Resilient first (the default); one full re-decode when wrong is the v0
+     price — reusing the phase tracks across geometries is recorded future
+     work, not a correctness need. */
+  function decodeV3Auto(frames, opts) {
+    opts = opts || {};
+    var PRF = dep("profile");
+    function passes(res) {
+      if (!res || res.error) return 0;
+      var t = 0;
+      res.emitters.forEach(function (em) {
+        em.annuli.forEach(function (r) { if (r.dropletsPassed) t += r.dropletsPassed; });
+      });
+      return t;
+    }
+    var o = {};
+    for (var k in opts) o[k] = opts[k];
+    o.payload = true;
+    // The vote is COMPARATIVE, not first-past-bar: a wrong-geometry crcAlign
+    // scan (≈458 lags × 4 offsets × 4 edges) has order-1 odds of a 2-pass
+    // chance lock, so "≥2 agreeing passes" alone can misfire. The true
+    // geometry lights up with many passes; chance produces a couple. Decode
+    // both, let the counts vote; short-circuit only when the default's count
+    // is already beyond what chance produces.
+    var pR = PRF.profileV3(), rR = decodeSequence(frames, pR, o);
+    var nR = passes(rR);
+    if (nR >= 6) return { preset: "resilient", passes: nR, result: rR };
+    var pH = PRF.profileV3("high-rate"), rH = decodeSequence(frames, pH, o);
+    var nH = passes(rH);
+    var win = nH > nR ? "high-rate" : "resilient";
+    var nW = Math.max(nR, nH);
+    if (nW >= 2 && nR !== nH)
+      return { preset: win, passes: nW, passesOther: Math.min(nR, nH), result: win === "high-rate" ? rH : rR };
+    return { preset: null, passes: nW, result: nR >= nH ? rR : rH };
   }
 
   function toHex(u8) {
@@ -3774,7 +4984,7 @@
   function round3(x) { return Math.round(x * 1000) / 1000; }
   function round1(x) { return Math.round(x * 10) / 10; }
 
-  var API = { decodeSequence: decodeSequence };
+  var API = { decodeSequence: decodeSequence, decodeV3Auto: decodeV3Auto };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   global.OC = global.OC || {}; global.OC.pipeline = API;
 })(typeof window !== "undefined" ? window : globalThis);
@@ -3791,9 +5001,13 @@ function currentProfile() {
   if (v === "v1") return OC.profile.profileV1();
   if (v === "v20" || v === "v20p") return OC.profile.profileV2r20();
   if (v === "v30" || v === "v30p") return OC.profile.profileV2r30();
+  if (v === "v3" || v === "v3a") return OC.profile.profileV3();
+  if (v === "v3hr") return OC.profile.profileV3("high-rate");
   return OC.profile.defaultProfile();
 }
-function payloadMode() { const v = $("m_prof") && $("m_prof").value; return v === "v2p" || v === "v20p" || v === "v30p"; }
+function payloadMode() { const v = $("m_prof") && $("m_prof").value; return v === "v2p" || v === "v20p" || v === "v30p" || v3Mode(); }
+function v3Mode() { const v = $("m_prof") && $("m_prof").value; return v === "v3" || v === "v3hr" || v === "v3a"; }
+if ($("m_prof")) $("m_prof").onchange = () => { $("v3opts").style.display = v3Mode() ? "" : "none"; };
 // The file path SEEKS at the capture cadence — a 60 fps clip stepped at 1/30
 // silently drops every other camera frame and starves the duplicate defense.
 function captureFps() { return +($("m_capfps") && $("m_capfps").value) || 30; }
@@ -3819,6 +5033,11 @@ function toLumFromCanvas(ctx, w, h) {
 function layerSummary(res) {
   if (res.error) return "<span class='bad'>" + res.error + "</span>";
   let html = "";
+  if (res.pooled) {
+    html += res.pooled.ok
+      ? "<p class='ok' style='font-size:15px'><b>POOLED ACROSS TILES</b> (" + res.pooled.recovered + "/" + res.pooled.K + " blocks, " + res.pooled.droplets + " droplets): “" + res.pooled.text + "”</p>"
+      : "<p class='warn'><b>tile pool incomplete</b> — " + (res.pooled.reason || "collecting") + " (" + (res.pooled.recovered || 0) + "/" + (res.pooled.K || "?") + " blocks, " + (res.pooled.droplets || 0) + " droplets)</p>";
+  }
   res.emitters.forEach((em, ei) => {
     if (em.payload) {
       const p = em.payload;
@@ -3827,12 +5046,16 @@ function layerSummary(res) {
         : "<p class='warn'><b>payload incomplete</b> — " + (p.reason || "collecting") +
           (p.K ? " (" + (p.recovered || 0) + "/" + p.K + " blocks, " + (p.droplets || 0) + " droplets — film longer or closer)" : " (" + (p.got || 0) + " droplets so far)") + "</p>";
     }
-    html += "<table><tr><th colspan='10'>emitter " + ei + " — fiducial " + em.fiducialWidthPx + "px" + (em.method === "rings" ? " (ring-registered)" : "") + "</th></tr>" +
+    html += "<table><tr><th colspan='10'>emitter " + ei + " — fiducial " + em.fiducialWidthPx + "px" + (em.method === "rings" ? " (ring-registered)" : "") +
+      (em.tile !== undefined ? " · tile " + (em.tile < 0 ? "?" : em.tile) + (res.designatedTile === ei ? " (designated)" : "") : "") +
+      (em.plateSolve ? " · solved " + em.plateSolve.solved + "/" + em.plateSolve.frames + (em.plateSolve.meanResidPx != null ? " @" + em.plateSolve.meanResidPx + "px" : "") : "") +
+      "</th></tr>" +
       "<tr><th>annulus</th><th>layer</th><th>present</th><th>carrier</th><th>SER</th><th>erasures</th><th>lock</th><th>contrast</th><th>SNR/harmonic (dB)</th><th>verdict</th></tr>";
     em.annuli.forEach(a => {
       const snr = a.snr_db ? Object.entries(a.snr_db).map(([k, v]) => "k" + k + ":" + v).join(" ") : "—";
       const lock = a.alignMethod ? (a.alignMethod + " lag " + a.alignLag + (a.alignMatchFrac ? " (" + a.alignMatchFrac + ")" : "")) : "—";
       const verdict = !a.present ? "<span class='dim'>unresolved</span>" :
+        a.beacon && a.envelope ? "<span class='ok'>ENVELOPE " + a.envelope + "</span>" :
         a.error ? "<span class='bad'>" + a.error + "</span>" :
         a.dropletsPassed != null ? "<span class='" + (a.dropletsPassed > 0 ? "ok" : "warn") + "'>" + a.dropletsPassed + "/" + a.dropletsTried + " droplets</span>" :
         a.ok ? "<span class='ok'>DECODES</span>" : "<span class='warn'>degraded</span>";
@@ -3873,15 +5096,27 @@ function decodeFrames(frames, source, fpsMeasured) {
   setStatus("decoding " + frames.length + " frames (" + currentProfile().profile_version + ")…", "warn");
   setTimeout(() => {
     try {
-      const res = OC.pipeline.decodeSequence(frames, currentProfile(), {
+      const isV3 = v3Mode();
+      const opts = {
         aligned: false, handheld: $("m_hand").checked,
         loopSeconds: +$("m_loop").value || 60,
-        mirror: { receive: false }, maxEmitters: 4,
-        payload: payloadMode()
-      });
-      $("results").innerHTML = layerSummary(res);
+        mirror: { receive: false }, maxEmitters: isV3 ? 6 : 4,
+        payload: payloadMode(),
+        plateSolve: isV3 && $("m_solve").checked,
+        beacon: isV3 && $("m_beacon").checked
+      };
+      let res, preset = null;
+      if ($("m_prof").value === "v3a") {
+        const auto = OC.pipeline.decodeV3Auto(frames, opts);
+        res = auto.result;
+        preset = auto.preset;
+        setStatus("auto-detect: preset " + (preset || "UNDETERMINED") + " (" + auto.passes + " CRC passes)", preset ? "ok" : "warn");
+      } else {
+        res = OC.pipeline.decodeSequence(frames, currentProfile(), opts);
+      }
+      $("results").innerHTML = (preset ? "<p class='" + (preset ? "ok" : "warn") + "'>auto-detect verdict: <b>" + (preset || "undetermined") + "</b></p>" : "") + layerSummary(res);
       logRow(res, source, fpsMeasured, frames.length);
-      setStatus(res.error ? "decode failed: " + res.error : "decode complete", res.error ? "bad" : "ok");
+      if (!preset) setStatus(res.error ? "decode failed: " + res.error : "decode complete", res.error ? "bad" : "ok");
     } catch (e) { setStatus("decode error: " + e.message, "bad"); console.error(e); }
   }, 30);
 }
