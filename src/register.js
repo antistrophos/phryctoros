@@ -228,8 +228,33 @@
     opts = opts || {};
     var maxE = opts.maxEmitters || 4;
     var annuli = profile.annuli;
-    var outerA = annuli[annuli.length - 1];
-    var rOutU = outerA.r0;
+    // Dark-band spans + the outer radius + the refine target. v2: annuli ARE
+    // bands (r_inner→r0), outer ring's modulated boundary refines. v3: annuli
+    // are EDGES — bands come from profile.bands at nominal radii, and the
+    // refine target is THE FLAT CIRCLE at 3.00 (the units anchor, §4: measured
+    // every frame with no modulation to average — sampleBoundary with an empty
+    // harmonic set and sum 0 is exactly that gauge).
+    var isV3 = !!(profile.bands && profile.plate);
+    var spans, rOutU, refineA, refineR;
+    if (isV3) {
+      spans = profile.bands.map(function (b) {
+        var lo = b.lo.edge !== undefined ? annuli[b.lo.edge].r0 : b.lo.fixed;
+        var hi = b.hi.edge !== undefined ? annuli[b.hi.edge].r0 : b.hi.fixed;
+        return [lo, hi];
+      });
+      rOutU = profile.flat_circle_r;
+      refineR = rOutU;
+      // amplitudes here only widen sampleWindow's search span (±0.14): the
+      // NCC scale grid steps ~3%, and a 3% error puts the crossing outside a
+      // bare ±0.08 window. The circle itself is unmodulated.
+      refineA = { r0: rOutU, crossing: "up", boundary: { harmonics: [], amplitudes: [0.06], phases_deg: [] } };
+    } else {
+      spans = annuli.map(function (a) { return [a.r_inner, a.r0]; });
+      var outerA = annuli[annuli.length - 1];
+      rOutU = outerA.r0;
+      refineR = rOutU;
+      refineA = outerA;
+    }
 
     // --- decimate for the vote/profile passes ---
     var dec = Math.max(1, Math.ceil(Math.max(img.w, img.h) / 640));
@@ -314,8 +339,8 @@
       return lum[i0] * (1 - tx) * (1 - ty) + lum[i0 + 1] * tx * (1 - ty) + lum[i0 + W] * (1 - tx) * ty + lum[i0 + W + 1] * tx * ty;
     };
     var inBand = function (u) {
-      for (var bi2 = 0; bi2 < annuli.length; bi2++)
-        if (u >= annuli[bi2].r_inner && u <= annuli[bi2].r0) return true;
+      for (var bi2 = 0; bi2 < spans.length; bi2++)
+        if (u >= spans[bi2][0] && u <= spans[bi2][1]) return true;
       return false;
     };
     var found = [];
@@ -377,10 +402,10 @@
       // coverage: per annulus, band midpoint darker than the gap beyond it, per angle
       var covs = [], covSum = 0;
       var okCov = true;
-      for (var a8 = 0; a8 < annuli.length; a8++) {
-        var an8 = annuli[a8];
-        var rBand = ((an8.r_inner + an8.r0) / 2) * best.s;
-        var gapU = a8 + 1 < annuli.length ? (an8.r0 + annuli[a8 + 1].r_inner) / 2 : an8.r0 + 0.35;
+      for (var a8 = 0; a8 < spans.length; a8++) {
+        var sp8 = spans[a8];
+        var rBand = ((sp8[0] + sp8[1]) / 2) * best.s;
+        var gapU = a8 + 1 < spans.length ? (sp8[1] + spans[a8 + 1][0]) / 2 : sp8[1] + 0.35;
         var rGap = gapU * best.s;
         var hits = 0, tries = 0;
         for (var a9 = 0; a9 < NANG; a9++) {
@@ -394,7 +419,7 @@
         covs.push(cov); covSum += cov;
         if (cov < 0.6) okCov = false;
       }
-      if (!okCov || covSum / annuli.length < 0.72) continue;
+      if (!okCov || covSum / spans.length < 0.72) continue;
 
       // --- promote to full-res similarity H, then physics refinement ---
       var sFull = best.s * dec;
@@ -403,7 +428,7 @@
       var Hc = mkH(cxF, cyF, sFull);
       var samp = SAMP();
       for (var it = 0; it < 3; it++) {
-        var sb = samp.sampleBoundary(img, Hc, outerA);
+        var sb = samp.sampleBoundary(img, Hc, refineA);
         if (sb.found < sb.N * 0.5) break;
         var n9 = 0, mean9 = 0;
         for (var i9 = 0; i9 < sb.N; i9++) if (!isNaN(sb.r[i9])) { mean9 += sb.r[i9]; n9++; }
@@ -417,9 +442,9 @@
         }
         dxU *= 2 / n9; dyU *= 2 / n9;
         cxF += sFull * dxU; cyF += sFull * dyU;
-        sFull *= mean9 / outerA.r0;
+        sFull *= mean9 / refineR;
         Hc = mkH(cxF, cyF, sFull);
-        if (Math.abs(dxU) < 0.003 && Math.abs(dyU) < 0.003 && Math.abs(mean9 / outerA.r0 - 1) < 0.003) break;
+        if (Math.abs(dxU) < 0.003 && Math.abs(dyU) < 0.003 && Math.abs(mean9 / refineR - 1) < 0.003) break;
       }
       // duplicate suppression vs already-found (full-res coords)
       var dup = false;
@@ -428,7 +453,7 @@
         if (Math.hypot(g10.cx - cxF, g10.cy - cyF) < 1.5 * Math.max(sFull, g10.s)) { dup = true; break; }
       }
       if (dup) continue;
-      found.push({ cx: cxF, cy: cyF, s: sFull, ncc: best.ncc, coverage: covSum / annuli.length, H: Hc });
+      found.push({ cx: cxF, cy: cyF, s: sFull, ncc: best.ncc, coverage: covSum / spans.length, H: Hc });
     }
 
     // --- emitter objects shaped like the finder path's ---
@@ -462,6 +487,18 @@
       e.timingScore = timingScore(img, e.H);
       e.structureScore = structureScore(img, e.H);
       scored.push(e);
+    }
+    // v3 countdown frames: the envelope QR spans qr.width_units (≠ 1) in
+    // plate units, but the triple's H maps QR-width units. Rescale so every
+    // consumer keeps sampling in plate units — applyH(H', x, y) ≡
+    // applyH(H, x/w, y/w).
+    var p3 = opts.profile;
+    if (p3 && p3.bands && p3.plate && p3.qr && p3.qr.width_units !== 1) {
+      var w3 = p3.qr.width_units;
+      for (var si = 0; si < scored.length; si++) {
+        var Hs = scored[si].H;
+        scored[si].H = [Hs[0] / w3, Hs[1] / w3, Hs[2], Hs[3] / w3, Hs[4] / w3, Hs[5], Hs[6] / w3, Hs[7] / w3, Hs[8]];
+      }
     }
     scored.sort(function (a, b) { return (b.timingScore + b.structureScore) - (a.timingScore + a.structureScore); });
     var emitters = [];

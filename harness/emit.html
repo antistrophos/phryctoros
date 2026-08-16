@@ -49,6 +49,8 @@
     <option value="15">15 fps — v2 (the banker; film at 30 fps)</option>
     <option value="20">20 fps — v2r20 (+33%; film at 30 fps, leans on tear repair)</option>
     <option value="30">30 fps — v2r30 (+100%; MUST film at 60 fps — 2 looks/frame)</option>
+    <option value="v3">30 fps — V3 resilient (calibration plate, 4 edges, 24-bit droplets; film at 60 fps)</option>
+    <option value="v3hr">30 fps — V3 high-rate (M=32 close-range preset, 48-bit droplets; film at 60 fps)</option>
   </select></label>
   <span class="dim">rewrites the profile JSON below; receiver must decode with the matching profile AND capture fps</span>
 </p>
@@ -76,12 +78,15 @@ let profile = OC.profile.defaultProfile();
 $("profileTxt").value = JSON.stringify(profile, null, 2);
 $("rateSel").onchange = () => {
   const v = $("rateSel").value;
-  profile = v === "30" ? OC.profile.profileV2r30()
+  profile = v === "v3" ? OC.profile.profileV3()
+    : v === "v3hr" ? OC.profile.profileV3("high-rate")
+    : v === "30" ? OC.profile.profileV2r30()
     : v === "20" ? OC.profile.profileV2r20() : OC.profile.defaultProfile();
   $("profileTxt").value = JSON.stringify(profile, null, 2);
 };
 let running = false, schedules = null, loopFrames = 0, t0 = 0, lastF = -1, fidCanvas = null;
 let drawn = 0, fpsWindow = [], ticker = null;
+let beaconSchedule = null, qrCanvas = null, effLoopFrames = 0; // v3 state
 
 function gray(v) { const g = Math.round(v * 255); return "rgb(" + g + "," + g + "," + g + ")"; }
 
@@ -195,6 +200,157 @@ function overlayCountdown(n) {
   ctx.fillText("hold — rings start at 0", size * 0.885, size * 0.145);
 }
 
+/* ————— V3 live path (contract §10 emitter) — isolated from the frozen v2
+   machinery. Bands between two wiggling boundaries (evenodd), the 2:1:2
+   bullseye at three deployments, the beacon ring pair sharing one δ(θ), the
+   flat outer circle rendered as a TRUE arc (the units gauge), and the
+   recurring countdown QR face via emission.timeline(). */
+function bullseyeLive(ctx, cx, cy, Rpx, shade, bg) {
+  ctx.fillStyle = gray(shade); ctx.beginPath(); ctx.arc(cx, cy, Rpx, 0, 2 * Math.PI); ctx.fill();
+  ctx.fillStyle = gray(bg); ctx.beginPath(); ctx.arc(cx, cy, 0.6 * Rpx, 0, 2 * Math.PI); ctx.fill();
+  ctx.fillStyle = gray(shade); ctx.beginPath(); ctx.arc(cx, cy, 0.4 * Rpx, 0, 2 * Math.PI); ctx.fill();
+}
+
+function v3PlateBase(ctx, f) {
+  // bands + corners; center face differs between steady and countdown
+  const R = profile.render, size = R.size_px, scale = R.scale_px_per_unit, half = size / 2;
+  const pl = profile.plate, shade = pl.shade !== undefined ? pl.shade : R.fill;
+  ctx.fillStyle = gray(R.background); ctx.fillRect(0, 0, size, size);
+  const N = 512;
+  const contourFn = (edgeIdx) => {
+    const a = profile.annuli[edgeIdx];
+    const phi = OC.emission.phaseAt(a, schedules[edgeIdx], profile.frame_rate_hz, f);
+    return th => {
+      let r = a.r0;
+      for (let j = 0; j < a.boundary.harmonics.length; j++)
+        r += a.boundary.amplitudes[j] * Math.cos(a.boundary.harmonics[j] * (th - phi) + a.boundary.phases_deg[j] * Math.PI / 180);
+      return r;
+    };
+  };
+  profile.bands.forEach(band => {
+    const hasHiEdge = band.hi.edge !== undefined, hasLoEdge = band.lo.edge !== undefined;
+    const hi = hasHiEdge ? contourFn(band.hi.edge) : (() => band.hi.fixed);
+    const lo = hasLoEdge ? contourFn(band.lo.edge) : (() => band.lo.fixed);
+    const path = new Path2D();
+    if (hasHiEdge) {
+      for (let i = 0; i <= N; i++) {
+        const th = 2 * Math.PI * i / N, r = hi(th);
+        const x = half + r * scale * Math.cos(th), y = half + r * scale * Math.sin(th);
+        if (i === 0) path.moveTo(x, y); else path.lineTo(x, y);
+      }
+      path.closePath();
+    } else path.arc(half, half, band.hi.fixed * scale, 0, 2 * Math.PI); // the flat gauge: a true circle
+    if (hasLoEdge) {
+      const p2 = new Path2D();
+      for (let i = 0; i <= N; i++) {
+        const th = 2 * Math.PI * i / N, r = lo(th);
+        const x = half + r * scale * Math.cos(th), y = half + r * scale * Math.sin(th);
+        if (i === 0) p2.moveTo(x, y); else p2.lineTo(x, y);
+      }
+      p2.closePath();
+      path.addPath(p2);
+    } else path.arc(half, half, band.lo.fixed * scale, 0, 2 * Math.PI);
+    ctx.fillStyle = gray(R.fill);
+    ctx.fill(path, "evenodd");
+  });
+  for (const sx of [-1, 1]) for (const sy of [-1, 1])
+    bullseyeLive(ctx, half + sx * pl.corners.at * scale, half + sy * pl.corners.at * scale,
+                 pl.corners.r_out * scale, shade, R.background);
+  return { size, scale, half, pl, shade };
+}
+
+function drawFrameV3(f) {
+  const ctx = $("cv").getContext("2d");
+  const { scale, half, pl, shade } = v3PlateBase(ctx, f);
+  bullseyeLive(ctx, half, half, pl.center.r_out * scale, shade, profile.render.background);
+  // the beacon ring pair: both edges carry the SAME δ — constant width, wiggling
+  const bphi = OC.emission.phaseAt({ rotation: profile.beacon.rotation }, beaconSchedule, profile.frame_rate_hz, f);
+  const del = th => {
+    let d0 = 0;
+    for (let j = 0; j < profile.beacon.harmonics.length; j++)
+      d0 += profile.beacon.amplitudes[j] * Math.cos(profile.beacon.harmonics[j] * (th - bphi) + profile.beacon.phases_deg[j] * Math.PI / 180);
+    return d0;
+  };
+  const N = 256, bp = new Path2D();
+  for (let i = 0; i <= N; i++) {
+    const th = 2 * Math.PI * i / N, r = pl.breaker.r_out + del(th);
+    const x = half + r * scale * Math.cos(th), y = half + r * scale * Math.sin(th);
+    if (i === 0) bp.moveTo(x, y); else bp.lineTo(x, y);
+  }
+  bp.closePath();
+  const bp2 = new Path2D();
+  for (let i = 0; i <= N; i++) {
+    const th = 2 * Math.PI * i / N, r = pl.breaker.r_in + del(th);
+    const x = half + r * scale * Math.cos(th), y = half + r * scale * Math.sin(th);
+    if (i === 0) bp2.moveTo(x, y); else bp2.lineTo(x, y);
+  }
+  bp2.closePath();
+  bp.addPath(bp2);
+  ctx.fillStyle = gray(shade);
+  ctx.fill(bp, "evenodd");
+}
+
+function drawCountdownV3(f, secsLeft) {
+  const ctx = $("cv").getContext("2d");
+  const { scale, half } = v3PlateBase(ctx, f); // bands frozen at f, corners kept
+  ctx.drawImage(qrCanvas, half - qrCanvas.width / 2, half - qrCanvas.height / 2);
+  // small digit in the countdown face's empty ring zone (the beacon's steady
+  // home — vacant during freeze); page chrome, not part of the reference face
+  ctx.fillStyle = gray(profile.render.fill);
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.font = "700 " + Math.round(0.22 * scale) + "px system-ui, sans-serif";
+  ctx.fillText(String(secsLeft), half, half + 0.75 * scale);
+}
+
+function buildQrCanvas(envBytes) {
+  const scale = profile.render.scale_px_per_unit, qr = profile.qr;
+  const wPx = Math.ceil(qr.width_units * scale) + 2;
+  const c = document.createElement("canvas"); c.width = wPx; c.height = wPx;
+  const ctx = c.getContext("2d");
+  const mods = OC.emission.envelopeModules(qr, envBytes);
+  const modPx = qr.width_units * scale / qr.modules;
+  ctx.fillStyle = gray(qr.dark);
+  for (let my = 0; my < qr.modules; my++)
+    for (let mx = 0; mx < qr.modules; mx++)
+      if (mods[my * qr.modules + mx])
+        ctx.fillRect(1 + mx * modPx, 1 + my * modPx, modPx + 0.5, modPx + 0.5);
+  return c;
+}
+
+function loopV3(now) {
+  if (!running) return;
+  const fps = profile.frame_rate_hz;
+  const freezeF = Math.round(profile.countdown.freeze_s * fps);
+  const fTot = Math.floor((now - t0) / 1000 * fps);
+  const tl = OC.emission.timeline(profile, fTot);
+  if (fTot !== lastF) {
+    lastF = fTot; drawn++;
+    fpsWindow.push(now);
+    while (fpsWindow.length && now - fpsWindow[0] > 2000) fpsWindow.shift();
+    if (tl.freeze) {
+      drawCountdownV3(tl.eff % effLoopFrames, Math.ceil((freezeF - tl.inLoop) / fps));
+      $("hud").textContent = "V3 FROZEN — envelope QR up, motion resumes in " +
+        Math.ceil((freezeF - tl.inLoop) / fps) + "  |  loop " + tl.loopIdx;
+    } else {
+      drawFrameV3(tl.eff % effLoopFrames);
+      const rfps = fpsWindow.length / 2;
+      if (fpsWindow.length >= 4 && rfps < fps * 0.7) {
+        const cv = $("cv"), ctx = cv.getContext("2d");
+        ctx.fillStyle = "#8b1a1a";
+        ctx.fillRect(0, 0, cv.width, Math.round(cv.height * 0.07));
+        ctx.fillStyle = "#fff";
+        ctx.textAlign = "center"; ctx.textBaseline = "middle";
+        ctx.font = "600 " + Math.round(cv.height * 0.032) + "px system-ui, sans-serif";
+        ctx.fillText("⚠ RENDERING STALLED (" + rfps.toFixed(0) + "/" + fps + " fps) — click this window · plug in power · disable battery saver · use Fullscreen", cv.width / 2, Math.round(cv.height * 0.035));
+      }
+      $("hud").textContent = "V3 eff " + (tl.eff % effLoopFrames) + "/" + effLoopFrames +
+        "  |  rendered fps ≈ " + rfps.toFixed(1) + "  |  loop " + tl.loopIdx +
+        (rfps < fps * 0.7 && fpsWindow.length >= 4 ? "  |  ⚠ STALLED — do not film" : "");
+    }
+  }
+  requestAnimationFrame(loopV3);
+}
+
 function loop(now) {
   if (!running) return;
   const fps = profile.frame_rate_hz;
@@ -238,9 +394,47 @@ function loop(now) {
   requestAnimationFrame(loop);
 }
 
+/* V3 start: loop/countdown inputs map onto §6's freeze_s/loop_s (freeze is
+   contract-mandatory for v3 — the checkbox is a v2 control), session32 is
+   stamped fresh per emission, and the envelope QR carries payload identity
+   when a payload rides. */
+function startV3() {
+  const fps = profile.frame_rate_hz;
+  profile.countdown.loop_s = Math.max(10, +$("loopSecs").value || 60);
+  profile.countdown.freeze_s = Math.max(1, Math.min(+$("cdSecs").value || 3, profile.countdown.loop_s - 1));
+  profile.session32 = (Math.random() * 4294967296) >>> 0;
+  let carousels = null, envInfo = null;
+  if ($("payloadChk").checked) {
+    try {
+      const bytes = OC.fountain.textToBytes($("payloadTxt").value || " ");
+      const enc = OC.fountain.encodeCarousels(profile, bytes);
+      carousels = enc.carousels;
+      const wire = OC.fountain.selfFrame(bytes);
+      envInfo = { K: enc.K, len: wire.length, pcrc: OC.fountain.crc16(wire), capability: 1 };
+      $("payloadInfo").textContent = "K=" + enc.K + " blocks (self-framed), carousel " + enc.L +
+        " droplets — receiver must use v3 payload mode";
+    } catch (e) { $("payloadInfo").textContent = String(e.message); return; }
+  } else $("payloadInfo").textContent = "";
+  const envBytes = OC.emission.envelopeBytes(profile, envInfo);
+  const freezeF = Math.round(profile.countdown.freeze_s * fps);
+  effLoopFrames = Math.max(1, Math.round(profile.countdown.loop_s * fps) - freezeF);
+  schedules = OC.emission.buildSchedules(profile, effLoopFrames, carousels);
+  beaconSchedule = OC.emission.buildBeaconSchedule(profile, effLoopFrames, envBytes);
+  qrCanvas = buildQrCanvas(envBytes);
+  const cv = $("cv");
+  cv.width = profile.render.size_px; cv.height = profile.render.size_px;
+  cv.style.display = "";
+  running = true; t0 = performance.now(); lastF = -1;
+  $("stopBtn").disabled = false; $("fsBtn").disabled = false;
+  requestAnimationFrame(loopV3);
+  if (ticker) clearInterval(ticker);
+  ticker = setInterval(() => loopV3(performance.now()), Math.floor(1000 / fps));
+}
+
 $("applyBtn").onclick = validate;
 $("startBtn").onclick = () => {
   if (!validate()) return;
+  if (OC.profile.isV3(profile)) { startV3(); return; }
   const secs = Math.max(10, +$("loopSecs").value || 60);
   loopFrames = secs * profile.frame_rate_hz;
   // Phase 1: payload carousels replace the seeded reference stream. The

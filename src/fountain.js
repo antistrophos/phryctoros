@@ -54,7 +54,11 @@
     var db = (profile.carriage && profile.carriage.droplet_bits) || 48;
     return { dropletBits: db, dataBits: db - 8, dataBytes: (db - 8) / 8 };
   }
-  function ringD(annulus, g) { return g.dropletBits / log2M(annulus.rotation.M); }
+  // D = symbols per droplet. Ceil: droplet_bits divisible by 12 covers the
+  // 2/3/4-bit constellations exactly; M=32 (5 bits, the v3 high-rate preset)
+  // pads the tail symbol with zero bits — the block universe stays global
+  // (ruling 1), only the wire pads.
+  function ringD(annulus, g) { return Math.ceil(g.dropletBits / log2M(annulus.rotation.M)); }
   // A capture window is short; the header must RECUR or mid-loop assembly
   // would wait a whole carousel (~minutes on the base ring). Every 8th
   // droplet is a header — 12.5% overhead buys a header sighting every few
@@ -148,10 +152,11 @@
   function bitsToSymbols(bytes, crc, annulus, g) {
     var b = log2M(annulus.rotation.M);
     var totalBits = g.dropletBits;
-    var bits = new Uint8Array(totalBits);
+    var nSyms = Math.ceil(totalBits / b);
+    var bits = new Uint8Array(nSyms * b); // zero pad past totalBits (M=32 tail)
     for (var i = 0; i < g.dataBits; i++) bits[i] = (bytes[i >> 3] >> (7 - (i & 7))) & 1;
     for (var j = 0; j < 8; j++) bits[g.dataBits + j] = (crc >> (7 - j)) & 1;
-    var syms = new Uint8Array(totalBits / b);
+    var syms = new Uint8Array(nSyms);
     for (var s = 0; s < syms.length; s++) {
       var v = 0;
       for (var k = 0; k < b; k++) v = (v << 1) | bits[s * b + k];
@@ -160,9 +165,29 @@
     return syms;
   }
 
+  /* v3 §3 payload self-framing: block 0 opens with len16 + type8 + reserved8,
+     paid once per payload — the true length (and a type lane) ride the wire
+     itself, so delivery NEVER depends on envelope sighting. The 24-mode header
+     is just [magic, K]; this is where its length lives. */
+  function selfFrame(payloadBytes, type) {
+    var out = new Uint8Array(payloadBytes.length + 4);
+    out[0] = (payloadBytes.length >> 8) & 255; out[1] = payloadBytes.length & 255;
+    out[2] = (type || 0) & 255; out[3] = 0;
+    out.set(payloadBytes, 4);
+    return out;
+  }
+  function unframe(bytes) {
+    if (bytes.length < 4) return null;
+    var len = (bytes[0] << 8) | bytes[1];
+    if (len > bytes.length - 4) return null;
+    return { len: len, type: bytes[2], bytes: bytes.subarray(4, 4 + len) };
+  }
+
   /* The emitter side: per-annulus symbol carousels (period L·D symbols). */
-  function encodeCarousels(profile, payloadBytes) {
+  function encodeCarousels(profile, payloadBytes, opts) {
     var g = geom(profile);
+    var framed = !!(profile.carriage && profile.carriage.self_framing);
+    if (framed) payloadBytes = selfFrame(payloadBytes, opts && opts.type);
     var tb = toBlocks(payloadBytes, g);
     if (tb.K > 200) throw new Error("payload too large: K=" + tb.K + " blocks (cap 200 — " + (200 * g.dataBytes) + " bytes at this droplet size)");
     var L = carouselLen(tb.K);
@@ -175,7 +200,7 @@
       }
       return syms;
     });
-    return { carousels: carousels, K: tb.K, L: L, geom: g };
+    return { carousels: carousels, K: tb.K, L: L, geom: g, framed: framed, wireLen: payloadBytes.length };
   }
 
   /* Decoder side: decoded symbol list (+erasures) at a known lag → verified
@@ -207,7 +232,7 @@
       for (var p2 = 0; p2 < D; p2++) if (bu.syms[p2] === null || bu.syms[p2] === undefined) { ok = false; break; }
       if (!ok) continue;
       tried++;
-      var bits = new Uint8Array(g.dropletBits);
+      var bits = new Uint8Array(D * b); // D·b ≥ dropletBits; pad bits ignored below
       for (var s2 = 0; s2 < D; s2++) {
         var v = fromGray(bu.syms[s2]);
         for (var k2 = 0; k2 < b; k2++) bits[s2 * b + k2] = (v >> (b - 1 - k2)) & 1;
@@ -314,9 +339,17 @@
     var out = new Uint8Array(len);
     for (var b3 = 0; b3 < len; b3++) out[b3] = blocks[Math.floor(b3 / g.dataBytes)][b3 % g.dataBytes];
     var ok = true, why = null;
+    // The header's len/pcrc (48-mode) cover the WIRE — framed when self-framing
+    // is on — so the CRC check precedes unframing.
     if (header.pcrc !== null && header.pcrcBits === 16 && crc16(out) !== header.pcrc) { ok = false; why = "payload CRC16 mismatch"; }
+    var ftype;
+    if (ok && profile.carriage && profile.carriage.self_framing) {
+      var fr = unframe(out);
+      if (!fr) { ok = false; why = "self-framing parse failed (block 0 len16 out of range)"; }
+      else { out = fr.bytes; ftype = fr.type; }
+    }
     return { ok: ok, reason: why, K: K, recovered: recovered, droplets: uniq.length, bytes: out,
-             text: bytesToText(out) };
+             ftype: ftype, text: bytesToText(out) };
   }
 
   function bytesToText(bytes) {
@@ -338,6 +371,7 @@
               geom: geom, ringD: ringD, carouselLen: carouselLen, subsetFor: subsetFor,
               isHeaderSlot: isHeaderSlot, parseHeader: parseHeader, HEADER_EVERY: HEADER_EVERY,
               crc8: crc8, crc16: crc16, toGray: toGray, fromGray: fromGray,
+              selfFrame: selfFrame, unframe: unframe,
               textToBytes: textToBytes, bytesToText: bytesToText, MAGIC: MAGIC };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   global.OC = global.OC || {}; global.OC.fountain = API;

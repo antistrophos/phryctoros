@@ -50,13 +50,18 @@
       contrastSum += contrast;
       if (contrast < 0.03) { r[i] = NaN; continue; }
 
-      // Light 3-tap smooth, then normalized upward crossing with the strongest slope.
+      // Light 3-tap smooth, then normalized crossing with the strongest slope.
+      // v2 annuli and outward-facing v3 edges cross UPWARD (fill→bg walking out);
+      // v3 inner-facing edges (crossing: "down") cross bg→fill — the flipped
+      // mode the contract's §10 sampler item names. Same subpixel math, sense
+      // inverted; everything downstream reads the contour identically.
+      var down = annulus.crossing === "down";
       var bestIdx = -1, bestSlope = 0;
       var qPrev = norm(prof, 0, lo, hi);
       for (var s2 = 1; s2 < S; s2++) {
         var q = norm(prof, s2, lo, hi);
-        if (qPrev < 0.5 && q >= 0.5) {
-          var slope = q - qPrev;
+        if (down ? (qPrev >= 0.5 && q < 0.5) : (qPrev < 0.5 && q >= 0.5)) {
+          var slope = down ? qPrev - q : q - qPrev;
           if (slope > bestSlope) { bestSlope = slope; bestIdx = s2; }
         }
         qPrev = q;

@@ -1111,6 +1111,213 @@ async function main() {
     }
   }
 
+  // ——— T22 family: THE V3 CONTRACT, emitter side (freeze order §10) ———
+  // The calibration plate that happens to carry data: edges/bands/plate render,
+  // the units-anchor flat circle, beacon luminance-constancy, the QR↔bullseye
+  // AE-neutrality swap, and the equalized carriage at the byte level (24-bit
+  // droplets, self-framing, M=32 padding). Decoder rungs land with their own
+  // T22 cases; nothing here touches the v1/v2 paths.
+  await tick("T22: v3 profiles validate…");
+  {
+    const p3 = OC.profile.profileV3();
+    const v3 = OC.profile.validate(p3);
+    record("T22 v3 resilient profile validates (trough guards, containment, matched-mean, freeze/loop)",
+      v3.ok && v3.errors.length === 0, (v3.errors[0] || "0 errors") + " / " + v3.warnings.length + " warnings");
+    if (v3.warnings.length) note("T22 v3 warnings", v3.warnings.join(" | "));
+    const p3h = OC.profile.profileV3("high-rate");
+    const v3h = OC.profile.validate(p3h);
+    record("T22 v3 high-rate profile validates (M-ladder 32/32/16/4, base stays 4)",
+      v3h.ok && p3h.annuli[0].rotation.M === 32 && p3h.annuli[3].rotation.M === 4 && p3h.carriage.droplet_bits === 48,
+      (v3h.errors[0] || "0 errors") + " M-ladder " + p3h.annuli.map(a => a.rotation.M).join("/"));
+    // Frozen §1 geometry spot-checks: sums 0.090, C-pinch exactly 0.23, approach 0.20.
+    const sums = p3.annuli.map(a => OC.profile.sumAmp(a));
+    const cPinch = 3.00 - (2.68 + sums[3]);
+    const approachAB = (1.80 - sums[1]) - (1.42 + sums[0]);
+    record("T22 frozen geometry: edge sums 0.090, C-pinch 0.230, A→B approach 0.200 (zero slack)",
+      sums.every(s => Math.abs(s - 0.090) < 1e-9) && Math.abs(cPinch - 0.23) < 1e-9 && Math.abs(approachAB - 0.20) < 1e-9,
+      "sums " + sums.map(s => s.toFixed(3)).join("/") + " pinch " + cPinch.toFixed(3) + " approach " + approachAB.toFixed(3));
+  }
+
+  await tick("T22a: equalized carriage byte round-trip (both presets)…");
+  {
+    // Pure-fountain loop: carousels → perfect symbol stream → collect at the
+    // known framing → assemble. Exercises the 24-bit droplet geometry, the
+    // [magic,K] header, block-0 self-framing, and (high-rate) M=32 padding —
+    // no optics in the loop, so a failure here is carriage arithmetic.
+    const msg = "PHRYCTOROS CARRIES THE STORE";
+    for (const preset of ["resilient", "high-rate"]) {
+      const p3 = OC.profile.profileV3(preset === "high-rate" ? "high-rate" : undefined);
+      const enc = OC.fountain.encodeCarousels(p3, OC.fountain.textToBytes(msg));
+      const perRing = p3.annuli.map((a, ai) => {
+        const D = OC.fountain.ringD(a, enc.geom);
+        const syms = enc.carousels[ai];
+        const decoded = [];
+        for (let i = 0; i < syms.length; i++) decoded.push({ i, s: syms[i], resid: 0 });
+        const col = OC.fountain.collect(decoded, p3.preamble_symbols, a, p3);
+        return { seed: a.rotation.seed, droplets: col.passed.map(d => ({ c: d.c, bytes: d.bytes })) };
+      });
+      const asm = OC.fountain.assemble(perRing, p3);
+      const D0 = OC.fountain.ringD(p3.annuli[0], enc.geom);
+      const padOk = preset === "high-rate" ? D0 === 10 : D0 === 6; // 48/5 ceils to 10; 24/4 exact
+      record("T22a " + preset + ": self-framed payload round-trips (K=" + enc.K + ", D₀=" + D0 + ")",
+        asm.ok === true && asm.text === msg && asm.ftype === 0 && padOk,
+        JSON.stringify({ ok: asm.ok, K: asm.K, droplets: asm.droplets, text: asm.text.slice(0, 12) + "…" }));
+    }
+  }
+
+  await tick("T22b: plate render geometry (flat circle = the units anchor)…");
+  let v3frame0 = null;
+  {
+    const p3 = OC.profile.profileV3();
+    const img = OC.emission.renderFrame(p3, 0, {});
+    v3frame0 = img;
+    const scale = p3.render.scale_px_per_unit, half = p3.render.size_px / 2;
+    const at = (xu, yu) => img.data[Math.round(yu * scale + half - 0.5) * img.w + Math.round(xu * scale + half - 0.5)];
+    // The flat outer circle: walk +x from 2.90 out, find the fill→bg crossing — it
+    // must sit at 3.00 within a soft-edge margin, and carry NO angular modulation.
+    const crossAt = (theta) => {
+      let prev = null, cross = null;
+      for (let ru = 2.90; ru <= 3.10; ru += 0.002) {
+        const v = at(ru * Math.cos(theta), ru * Math.sin(theta));
+        if (prev !== null && prev < 0.47 && v >= 0.47) { cross = ru; break; }
+        prev = v;
+      }
+      return cross;
+    };
+    const c0 = crossAt(0.3), c1 = crossAt(1.7), c2 = crossAt(3.9);
+    const flatOk = [c0, c1, c2].every(c => c !== null && Math.abs(c - 3.00) < 0.02);
+    const wobble = Math.max(Math.abs(c0 - c1), Math.abs(c1 - c2));
+    record("T22b flat circle: outer boundary at 3.00 ± 0.02 at three angles, wobble < 0.012 (unmodulated gauge; bound = 2 px of lattice aliasing at nearest-pixel sampling)",
+      flatOk && wobble < 0.012, "crossings " + [c0, c1, c2].map(c => c && c.toFixed(3)).join("/"));
+    // Plate shades: center disc + breaker ring + corner disc at the FILL shade;
+    // the bullseye gap and the trough at background.
+    const sh = p3.plate.shade, bgv = p3.render.background;
+    const probes = [
+      { v: at(0, 0), want: sh, name: "center disc" },
+      { v: at(0.30, 0), want: bgv, name: "bullseye gap 0.30" },
+      { v: at(0.75, 0), want: sh, name: "breaker ring 0.75" },
+      { v: at(2.65, 2.65), want: sh, name: "corner disc" },
+      { v: at(2.65 + 0.40 * 0.5, 2.65), want: bgv, name: "corner gap" },
+      { v: at(1.66, 0), want: bgv, name: "trough A→B" },
+      { v: at(2.51, 0.2), want: bgv, name: "trough B→C" }
+    ];
+    const bad = probes.filter(pr => Math.abs(pr.v - pr.want) > 0.03);
+    record("T22b plate shades: bullseyes/breaker at fill shade, gaps and troughs at background",
+      bad.length === 0, bad.length ? bad.map(b => b.name + "=" + b.v.toFixed(3)).join(" ") : "7 probes within 0.03");
+  }
+
+  await tick("T22c: beacon — luminance-constant, boundary-moving…");
+  {
+    const p3 = OC.profile.profileV3();
+    const n = 12;
+    const seq = OC.emission.renderSequence(p3, n, {});
+    const scale = p3.render.scale_px_per_unit, half = p3.render.size_px / 2;
+    // Shell mean over the beacon's reach each frame — AE sees a constant ring.
+    const shell = [];
+    for (const fr of seq.frames) {
+      let sum = 0, cnt = 0;
+      const img = fr.img;
+      for (let py = 0; py < img.h; py += 2) {
+        const yu = (py + 0.5 - half) / scale;
+        if (Math.abs(yu) > 0.87) continue;
+        for (let px = 0; px < img.w; px += 2) {
+          const xu = (px + 0.5 - half) / scale;
+          const r = Math.hypot(xu, yu);
+          if (r < 0.64 || r > 0.87) continue;
+          sum += img.data[py * img.w + px]; cnt++;
+        }
+      }
+      shell.push(sum / cnt);
+    }
+    const spread = Math.max(...shell) - Math.min(...shell);
+    // The boundary must MOVE: at a fixed point straddling the nominal inner edge,
+    // the wiggle modulates coverage frame to frame.
+    const probePx = { x: Math.round(0.70 * scale + half), y: half };
+    const probeVals = seq.frames.map(fr => fr.img.data[probePx.y * fr.img.w + probePx.x]);
+    const probeSpread = Math.max(...probeVals) - Math.min(...probeVals);
+    record("T22c beacon: shell mean constant (< 0.004) while the edge point swings (> 0.05) — wiggle, not blink (a blinking ring would swing the shell ~0.1)",
+      spread < 0.004 && probeSpread > 0.05,
+      "shell spread " + spread.toFixed(5) + " edge swing " + probeSpread.toFixed(3));
+  }
+
+  await tick("T22d: QR↔bullseye swap AE neutrality…");
+  {
+    const p3 = OC.profile.profileV3();
+    const steady = v3frame0 || OC.emission.renderFrame(p3, 0, {});
+    const cdImg = OC.emission.renderFrameV3(p3, 0, { countdown: true });
+    const scale = p3.render.scale_px_per_unit, half = p3.render.size_px / 2;
+    const centerMean = (img) => {
+      let sum = 0, cnt = 0;
+      for (let py = 0; py < img.h; py++) {
+        const yu = (py + 0.5 - half) / scale;
+        if (Math.abs(yu) > p3.plate.quiet_r) continue;
+        for (let px = 0; px < img.w; px++) {
+          const xu = (px + 0.5 - half) / scale;
+          if (xu * xu + yu * yu > p3.plate.quiet_r * p3.plate.quiet_r) continue;
+          sum += img.data[py * img.w + px]; cnt++;
+        }
+      }
+      return sum / cnt;
+    };
+    const ms = centerMean(steady), mc = centerMean(cdImg);
+    const mm = OC.emission.centerMeans(p3);
+    record("T22d matched-mean on rendered pixels: |countdown − steady| ≤ 0.05, analytic within 0.02 of rendered",
+      Math.abs(ms - mc) <= 0.05 && Math.abs(mm.steady - ms) < 0.02 && Math.abs(mm.countdown - mc) < 0.02,
+      "steady " + ms.toFixed(3) + "/" + mm.steady.toFixed(3) + " countdown " + mc.toFixed(3) + "/" + mm.countdown.toFixed(3));
+  }
+
+  await tick("T22e: recurring-countdown timeline + envelope integrity…");
+  {
+    const p3 = OC.profile.profileV3();
+    const tl = (f) => OC.emission.timeline(p3, f);
+    const cases = [
+      [0, true, 0], [89, true, 0], [90, false, 0], [1799, false, 1709],
+      [1800, true, 1710], [1889, true, 1710], [1890, false, 1710], [3600, true, 3420]
+    ];
+    const bad = cases.filter(([f, fr, eff]) => { const t = tl(f); return t.freeze !== fr || t.eff !== eff; });
+    record("T22e timeline: freeze 3 s recurs each 60 s loop, schedule pauses (eff resumes where it froze)",
+      bad.length === 0, bad.length ? "bad at f=" + bad.map(b => b[0]).join(",") : cases.length + " checkpoints exact");
+    const env = OC.emission.envelopeBytes(p3, { K: 65, len: 129, pcrc: 0xBEEF, capability: 1 });
+    const crcOk = ((env[18] << 8) | env[19]) === OC.fountain.crc16(env.subarray(0, 18));
+    const m1 = OC.emission.envelopeModules(p3.qr, env);
+    const m2 = OC.emission.envelopeModules(p3.qr, env);
+    let same = true, dark = 0;
+    for (let i = 0; i < m1.length; i++) { if (m1[i] !== m2[i]) { same = false; break; } dark += m1[i]; }
+    const density = dark / m1.length;
+    record("T22e envelope: CRC16 seals bytes 0–17; module map deterministic, whitened density 0.35–0.65",
+      crcOk && same && density > 0.35 && density < 0.65,
+      "crc " + crcOk + " density " + density.toFixed(3));
+  }
+
+  await tick("T22f: v3 optical round-trip (rings register the plate, 4 edges decode, pooled peel)…");
+  {
+    // The full loop through the OPTICS: analytic v3 frames → finder scan finds
+    // nothing (bullseyes are anti-QR by design) → ring registration on the
+    // band silhouette with the FLAT CIRCLE as the scale gauge → flipped-mode
+    // sampling on the inner-facing edges → four CRC-aligned carousels → one
+    // pooled peel through block-0 self-framing. Decoder rung 1 (static conic,
+    // v2-shipped) carries it; bullseye/per-frame-solve rungs land next.
+    const p3 = OC.profile.profileV3();
+    // Payload sized to the capture: 320 frames reach carousel slot ~11 per fast
+    // edge, and K=12 peels deterministically from those slots (verified against
+    // the seeded subsets). The 28-char canonical string needs 480 frames — the
+    // fountain arithmetic is T22a's job; this test buys the OPTICS.
+    const msg = "V3 CARRIES THE STORE";
+    const enc3 = OC.fountain.encodeCarousels(p3, OC.fountain.textToBytes(msg));
+    const seq3 = OC.emission.renderSequence(p3, 320, { carousels: enc3.carousels });
+    const res3 = OC.pipeline.decodeSequence(seq3.frames, p3, { payload: true });
+    const em3 = res3.error ? null : res3.emitters[0];
+    const pay3 = em3 && em3.payload;
+    const locks = em3 ? em3.annuli.map(a => a.error ? "ERR" : (a.alignMethod || "?") + "@" + a.alignLag) : [];
+    record("T22f v3 optical round-trip: ring registration (method rings), all four edges CRC-lock, payload peels through self-framing",
+      !!(em3 && em3.method === "rings" && pay3 && pay3.ok === true && pay3.text === msg &&
+         em3.annuli.every(a => !a.error && a.dropletsPassed > 0)),
+      em3 ? "method " + em3.method + " locks " + locks.join(" ") +
+            " droplets " + em3.annuli.map(a => a.dropletsPassed).join("/") +
+            " → " + JSON.stringify(pay3 && { ok: pay3.ok, K: pay3.K, text: (pay3.text || "").slice(0, 14) + "…" })
+          : "no emitter: " + JSON.stringify(res3).slice(0, 160));
+  }
+
   // Determinism spot-check: dtrig render of one frame is identical across two runs.
   await tick("determinism: dtrig double-render…");
   {
