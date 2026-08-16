@@ -105,8 +105,35 @@
       });
     }
 
+    // Per-frame plate solve (v3 §9, the ladder's second rung): re-fit H from
+    // the measured bullseye constellation on every frame — the center-shift
+    // field IS the perspective k=1, so the DLT absorbs per-frame what the
+    // static conic could only average. Runs AFTER the conic composition:
+    // frames where the solve verifies replace their H; frames where it fails
+    // keep the conic-corrected track (each rung degrades to the one below).
+    var solveBriefs = null;
+    if (opts.plateSolve && profile.plate) {
+      var plateM = dep("plate");
+      solveBriefs = emitters.map(function (_, pe) {
+        var HsP = tracksH[pe].Hs, solved = 0, residSum = 0, usedMin = 9;
+        for (var pf = 0; pf < groups.length; pf++) {
+          var sol = plateM.plateSolve(groups[pf].imgs[0], HsP[pf], profile);
+          if (sol) { HsP[pf] = sol.H; solved++; residSum += sol.residPx; if (sol.used < usedMin) usedMin = sol.used; }
+        }
+        return { solved: solved, frames: groups.length, usedMin: solved ? usedMin : null,
+                 meanResidPx: solved ? Math.round(residSum / solved * 100) / 100 : null };
+      });
+    }
+
+    // The beacon rides as one more channel (§5): the breaker ring's outer
+    // edge through the identical sample→track→align→demap chain; only the
+    // byte framing downstream is beacon-specific. layer −1 = out of every
+    // layer lookup; excluded from the payload pool.
+    var channels = profile.annuli;
+    if (opts.beacon && profile.plate) channels = channels.concat([dep("plate").beaconAnnulus(profile)]);
+
     var results = emitters.map(function (em, emIdx) {
-      var annuli = profile.annuli.map(function (a) {
+      var annuli = channels.map(function (a) {
         var kmax = Math.max.apply(null, a.boundary.harmonics) + 4;
         // Presence is judged over the ACTIVE span (first valid frame onward) — a
         // capture that starts on the countdown freeze has honest dead frames first.
@@ -191,11 +218,15 @@
           var maxLagSym = Math.ceil(((opts.loopSeconds || 60) * profile.frame_rate_hz) / a.rotation.frames_per_symbol) + profile.preamble_symbols;
           var align = opts.aligned ? { offset: 0, lag: 0, score: null, method: "aligned" } : demap.findAlignment(track, a, profile, syncBase);
           if (align && !align.method) align.method = "preamble";
-          if (!align) {
+          if (!align && !a.beacon) {
             // Payload mode has no reference stream — CRC-pass scanning is the
             // mid-loop sync (fountain.js); reference mode correlates the seeds.
             // opts.alignHints[annulus index] = {min,max} predicted-lag band
             // (harvest hop windows price their own lag from the bootstrap lock).
+            // The beacon has neither fallback (its data is the control
+            // carousel, not the seeded stream, and it carries no droplets):
+            // preamble lock or an honest no-lock row — v0 limitation, mid-
+            // cycle beacon joins wait on a framing-based aligner.
             align = opts.payload
               ? dep("fountain").crcAlign(track, a, profile, syncBase, maxLagSym,
                   opts.alignHints && opts.alignHints[a.index])
@@ -206,6 +237,19 @@
                      carrierRatio: carrierRatio, tear: tearBrief(tearX),
                      error: "no lock — symbols match neither preamble nor stream at any lag (carrier " + carrierRatio + "× expected" + (carrierRatio !== null && carrierRatio < 0.5 ? "; low carrier — see the layer-0 row" : "") + ")" };
           var decoded = demap.decode(track, a, profile, align.offset);
+
+          if (a.beacon) {
+            var env = dep("plate").beaconDecode(decoded, align.lag, a.rotation.M);
+            return {
+              annulus: a.index, layer: a.layer, present: true, beacon: true,
+              contrast: round3(meanContrast), validFrames: valid,
+              carrierRatio: carrierRatio, alignMethod: align.method || "preamble",
+              alignOffset: align.offset, alignLag: align.lag,
+              envelope: env ? toHex(env.envelope) : null,
+              envelopeAt: env ? env.at : null,
+              error: env ? undefined : "beacon locked but no framed envelope in the captured span"
+            };
+          }
 
           var sigma = averageNoise(seriesX, a, kmax, transform);
           var snr = {};
@@ -292,19 +336,62 @@
       // Payload mode: pool every ring's verified droplets into one peel.
       var payload;
       if (opts.payload) {
+        // beacon rides last in channels — profile.annuli[ri] stays aligned
+        // for the data rows; the beacon banks no droplets and joins no peel.
         var rings = annuli.map(function (r, ri) {
-          return { seed: profile.annuli[ri].rotation.seed, droplets: r._droplets || [] };
-        });
+          return r.beacon ? null : { seed: profile.annuli[ri].rotation.seed, droplets: r._droplets || [] };
+        }).filter(function (x) { return x; });
         annuli.forEach(function (r) { delete r._droplets; });
         payload = dep("fountain").assemble(rings, profile);
         if (payload && payload.bytes) payload.hex = toHex(payload.bytes);
         if (payload) delete payload.bytes;
       }
       return { fiducialWidthPx: Math.round(em.fiducialWidthPx * 10) / 10, method: em.method || "finder",
-               conic: conicBriefs ? conicBriefs[emIdx] : undefined, annuli: annuli, payload: payload };
+               conic: conicBriefs ? conicBriefs[emIdx] : undefined,
+               plateSolve: solveBriefs ? solveBriefs[emIdx] : undefined,
+               annuli: annuli, payload: payload };
     });
 
     return { emitters: results, emitterCount: emitters.length, regFrame: regFrame };
+  }
+
+  /* v3 preset auto-detect (§2, as ruled: binary, dual-geometry, ≥2 agreeing
+     CRC passes). The presets share every optical stage — only M and droplet
+     geometry differ — so the mechanism is decode-under-both and let the CRC
+     passes vote: the wrong geometry's chance rate is 1/256 per droplet.
+     Resilient first (the default); one full re-decode when wrong is the v0
+     price — reusing the phase tracks across geometries is recorded future
+     work, not a correctness need. */
+  function decodeV3Auto(frames, opts) {
+    opts = opts || {};
+    var PRF = dep("profile");
+    function passes(res) {
+      if (!res || res.error) return 0;
+      var t = 0;
+      res.emitters.forEach(function (em) {
+        em.annuli.forEach(function (r) { if (r.dropletsPassed) t += r.dropletsPassed; });
+      });
+      return t;
+    }
+    var o = {};
+    for (var k in opts) o[k] = opts[k];
+    o.payload = true;
+    // The vote is COMPARATIVE, not first-past-bar: a wrong-geometry crcAlign
+    // scan (≈458 lags × 4 offsets × 4 edges) has order-1 odds of a 2-pass
+    // chance lock, so "≥2 agreeing passes" alone can misfire. The true
+    // geometry lights up with many passes; chance produces a couple. Decode
+    // both, let the counts vote; short-circuit only when the default's count
+    // is already beyond what chance produces.
+    var pR = PRF.profileV3(), rR = decodeSequence(frames, pR, o);
+    var nR = passes(rR);
+    if (nR >= 6) return { preset: "resilient", passes: nR, result: rR };
+    var pH = PRF.profileV3("high-rate"), rH = decodeSequence(frames, pH, o);
+    var nH = passes(rH);
+    var win = nH > nR ? "high-rate" : "resilient";
+    var nW = Math.max(nR, nH);
+    if (nW >= 2 && nR !== nH)
+      return { preset: win, passes: nW, passesOther: Math.min(nR, nH), result: win === "high-rate" ? rH : rR };
+    return { preset: null, passes: nW, result: nR >= nH ? rR : rH };
   }
 
   function toHex(u8) {
@@ -331,7 +418,7 @@
   function round3(x) { return Math.round(x * 1000) / 1000; }
   function round1(x) { return Math.round(x * 10) / 10; }
 
-  var API = { decodeSequence: decodeSequence };
+  var API = { decodeSequence: decodeSequence, decodeV3Auto: decodeV3Auto };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   global.OC = global.OC || {}; global.OC.pipeline = API;
 })(typeof window !== "undefined" ? window : globalThis);

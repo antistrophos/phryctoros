@@ -34,6 +34,7 @@ software loop the field harness sits on.</p>
 <script src="../src/profile.js"></script>
 <script src="../src/emission.js"></script>
 <script src="../src/register.js"></script>
+<script src="../src/plate.js"></script>
 <script src="../src/sample.js"></script>
 <script src="../src/conic.js"></script>
 <script src="../src/transform.js"></script>
@@ -1289,6 +1290,7 @@ async function main() {
       "crc " + crcOk + " density " + density.toFixed(3));
   }
 
+  let v3seq = null, v3res = null, v3msg = null; // shared with the rung-2 tests below
   await tick("T22f: v3 optical round-trip (rings register the plate, 4 edges decode, pooled peel)…");
   {
     // The full loop through the OPTICS: analytic v3 frames → finder scan finds
@@ -1302,10 +1304,13 @@ async function main() {
     // edge, and K=12 peels deterministically from those slots (verified against
     // the seeded subsets). The 28-char canonical string needs 480 frames — the
     // fountain arithmetic is T22a's job; this test buys the OPTICS.
-    const msg = "V3 CARRIES THE STORE";
+    v3msg = "V3 CARRIES THE STORE";
+    const msg = v3msg;
     const enc3 = OC.fountain.encodeCarousels(p3, OC.fountain.textToBytes(msg));
-    const seq3 = OC.emission.renderSequence(p3, 320, { carousels: enc3.carousels });
-    const res3 = OC.pipeline.decodeSequence(seq3.frames, p3, { payload: true });
+    v3seq = OC.emission.renderSequence(p3, 320, { carousels: enc3.carousels });
+    const seq3 = v3seq;
+    v3res = OC.pipeline.decodeSequence(seq3.frames, p3, { payload: true });
+    const res3 = v3res;
     const em3 = res3.error ? null : res3.emitters[0];
     const pay3 = em3 && em3.payload;
     const locks = em3 ? em3.annuli.map(a => a.error ? "ERR" : (a.alignMethod || "?") + "@" + a.alignLag) : [];
@@ -1316,6 +1321,70 @@ async function main() {
             " droplets " + em3.annuli.map(a => a.dropletsPassed).join("/") +
             " → " + JSON.stringify(pay3 && { ok: pay3.ok, K: pay3.K, text: (pay3.text || "").slice(0, 14) + "…" })
           : "no emitter: " + JSON.stringify(res3).slice(0, 160));
+  }
+
+  // ——— T22 rung 2: the plate as a per-frame instrument, the beacon as a channel ———
+  await tick("T22g: bullseye detector + plate solve recover a perturbed H…");
+  {
+    const p3 = OC.profile.profileV3();
+    const img = v3frame0 || OC.emission.renderFrame(p3, 0, {});
+    const scale = p3.render.scale_px_per_unit, half = p3.render.size_px / 2;
+    // Truth: unit (0,0) sits at px 511.5. Perturb scale ×1.02 and shift +3 px —
+    // the detector must find all five bullseyes and the DLT must pull center
+    // and scale back to truth.
+    const Hbad = [scale * 1.02, 0, half - 0.5 + 3, 0, scale * 1.02, half - 0.5 + 3, 0, 0, 1];
+    const sol = OC.plate.plateSolve(img, Hbad, p3);
+    const c = sol && OC.geom.applyH(sol.H, 0, 0);
+    const u = sol && OC.sample.unitScale(sol.H);
+    record("T22g plate solve: 5/5 bullseyes verified (center breaker present), residual < 0.5 px, center within 0.8 px and scale within 0.5% of truth",
+      !!(sol && sol.used === 5 && sol.residPx < 0.5 && sol.points[0] && sol.points[0].breaker === true &&
+         Math.abs(c[0] - 511.5) < 0.8 && Math.abs(c[1] - 511.5) < 0.8 && Math.abs(u / scale - 1) < 0.005),
+      sol ? "used " + sol.used + " resid " + sol.residPx.toFixed(3) + "px center (" + c[0].toFixed(2) + "," + c[1].toFixed(2) + ") scale " + (u / scale).toFixed(4) + "× breaker " + sol.points[0].breaker
+          : "no solve");
+  }
+
+  await tick("T22h: per-frame plate solve vs static conic — byte parity on cleans…");
+  {
+    const p3 = OC.profile.profileV3();
+    const resS = OC.pipeline.decodeSequence(v3seq.frames, p3, { payload: true, plateSolve: true });
+    const emS = resS.error ? null : resS.emitters[0];
+    const payS = emS && emS.payload;
+    const dropsA = v3res.emitters[0].annuli.map(a => a.dropletsPassed).join("/");
+    const dropsB = emS ? emS.annuli.map(a => a.dropletsPassed).join("/") : "-";
+    record("T22h per-frame solve: every frame solves (5-point DLT), sub-pixel residual, and the decode is BYTE-PAR with the static path (same droplets, same payload)",
+      !!(emS && emS.plateSolve && emS.plateSolve.solved === emS.plateSolve.frames && emS.plateSolve.meanResidPx < 0.5 &&
+         payS && payS.ok === true && payS.text === v3msg && dropsB === dropsA),
+      emS ? "solved " + emS.plateSolve.solved + "/" + emS.plateSolve.frames + " resid " + emS.plateSolve.meanResidPx +
+            "px droplets " + dropsB + " (static " + dropsA + ") → " + JSON.stringify(payS && { ok: payS.ok, text: (payS.text || "").slice(0, 10) + "…" })
+          : "no emitter");
+  }
+
+  await tick("T22i: beacon round-trip — the control channel through the standard chain…");
+  {
+    const p3 = OC.profile.profileV3();
+    // Short synthetic envelope: the demod is framing-agnostic (magic+len+CRC8),
+    // so a 4-byte payload proves the loop in 280 frames instead of 770.
+    const envShort = new Uint8Array([0xE5, 0x01, 0x02, 0x03]);
+    const seqB = OC.emission.renderSequence(p3, 280, { envBytes: envShort });
+    const resB = OC.pipeline.decodeSequence(seqB.frames, p3, { beacon: true });
+    const emB = resB.error ? null : resB.emitters[0];
+    const rowB = emB && emB.annuli.find(a => a.beacon);
+    const hex = rowB && rowB.envelope;
+    record("T22i beacon: rides the ring pair's outer edge as a fifth channel, preamble-locks, and the framed envelope decodes byte-exact",
+      !!(rowB && !rowB.error && hex === "e5010203" && Math.abs((rowB.carrierRatio || 0) - 1) < 0.4),
+      rowB ? "lock " + rowB.alignMethod + "@" + rowB.alignLag + " carrier " + rowB.carrierRatio + "× envelope " + hex + " at byte " + rowB.envelopeAt
+           : "no beacon row: " + JSON.stringify(resB).slice(0, 120));
+  }
+
+  await tick("T22j: preset auto-detect — dual-geometry CRC vote on a high-rate emission…");
+  {
+    const pH = OC.profile.profileV3("high-rate");
+    const encH = OC.fountain.encodeCarousels(pH, OC.fountain.textToBytes("V3 CARRIES THE STORE"));
+    const seqH = OC.emission.renderSequence(pH, 160, { carousels: encH.carousels });
+    const auto = OC.pipeline.decodeV3Auto(seqH.frames, {});
+    record("T22j auto-detect: resilient decode of a high-rate emission scores ~0 CRC passes, the high-rate pass clears the ≥2 bar, verdict = high-rate",
+      auto.preset === "high-rate" && auto.passes >= 2,
+      "preset " + auto.preset + " passes " + auto.passes);
   }
 
   // Determinism spot-check: dtrig render of one frame is identical across two runs.

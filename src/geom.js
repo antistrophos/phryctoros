@@ -49,6 +49,32 @@
     return new Float64Array([h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], 1]);
   }
 
+  // Overdetermined DLT (≥4 correspondences, least squares via normal equations):
+  // the v3 plate solve fits center + four corner bullseyes (5 points, 8 DOF).
+  function homographyFromPointsN(src, dst) {
+    var n = src.length;
+    if (n < 4) return null;
+    if (n === 4) return homographyFromPoints(src, dst);
+    var AtA = new Float64Array(64), Atb = new Float64Array(8);
+    var row = new Float64Array(8);
+    function accum(rhs) {
+      for (var a = 0; a < 8; a++) {
+        Atb[a] += row[a] * rhs;
+        for (var b = 0; b < 8; b++) AtA[a * 8 + b] += row[a] * row[b];
+      }
+    }
+    for (var i = 0; i < n; i++) {
+      var x = src[i][0], y = src[i][1], X = dst[i][0], Y = dst[i][1];
+      row[0] = x; row[1] = y; row[2] = 1; row[3] = 0; row[4] = 0; row[5] = 0; row[6] = -x * X; row[7] = -y * X;
+      accum(X);
+      row[0] = 0; row[1] = 0; row[2] = 0; row[3] = x; row[4] = y; row[5] = 1; row[6] = -x * Y; row[7] = -y * Y;
+      accum(Y);
+    }
+    var h = solve(AtA, Atb, 8);
+    if (!h) return null;
+    return new Float64Array([h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], 1]);
+  }
+
   function applyH(H, x, y) {
     var w = H[6] * x + H[7] * y + H[8];
     return [(H[0] * x + H[1] * y + H[2]) / w, (H[3] * x + H[4] * y + H[5]) / w];
@@ -77,7 +103,7 @@
 
   function makeImage(w, h) { return { w: w, h: h, data: new Float32Array(w * h) }; }
 
-  var API = { solve: solve, homographyFromPoints: homographyFromPoints, applyH: applyH, invertH: invertH, bilinear: bilinear, makeImage: makeImage };
+  var API = { solve: solve, homographyFromPoints: homographyFromPoints, homographyFromPointsN: homographyFromPointsN, applyH: applyH, invertH: invertH, bilinear: bilinear, makeImage: makeImage };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   global.OC = global.OC || {}; global.OC.geom = API;
 })(typeof window !== "undefined" ? window : globalThis);
