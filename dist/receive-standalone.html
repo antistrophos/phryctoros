@@ -617,6 +617,12 @@
       // blocks under tile-shifted seeds (fountain.tileSeed).
       tiling: 1,
       tile_pitch: 7.2,
+      // DIAGNOSTIC variant, off the frozen contract (ruling 2: steady state is
+      // QR-free): render the envelope QR in the center donut on EVERY frame —
+      // the v2-proven finder path then registers angled captures continuously.
+      // The interim lock for angled-capture data collection until saddle-first
+      // registration lands; suppresses the center bullseye + beacon.
+      qr_persistent: false,
       // §1 edge table. B's edges share nominal φ (same nominal_hz), distinct data
       // (distinct seeds) — the differential-pair demod is the decoder follow-on.
       annuli: [
@@ -765,6 +771,9 @@
       errors.push("beacon amplitude sum " + beaconSum.toFixed(3) + " exceeds the ring-gap bound 0.045");
     else if (beaconSum > 0.030 + 1e-9)
       warnings.push("beacon amplitude sum " + beaconSum.toFixed(3) + " above 0.030 — quiet-zone margin thins");
+
+    if (p.qr_persistent)
+      warnings.push("qr_persistent is a DIAGNOSTIC variant — off the frozen contract (§ ruling 2: steady state is QR-free); for angled-capture data until saddle-first registration lands");
 
     // Tiling (§7): the knob is 1/2/6; the pitch keeps §5's 1.2-unit gutter.
     var tn = p.tiling || 1;
@@ -1061,8 +1070,13 @@
       return s;
     }
 
+    // qr_persistent (diagnostic): the envelope QR owns the center donut on
+    // EVERY face — the finder path then registers angled captures
+    // continuously (the interim lock until saddle-first lands). Suppresses
+    // the center bullseye and the beacon.
+    var centerQR = !!(opts.countdown || profile.qr_persistent);
     var beacon = null;
-    if (!opts.countdown) {
+    if (!centerQR) {
       var bs = opts.beaconSchedule;
       if (bs === undefined) bs = buildBeaconSchedule(profile, f + 1, opts.envBytes || envelopeBytes(profile, opts.payloadInfo || null));
       var phiB = bs ? phaseAt({ rotation: profile.beacon.rotation }, bs, fps, f) : 0;
@@ -1076,7 +1090,7 @@
       };
     }
     var qrm = null, qrHalf = 0, qrModU = 0, qrN = 0;
-    if (opts.countdown) {
+    if (centerQR) {
       qrm = opts.qrModules || envelopeModules(profile.qr, opts.envBytes || envelopeBytes(profile, opts.payloadInfo || null));
       qrN = profile.qr.modules;
       qrHalf = profile.qr.width_units / 2;
@@ -1093,7 +1107,7 @@
         var v = bg;
         var r = Math.sqrt(x * x + y * y);
         if (r <= pl.quiet_r + pad) {
-          if (opts.countdown) {
+          if (centerQR) {
             var ax = x < 0 ? -x : x, ay = y < 0 ? -y : y;
             if (ax <= qrHalf && ay <= qrHalf) {
               var mx = Math.floor((x + qrHalf) / qrModU); if (mx >= qrN) mx = qrN - 1;
@@ -1206,8 +1220,9 @@
       return s;
     }
 
+    var centerQR = !!(opts.countdown || profile.qr_persistent);
     var beacon = null;
-    if (!opts.countdown) {
+    if (!centerQR) {
       var bs = opts.beaconSchedule;
       if (bs === undefined) bs = buildBeaconSchedule(profile, f + 1, opts.envBytes || envelopeBytes(profile, opts.payloadInfo || null));
       var phiB = bs ? phaseAt({ rotation: profile.beacon.rotation }, bs, fps, f) : 0;
@@ -1221,7 +1236,7 @@
       };
     }
     var qrm = null, qrHalf = 0, qrModU = 0, qrN = 0;
-    if (opts.countdown) {
+    if (centerQR) {
       qrm = opts.qrModules || envelopeModules(profile.qr, opts.envBytes || envelopeBytes(profile, opts.payloadInfo || null));
       qrN = profile.qr.modules;
       qrHalf = profile.qr.width_units / 2;
@@ -1261,7 +1276,7 @@
           var x = xG - (col + 0.5) * pitch, y = yG - (row + 0.5) * pitch;
           var r = Math.sqrt(x * x + y * y);
           if (r <= pl.quiet_r + pad) {
-            if (opts.countdown) {
+            if (centerQR) {
               var ax = x < 0 ? -x : x, ay = y < 0 ? -y : y;
               if (ax <= qrHalf && ay <= qrHalf) {
                 var mx = Math.floor((x + qrHalf) / qrModU); if (mx >= qrN) mx = qrN - 1;
@@ -1966,7 +1981,10 @@
     // while the QR still reads.
     var pV3 = opts.profile;
     var isV3reg = !!(pV3 && pV3.bands && pV3.plate);
-    if (isV3reg && !opts.noRings) {
+    // qr_persistent (diagnostic): the QR is guaranteed present, so the
+    // finder path leads again (it is the perspective-capable one) and rings
+    // return to being the fallback — the v2-proven order, deliberately.
+    if (isV3reg && !pV3.qr_persistent && !opts.noRings) {
       var ringed3 = ringRegisterAll(img, pV3, opts);
       if (ringed3.length) return { emitters: ringed3, candidates: [], method: "rings" };
     }
@@ -2000,7 +2018,7 @@
         if (s.structureScore >= 0.7) emitters.push(s);
       } else if (s.timingScore >= 0.6 && s.structureScore >= 0.7) emitters.push(s);
     }
-    if (!emitters.length && opts.profile && !opts.noRings && !isV3reg) {
+    if (!emitters.length && opts.profile && !opts.noRings && (!isV3reg || pV3.qr_persistent)) {
       var ringed = ringRegisterAll(img, opts.profile, opts);
       if (ringed.length) return { emitters: ringed, candidates: cands, method: "rings" };
     }

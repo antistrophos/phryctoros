@@ -488,7 +488,10 @@
     // while the QR still reads.
     var pV3 = opts.profile;
     var isV3reg = !!(pV3 && pV3.bands && pV3.plate);
-    if (isV3reg && !opts.noRings) {
+    // qr_persistent (diagnostic): the QR is guaranteed present, so the
+    // finder path leads again (it is the perspective-capable one) and rings
+    // return to being the fallback — the v2-proven order, deliberately.
+    if (isV3reg && !pV3.qr_persistent && !opts.noRings) {
       var ringed3 = ringRegisterAll(img, pV3, opts);
       if (ringed3.length) return { emitters: ringed3, candidates: [], method: "rings" };
     }
@@ -522,7 +525,7 @@
         if (s.structureScore >= 0.7) emitters.push(s);
       } else if (s.timingScore >= 0.6 && s.structureScore >= 0.7) emitters.push(s);
     }
-    if (!emitters.length && opts.profile && !opts.noRings && !isV3reg) {
+    if (!emitters.length && opts.profile && !opts.noRings && (!isV3reg || pV3.qr_persistent)) {
       var ringed = ringRegisterAll(img, opts.profile, opts);
       if (ringed.length) return { emitters: ringed, candidates: cands, method: "rings" };
     }

@@ -58,6 +58,7 @@
     <option value="2">2-up (2×1)</option>
     <option value="6">6-up (3×2, the docked desk mode)</option>
   </select></label>
+  <label style="margin-left:.8rem"><input id="qrPersChk" type="checkbox"> diagnostic: persistent center QR (angled-capture lock until saddle registration lands; off-contract)</label>
 </p>
 <details open><summary>Emission profile (JSON, editable)</summary>
   <textarea id="profileTxt"></textarea>
@@ -289,6 +290,11 @@ function drawFrameV3(f) {
     const sched = layout.n > 1 ? schedulesT[t] : schedules;
     const { pl, shade } = v3PlateBase(ctx, f, c.cx, c.cy, sched);
     pl0 = pl; shade0 = shade;
+    if (profile.qr_persistent) {
+      // diagnostic lock: the QR owns the center on every face; no bullseye, no beacon
+      ctx.drawImage(qrCanvas, c.cx - qrCanvas.width / 2, c.cy - qrCanvas.height / 2);
+      return;
+    }
     bullseyeLive(ctx, c.cx, c.cy, pl.center.r_out * scale, shade, R.background);
     if (t === 0) {
       // the beacon ring pair, designated tile only: both edges share one δ
@@ -453,6 +459,7 @@ function startV3() {
   profile.countdown.loop_s = Math.max(10, +$("loopSecs").value || 60);
   profile.countdown.freeze_s = Math.max(1, Math.min(+$("cdSecs").value || 3, profile.countdown.loop_s - 1));
   profile.tiling = +$("tileSel").value || 1;
+  profile.qr_persistent = $("qrPersChk").checked;
   profile.session32 = (Math.random() * 4294967296) >>> 0;
   const layout = OC.emission.tileLayout(profile);
   let carousels = null, envInfo = null, payloadBytes = null;

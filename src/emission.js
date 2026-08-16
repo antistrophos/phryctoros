@@ -247,8 +247,13 @@
       return s;
     }
 
+    // qr_persistent (diagnostic): the envelope QR owns the center donut on
+    // EVERY face — the finder path then registers angled captures
+    // continuously (the interim lock until saddle-first lands). Suppresses
+    // the center bullseye and the beacon.
+    var centerQR = !!(opts.countdown || profile.qr_persistent);
     var beacon = null;
-    if (!opts.countdown) {
+    if (!centerQR) {
       var bs = opts.beaconSchedule;
       if (bs === undefined) bs = buildBeaconSchedule(profile, f + 1, opts.envBytes || envelopeBytes(profile, opts.payloadInfo || null));
       var phiB = bs ? phaseAt({ rotation: profile.beacon.rotation }, bs, fps, f) : 0;
@@ -262,7 +267,7 @@
       };
     }
     var qrm = null, qrHalf = 0, qrModU = 0, qrN = 0;
-    if (opts.countdown) {
+    if (centerQR) {
       qrm = opts.qrModules || envelopeModules(profile.qr, opts.envBytes || envelopeBytes(profile, opts.payloadInfo || null));
       qrN = profile.qr.modules;
       qrHalf = profile.qr.width_units / 2;
@@ -279,7 +284,7 @@
         var v = bg;
         var r = Math.sqrt(x * x + y * y);
         if (r <= pl.quiet_r + pad) {
-          if (opts.countdown) {
+          if (centerQR) {
             var ax = x < 0 ? -x : x, ay = y < 0 ? -y : y;
             if (ax <= qrHalf && ay <= qrHalf) {
               var mx = Math.floor((x + qrHalf) / qrModU); if (mx >= qrN) mx = qrN - 1;
@@ -392,8 +397,9 @@
       return s;
     }
 
+    var centerQR = !!(opts.countdown || profile.qr_persistent);
     var beacon = null;
-    if (!opts.countdown) {
+    if (!centerQR) {
       var bs = opts.beaconSchedule;
       if (bs === undefined) bs = buildBeaconSchedule(profile, f + 1, opts.envBytes || envelopeBytes(profile, opts.payloadInfo || null));
       var phiB = bs ? phaseAt({ rotation: profile.beacon.rotation }, bs, fps, f) : 0;
@@ -407,7 +413,7 @@
       };
     }
     var qrm = null, qrHalf = 0, qrModU = 0, qrN = 0;
-    if (opts.countdown) {
+    if (centerQR) {
       qrm = opts.qrModules || envelopeModules(profile.qr, opts.envBytes || envelopeBytes(profile, opts.payloadInfo || null));
       qrN = profile.qr.modules;
       qrHalf = profile.qr.width_units / 2;
@@ -447,7 +453,7 @@
           var x = xG - (col + 0.5) * pitch, y = yG - (row + 0.5) * pitch;
           var r = Math.sqrt(x * x + y * y);
           if (r <= pl.quiet_r + pad) {
-            if (opts.countdown) {
+            if (centerQR) {
               var ax = x < 0 ? -x : x, ay = y < 0 ? -y : y;
               if (ax <= qrHalf && ay <= qrHalf) {
                 var mx = Math.floor((x + qrHalf) / qrModU); if (mx >= qrN) mx = qrN - 1;

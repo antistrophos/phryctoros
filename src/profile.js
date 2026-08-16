@@ -246,6 +246,12 @@
       // blocks under tile-shifted seeds (fountain.tileSeed).
       tiling: 1,
       tile_pitch: 7.2,
+      // DIAGNOSTIC variant, off the frozen contract (ruling 2: steady state is
+      // QR-free): render the envelope QR in the center donut on EVERY frame —
+      // the v2-proven finder path then registers angled captures continuously.
+      // The interim lock for angled-capture data collection until saddle-first
+      // registration lands; suppresses the center bullseye + beacon.
+      qr_persistent: false,
       // §1 edge table. B's edges share nominal φ (same nominal_hz), distinct data
       // (distinct seeds) — the differential-pair demod is the decoder follow-on.
       annuli: [
@@ -394,6 +400,9 @@
       errors.push("beacon amplitude sum " + beaconSum.toFixed(3) + " exceeds the ring-gap bound 0.045");
     else if (beaconSum > 0.030 + 1e-9)
       warnings.push("beacon amplitude sum " + beaconSum.toFixed(3) + " above 0.030 — quiet-zone margin thins");
+
+    if (p.qr_persistent)
+      warnings.push("qr_persistent is a DIAGNOSTIC variant — off the frozen contract (§ ruling 2: steady state is QR-free); for angled-capture data until saddle-first registration lands");
 
     // Tiling (§7): the knob is 1/2/6; the pitch keeps §5's 1.2-unit gutter.
     var tn = p.tiling || 1;
