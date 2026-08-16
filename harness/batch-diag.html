@@ -27,6 +27,7 @@
 <script src="../src/profile.js"></script>
 <script src="../src/emission.js"></script>
 <script src="../src/register.js"></script>
+<script src="../src/plate.js"></script>
 <script src="../src/sample.js"></script>
 <script src="../src/conic.js"></script>
 <script src="../src/transform.js"></script>
@@ -93,7 +94,11 @@ async function runClip(name) {
   const pv = qs.get("profile");
   const profile = pv === "v1" ? OC.profile.profileV1()
     : pv === "v20" ? OC.profile.profileV2r20()
-    : pv === "v30" ? OC.profile.profileV2r30() : OC.profile.defaultProfile();
+    : pv === "v30" ? OC.profile.profileV2r30()
+    : pv === "v3" ? OC.profile.profileV3()
+    : pv === "v3q" ? OC.profile.profileV3(undefined, { qr_persistent: true }) // finder-first decode for persistent-QR emissions
+    : pv === "v3hr" ? OC.profile.profileV3("high-rate")
+    : OC.profile.defaultProfile();
   // capfps: the SEEK cadence — must match the clip's recording rate (a 60 fps
   // clip stepped at 1/30 silently drops every other camera frame). anw: the
   // analysis-crop width cap — raise to 2048 for 4K sources to keep module
@@ -164,7 +169,9 @@ async function runClip(name) {
   $("status").textContent = name + ": decoding " + frames.length + " frames…";
   await new Promise(r => setTimeout(r, 10));
   const res = OC.pipeline.decodeSequence(frames, profile, {
-    aligned: false, loopSeconds: 60, handheld: true, payload: PAYLOAD,
+    aligned: false, loopSeconds: 60, handheld: qs.get("hh") !== "0", payload: PAYLOAD,
+    plateSolve: qs.get("solve") === "1", // v3: per-frame solve — its success rate vs angle is itself a ladder metric
+    beacon: qs.get("beacon") === "1",
     conicScan: qs.get("scan") === "1"   // wander probe: per-window k≤2 fits in row.conic.scan
   });
   if (res.error) { row.error = res.error; row.annuli = null; }
@@ -172,6 +179,7 @@ async function runClip(name) {
     row.fidPx = res.emitters[0].fiducialWidthPx;
     row.method = res.emitters[0].method;
     row.conic = res.emitters[0].conic || null;
+    row.plateSolve = res.emitters[0].plateSolve || null;
     row.payload = res.emitters[0].payload || null;
     row.annuli = res.emitters[0].annuli.map(a => ({
       annulus: a.annulus, layer: a.layer, present: a.present, ok: a.ok || false, ser: a.ser, errors: a.errors,
