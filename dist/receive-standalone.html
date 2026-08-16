@@ -49,6 +49,7 @@
 <fieldset><legend>Harvest (payload modes) — droplet-aware hop + early exit</legend>
   <label><input id="m_harvest" type="checkbox" checked> harvest file decodes</label>
   <label>bootstrap (s) <input id="m_boot" type="number" value="10" min="4" style="width:3.5rem"></label>
+  <label>window min/max (s) <input id="m_minwin" type="number" value="8" min="4" style="width:3rem"> / <input id="m_maxwin" type="number" value="12" min="6" style="width:3rem"></label>
   <button id="ledSaveBtn">Export ledger</button>
   <button id="ledClearBtn">Clear ledger</button>
   <label style="border:1px dashed #555; padding:.2rem .4rem">load ledger: <input id="ledIn" type="file" accept="application/json,.json"></label>
@@ -3033,6 +3034,22 @@
     return Math.floor((symbolAtFrame(lock, f) - lock.Pn) / lock.D);
   }
 
+  /* One max-droplet span in EMISSION frames — the overlap unit (field36
+     run-1's edge-truncation lesson): the longest time any single droplet
+     occupies on any ring. A window boundary truncates every droplet that
+     straddles it, and a truncated droplet can never pass CRC — so follow-on
+     windows must start this many frames early to make every slot lie FULLY
+     inside some window. */
+  function maxDropletFrames(profile) {
+    var g = F().geom(profile), m = 0;
+    for (var i = 0; i < profile.annuli.length; i++) {
+      var a = profile.annuli[i];
+      var span = F().ringD(a, g) * a.rotation.frames_per_symbol;
+      if (span > m) m = span;
+    }
+    return m;
+  }
+
   /* Predicted-lag band for a window starting at absolute frame fBase — the
      crcAlign hint that turns a hop window's full carousel scan into a narrow
      confirmation. Band ±24 symbols covers rounding + mild emitter drift. */
@@ -3131,12 +3148,25 @@
       if (last && wins[k][0] - last[1] <= joinGap) { if (wins[k][1] > last[1]) last[1] = wins[k][1]; }
       else padded.push(wins[k]);
     }
+    // Back-pad (opts.overlap = one max-droplet span; field36 run-1's
+    // edge-truncation lesson): a droplet straddling a prior window's end
+    // never completed, so every follow-on window starts one droplet-span
+    // early — the seam is re-seeked deliberately, and every unknown slot
+    // then lies FULLY inside some window.
+    var overlap = opts.overlap || 0;
+    if (overlap > 0) {
+      for (var ov = 0; ov < padded.length; ov++)
+        padded[ov][0] = Math.max(f0, padded[ov][0] - overlap);
+      padded = mergeSpans(padded);
+    }
     // The cap: window length IS the early-exit granularity — pooling happens
     // per window, so one giant unknown remainder would postpone the peel
     // check to the clip's end and early exit could never fire (field34's
     // "in hand by 40 s" needs the tail to be SEPARATE windows). Split any
     // over-cap window into consecutive pieces of ~minFrames; a window under
-    // 2×minFrames is indivisible (each piece must still self-align).
+    // 2×minFrames is indivisible (each piece must still self-align). Pieces
+    // after the first also start `overlap` early — a split seam truncates
+    // droplets exactly like a window seam.
     if (opts.maxFrames > 0) {
       var split = [];
       for (var q = 0; q < padded.length; q++) {
@@ -3145,7 +3175,7 @@
         if (pieces <= 1) { split.push(padded[q]); continue; }
         var size = len / pieces;
         for (var pz = 0; pz < pieces; pz++)
-          split.push([Math.round(w0q + pz * size), Math.round(w0q + (pz + 1) * size)]);
+          split.push([Math.max(f0, Math.round(w0q + pz * size) - (pz ? overlap : 0)), Math.round(w0q + (pz + 1) * size)]);
       }
       padded = split;
     }
@@ -3164,15 +3194,16 @@
     return { spans: spans, windows: padded };
   }
 
-  /* The no-lock / still-hungry fallback: the first unvisited chunk. With no
-     lock the harvest degrades to a chunked classic pass (same coverage, same
-     seeks, nothing lost); with locks exhausted and the peel still short it
-     keeps the coverage promise honest before declaring the clip dry. */
-  function nextUnvisited(visited, f0, f1, chunkFrames) {
+  /* The no-lock / still-hungry fallback: the first unvisited chunk, started
+     one overlap early (a sweep seam truncates droplets exactly like a
+     planned seam). With no lock the harvest degrades to a chunked classic
+     pass; with locks exhausted and the peel still short it keeps the
+     coverage promise honest before declaring the clip dry. */
+  function nextUnvisited(visited, f0, f1, chunkFrames, overlap) {
     var gaps = subtractSpans([[f0, f1]], visited);
     if (!gaps.length) return null;
     var g0 = gaps[0][0];
-    return [g0, Math.min(g0 + chunkFrames, gaps[0][1])];
+    return [Math.max(f0, g0 - (overlap || 0)), Math.min(g0 + chunkFrames, gaps[0][1])];
   }
 
   var API = {
@@ -3180,6 +3211,7 @@
     counts: counts, absorb: absorb, ringsFor: ringsFor, tryPeel: tryPeel,
     lockFrom: lockFrom, frameOfSymbol: frameOfSymbol, symbolAtFrame: symbolAtFrame,
     slotSpan: slotSpan, slotAtFrame: slotAtFrame, predictLag: predictLag,
+    maxDropletFrames: maxDropletFrames,
     mergeSpans: mergeSpans, subtractSpans: subtractSpans, markVisited: markVisited,
     planSpans: planSpans, nextUnvisited: nextUnvisited,
     bytesToHex: bytesToHex, hexToBytes: hexToBytes
@@ -3996,14 +4028,19 @@ async function harvestDecode(v, geo, file) {
   }
   const durS = v.duration, durF = Math.floor((durS - 0.06) * R);
   const baseline = Math.ceil(durS * capFps);
-  const minWinF = Math.round(8 * R), joinGapF = Math.round(1.5 * R), chunkF = Math.round(10 * R);
+  const minWinF = Math.round((+$("m_minwin").value || 8) * R), joinGapF = Math.round(1.5 * R);
+  const maxWinF = Math.round(Math.max(+$("m_maxwin").value || 12, (+$("m_minwin").value || 8) + 2) * R);
+  const chunkF = Math.round(10 * R);
+  // One max-droplet span: the overlap unit (run-1's edge-truncation lesson) —
+  // every follow-on window starts this early so no slot straddles uncovered.
+  const overlapF = HV.maxDropletFrames(profile);
   const bootF = Math.min(Math.max(minWinF, Math.round((+$("m_boot").value || 10) * R)), durF);
   const t0Wall = performance.now();
-  const visited = [], locks = {};
+  const visited = [], locks = {}, grown = {};
   let seeks = 0, wrun = 0, peel = HV.tryPeel(led, profile);
   const clipLog = { name: file.name, windows: [] };
   led.clips.push(clipLog);
-  $("harvest").innerHTML = "<b>harvest: " + file.name + "</b> — " + durS.toFixed(1) + " s, baseline " + baseline + " seeks<br>";
+  $("harvest").innerHTML = "<b>harvest: " + file.name + "</b> — " + durS.toFixed(1) + " s, baseline " + baseline + " seeks, overlap " + (overlapF / R).toFixed(1) + " s<br>";
   // Already in hand? Then nothing is seeked at all — the carried ledger
   // completes before the clip is touched (never pay twice for the same drop).
   const queue = peel.ok ? [] : [[0, bootF]];
@@ -4014,7 +4051,6 @@ async function harvestDecode(v, geo, file) {
     const cap = await seekWindow(v, geo, wf0 / R, wf1 / R, capFps, R,
       t => setStatus("harvest w" + wrun + ": seeking " + t.toFixed(1) + " s…", "warn"));
     seeks += cap.seeks;
-    HV.markVisited(visited, wf0, wf1);
     clipLog.windows.push([Math.round(wf0 / R * 10) / 10, Math.round(wf1 / R * 10) / 10]);
     const hints = {};
     for (const k in locks) { const h = HV.predictLag(locks[k], cap.fBase); if (h) hints[k] = h; }
@@ -4030,10 +4066,12 @@ async function harvestDecode(v, geo, file) {
       } catch (e) { rp({ error: e.message }); }
     }, 30));
     let line = "w" + wrun + " [" + (wf0 / R).toFixed(1) + "–" + (wf1 / R).toFixed(1) + " s] " + cap.seeks + " seeks";
+    let lockedAny = false;
     if (res.error) line += " — <span class='bad'>" + res.error + "</span>";
     else {
       const got = HV.absorb(led, res, profile);
       for (const em of res.emitters) for (const a of (em.annuli || [])) {
+        if (a && a.alignLag != null) lockedAny = true;
         // A ring outvoted on lag is quarantined — no droplets banked above,
         // and no lock taken here (a false lock would poison the plan too).
         if (got.lagConsensus != null && a.alignLag != null && Math.abs(a.alignLag - got.lagConsensus) > 1) continue;
@@ -4051,15 +4089,28 @@ async function harvestDecode(v, geo, file) {
                  : "no header yet");
       $("results").innerHTML = layerSummary(res);
     }
+    // Adaptive growth (run-1's lock-failure lesson): a window that locks
+    // NOTHING gets one doubled retry before its stretch is declared dead —
+    // short windows can't accumulate CRC evidence on marginal footage where
+    // a long segment locks fine. The failed window is NOT marked visited
+    // (the grown window re-covers it and marks for both).
+    if (!lockedAny && !peel.ok && !grown[wf0] && wf1 < durF) {
+      grown[wf0] = 1;
+      const gw1 = Math.min(wf0 + 2 * (wf1 - wf0), durF);
+      queue.unshift([wf0, gw1]);
+      line += " — <span class='warn'>no lock, growing ×2 → " + (gw1 / R).toFixed(1) + " s</span>";
+    } else {
+      HV.markVisited(visited, wf0, wf1);
+    }
     $("harvest").innerHTML += line + "<br>";
     ledgerInfo();
     if (peel && peel.ok) break;
     if (!queue.length) {
       const plan = HV.planSpans(led, Object.values(locks), 0, durF,
-        { visited, minFrames: minWinF, joinGap: joinGapF, maxFrames: Math.round(12 * R) });
+        { visited, minFrames: minWinF, joinGap: joinGapF, maxFrames: maxWinF, overlap: overlapF });
       if (plan.windows.length) queue.push(plan.windows[0]);
       else {
-        const nx = HV.nextUnvisited(visited, 0, durF, chunkF);
+        const nx = HV.nextUnvisited(visited, 0, durF, chunkF, overlapF);
         if (nx && nx[1] - nx[0] >= Math.round(2 * R)) queue.push(nx);
       }
     }

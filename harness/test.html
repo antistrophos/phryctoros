@@ -934,6 +934,17 @@ async function main() {
     const hint = HV.predictLag(lock, 400);
     record("TH2c predictLag: a hop window's lag is priced by the lock (pred 81 ± 24)",
       !!hint && hint.pred === 81 && hint.min === 57 && hint.max === 105, JSON.stringify(hint));
+
+    // TH2d — the overlap back-pad (field36 run-1's edge-truncation lesson):
+    // a window boundary truncates every droplet straddling it, so follow-on
+    // windows start one max-droplet span early. Here overlap=20 pads both
+    // window starts back by exactly 20 frames.
+    const plan3 = HV.planSpans(led, [lock], 0, 600, { minFrames: 60, joinGap: 15, overlap: 20 });
+    record("TH2d planner: overlap back-pads every window start by one droplet span (the seam is re-seeked, no slot straddles uncovered)",
+      plan3.windows.length === 2 &&
+      plan3.windows[0][0] === 137 && plan3.windows[0][1] === 217 &&
+      plan3.windows[1][0] === 520 && plan3.windows[1][1] === 600,
+      JSON.stringify(plan3.windows));
   }
 
   await tick("TH3: rendering the harvest payload stream (280 frames)…");
@@ -959,15 +970,17 @@ async function main() {
     await tick("TH3: harvest — bootstrap, hop, early exit…");
     const HV = OC.harvest;
     const R = pTH.frame_rate_hz;
+    const overlapTH = HV.maxDropletFrames(pTH);
     // The whole hop loop, exactly as the harness drives it (consensus-gated
-    // locks, capped windows, one plan per round, fallback sweep, early exit).
+    // locks, capped windows with droplet-span overlap, adaptive growth on
+    // no-lock, one plan per round, fallback sweep, early exit).
     const runHarvest = (led) => {
-      const visited = [], locks = {};
+      const visited = [], locks = {}, grown = {};
       let framesSeen = 0, wins = 0, peel = HV.tryPeel(led, pTH), planViolated = false;
       // Already in hand? Then nothing is seeked at all — the strongest form
       // of the early exit ("stop drinking when full; never re-drink").
       const queue = peel.ok ? [] : [[0, Math.round(6 * R)]];   // 6 s bootstrap
-      while (queue.length && wins < 12) {
+      while (queue.length && wins < 14) {
         const [wf0, wf1] = queue.shift();
         wins++;
         if (wf0 < 0 || wf1 > NTH || wf1 <= wf0) { planViolated = true; break; }
@@ -977,24 +990,31 @@ async function main() {
         const hints = {};
         for (const k in locks) { const h = HV.predictLag(locks[k], wf0); if (h) hints[k] = h; }
         const res = OC.pipeline.decodeSequence(slice, pTH, { payload: true, alignHints: hints });
-        HV.markVisited(visited, wf0, wf1);
+        let lockedAny = false;
         if (!res.error) {
           const got = HV.absorb(led, res, pTH);
           for (const a of res.emitters[0].annuli) {
+            if (a && a.alignLag != null) lockedAny = true;
             if (got.lagConsensus != null && a.alignLag != null && Math.abs(a.alignLag - got.lagConsensus) > 1) continue;
             const pa = pTH.annuli.find(x => x.index === a.annulus);
             const lk = pa && HV.lockFrom(a, pa, pTH, wf0);
             if (lk) locks[a.annulus] = lk;
           }
           peel = HV.tryPeel(led, pTH);
-          if (peel.ok) break;
         }
+        if (!lockedAny && !peel.ok && !grown[wf0] && wf1 < NTH) {
+          grown[wf0] = 1;
+          queue.unshift([wf0, Math.min(wf0 + 2 * (wf1 - wf0), NTH)]);
+        } else {
+          HV.markVisited(visited, wf0, wf1);
+        }
+        if (peel.ok) break;
         if (!queue.length) {
           const plan = HV.planSpans(led, Object.keys(locks).map(k => locks[k]), 0, NTH,
-            { visited, minFrames: Math.round(8 * R), joinGap: Math.round(1.5 * R), maxFrames: Math.round(12 * R) });
+            { visited, minFrames: Math.round(8 * R), joinGap: Math.round(1.5 * R), maxFrames: Math.round(12 * R), overlap: overlapTH });
           if (plan.windows.length) queue.push(plan.windows[0]);
           else {
-            const nx = HV.nextUnvisited(visited, 0, NTH, Math.round(10 * R));
+            const nx = HV.nextUnvisited(visited, 0, NTH, Math.round(10 * R), overlapTH);
             if (nx) queue.push(nx);
           }
         }

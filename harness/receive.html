@@ -47,6 +47,7 @@
 <fieldset><legend>Harvest (payload modes) — droplet-aware hop + early exit</legend>
   <label><input id="m_harvest" type="checkbox" checked> harvest file decodes</label>
   <label>bootstrap (s) <input id="m_boot" type="number" value="10" min="4" style="width:3.5rem"></label>
+  <label>window min/max (s) <input id="m_minwin" type="number" value="8" min="4" style="width:3rem"> / <input id="m_maxwin" type="number" value="12" min="6" style="width:3rem"></label>
   <button id="ledSaveBtn">Export ledger</button>
   <button id="ledClearBtn">Clear ledger</button>
   <label style="border:1px dashed #555; padding:.2rem .4rem">load ledger: <input id="ledIn" type="file" accept="application/json,.json"></label>
@@ -331,14 +332,19 @@ async function harvestDecode(v, geo, file) {
   }
   const durS = v.duration, durF = Math.floor((durS - 0.06) * R);
   const baseline = Math.ceil(durS * capFps);
-  const minWinF = Math.round(8 * R), joinGapF = Math.round(1.5 * R), chunkF = Math.round(10 * R);
+  const minWinF = Math.round((+$("m_minwin").value || 8) * R), joinGapF = Math.round(1.5 * R);
+  const maxWinF = Math.round(Math.max(+$("m_maxwin").value || 12, (+$("m_minwin").value || 8) + 2) * R);
+  const chunkF = Math.round(10 * R);
+  // One max-droplet span: the overlap unit (run-1's edge-truncation lesson) —
+  // every follow-on window starts this early so no slot straddles uncovered.
+  const overlapF = HV.maxDropletFrames(profile);
   const bootF = Math.min(Math.max(minWinF, Math.round((+$("m_boot").value || 10) * R)), durF);
   const t0Wall = performance.now();
-  const visited = [], locks = {};
+  const visited = [], locks = {}, grown = {};
   let seeks = 0, wrun = 0, peel = HV.tryPeel(led, profile);
   const clipLog = { name: file.name, windows: [] };
   led.clips.push(clipLog);
-  $("harvest").innerHTML = "<b>harvest: " + file.name + "</b> — " + durS.toFixed(1) + " s, baseline " + baseline + " seeks<br>";
+  $("harvest").innerHTML = "<b>harvest: " + file.name + "</b> — " + durS.toFixed(1) + " s, baseline " + baseline + " seeks, overlap " + (overlapF / R).toFixed(1) + " s<br>";
   // Already in hand? Then nothing is seeked at all — the carried ledger
   // completes before the clip is touched (never pay twice for the same drop).
   const queue = peel.ok ? [] : [[0, bootF]];
@@ -349,7 +355,6 @@ async function harvestDecode(v, geo, file) {
     const cap = await seekWindow(v, geo, wf0 / R, wf1 / R, capFps, R,
       t => setStatus("harvest w" + wrun + ": seeking " + t.toFixed(1) + " s…", "warn"));
     seeks += cap.seeks;
-    HV.markVisited(visited, wf0, wf1);
     clipLog.windows.push([Math.round(wf0 / R * 10) / 10, Math.round(wf1 / R * 10) / 10]);
     const hints = {};
     for (const k in locks) { const h = HV.predictLag(locks[k], cap.fBase); if (h) hints[k] = h; }
@@ -365,10 +370,12 @@ async function harvestDecode(v, geo, file) {
       } catch (e) { rp({ error: e.message }); }
     }, 30));
     let line = "w" + wrun + " [" + (wf0 / R).toFixed(1) + "–" + (wf1 / R).toFixed(1) + " s] " + cap.seeks + " seeks";
+    let lockedAny = false;
     if (res.error) line += " — <span class='bad'>" + res.error + "</span>";
     else {
       const got = HV.absorb(led, res, profile);
       for (const em of res.emitters) for (const a of (em.annuli || [])) {
+        if (a && a.alignLag != null) lockedAny = true;
         // A ring outvoted on lag is quarantined — no droplets banked above,
         // and no lock taken here (a false lock would poison the plan too).
         if (got.lagConsensus != null && a.alignLag != null && Math.abs(a.alignLag - got.lagConsensus) > 1) continue;
@@ -386,15 +393,28 @@ async function harvestDecode(v, geo, file) {
                  : "no header yet");
       $("results").innerHTML = layerSummary(res);
     }
+    // Adaptive growth (run-1's lock-failure lesson): a window that locks
+    // NOTHING gets one doubled retry before its stretch is declared dead —
+    // short windows can't accumulate CRC evidence on marginal footage where
+    // a long segment locks fine. The failed window is NOT marked visited
+    // (the grown window re-covers it and marks for both).
+    if (!lockedAny && !peel.ok && !grown[wf0] && wf1 < durF) {
+      grown[wf0] = 1;
+      const gw1 = Math.min(wf0 + 2 * (wf1 - wf0), durF);
+      queue.unshift([wf0, gw1]);
+      line += " — <span class='warn'>no lock, growing ×2 → " + (gw1 / R).toFixed(1) + " s</span>";
+    } else {
+      HV.markVisited(visited, wf0, wf1);
+    }
     $("harvest").innerHTML += line + "<br>";
     ledgerInfo();
     if (peel && peel.ok) break;
     if (!queue.length) {
       const plan = HV.planSpans(led, Object.values(locks), 0, durF,
-        { visited, minFrames: minWinF, joinGap: joinGapF, maxFrames: Math.round(12 * R) });
+        { visited, minFrames: minWinF, joinGap: joinGapF, maxFrames: maxWinF, overlap: overlapF });
       if (plan.windows.length) queue.push(plan.windows[0]);
       else {
-        const nx = HV.nextUnvisited(visited, 0, durF, chunkF);
+        const nx = HV.nextUnvisited(visited, 0, durF, chunkF, overlapF);
         if (nx && nx[1] - nx[0] >= Math.round(2 * R)) queue.push(nx);
       }
     }

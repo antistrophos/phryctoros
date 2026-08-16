@@ -187,6 +187,22 @@
     return Math.floor((symbolAtFrame(lock, f) - lock.Pn) / lock.D);
   }
 
+  /* One max-droplet span in EMISSION frames — the overlap unit (field36
+     run-1's edge-truncation lesson): the longest time any single droplet
+     occupies on any ring. A window boundary truncates every droplet that
+     straddles it, and a truncated droplet can never pass CRC — so follow-on
+     windows must start this many frames early to make every slot lie FULLY
+     inside some window. */
+  function maxDropletFrames(profile) {
+    var g = F().geom(profile), m = 0;
+    for (var i = 0; i < profile.annuli.length; i++) {
+      var a = profile.annuli[i];
+      var span = F().ringD(a, g) * a.rotation.frames_per_symbol;
+      if (span > m) m = span;
+    }
+    return m;
+  }
+
   /* Predicted-lag band for a window starting at absolute frame fBase — the
      crcAlign hint that turns a hop window's full carousel scan into a narrow
      confirmation. Band ±24 symbols covers rounding + mild emitter drift. */
@@ -285,12 +301,25 @@
       if (last && wins[k][0] - last[1] <= joinGap) { if (wins[k][1] > last[1]) last[1] = wins[k][1]; }
       else padded.push(wins[k]);
     }
+    // Back-pad (opts.overlap = one max-droplet span; field36 run-1's
+    // edge-truncation lesson): a droplet straddling a prior window's end
+    // never completed, so every follow-on window starts one droplet-span
+    // early — the seam is re-seeked deliberately, and every unknown slot
+    // then lies FULLY inside some window.
+    var overlap = opts.overlap || 0;
+    if (overlap > 0) {
+      for (var ov = 0; ov < padded.length; ov++)
+        padded[ov][0] = Math.max(f0, padded[ov][0] - overlap);
+      padded = mergeSpans(padded);
+    }
     // The cap: window length IS the early-exit granularity — pooling happens
     // per window, so one giant unknown remainder would postpone the peel
     // check to the clip's end and early exit could never fire (field34's
     // "in hand by 40 s" needs the tail to be SEPARATE windows). Split any
     // over-cap window into consecutive pieces of ~minFrames; a window under
-    // 2×minFrames is indivisible (each piece must still self-align).
+    // 2×minFrames is indivisible (each piece must still self-align). Pieces
+    // after the first also start `overlap` early — a split seam truncates
+    // droplets exactly like a window seam.
     if (opts.maxFrames > 0) {
       var split = [];
       for (var q = 0; q < padded.length; q++) {
@@ -299,7 +328,7 @@
         if (pieces <= 1) { split.push(padded[q]); continue; }
         var size = len / pieces;
         for (var pz = 0; pz < pieces; pz++)
-          split.push([Math.round(w0q + pz * size), Math.round(w0q + (pz + 1) * size)]);
+          split.push([Math.max(f0, Math.round(w0q + pz * size) - (pz ? overlap : 0)), Math.round(w0q + (pz + 1) * size)]);
       }
       padded = split;
     }
@@ -318,15 +347,16 @@
     return { spans: spans, windows: padded };
   }
 
-  /* The no-lock / still-hungry fallback: the first unvisited chunk. With no
-     lock the harvest degrades to a chunked classic pass (same coverage, same
-     seeks, nothing lost); with locks exhausted and the peel still short it
-     keeps the coverage promise honest before declaring the clip dry. */
-  function nextUnvisited(visited, f0, f1, chunkFrames) {
+  /* The no-lock / still-hungry fallback: the first unvisited chunk, started
+     one overlap early (a sweep seam truncates droplets exactly like a
+     planned seam). With no lock the harvest degrades to a chunked classic
+     pass; with locks exhausted and the peel still short it keeps the
+     coverage promise honest before declaring the clip dry. */
+  function nextUnvisited(visited, f0, f1, chunkFrames, overlap) {
     var gaps = subtractSpans([[f0, f1]], visited);
     if (!gaps.length) return null;
     var g0 = gaps[0][0];
-    return [g0, Math.min(g0 + chunkFrames, gaps[0][1])];
+    return [Math.max(f0, g0 - (overlap || 0)), Math.min(g0 + chunkFrames, gaps[0][1])];
   }
 
   var API = {
@@ -334,6 +364,7 @@
     counts: counts, absorb: absorb, ringsFor: ringsFor, tryPeel: tryPeel,
     lockFrom: lockFrom, frameOfSymbol: frameOfSymbol, symbolAtFrame: symbolAtFrame,
     slotSpan: slotSpan, slotAtFrame: slotAtFrame, predictLag: predictLag,
+    maxDropletFrames: maxDropletFrames,
     mergeSpans: mergeSpans, subtractSpans: subtractSpans, markVisited: markVisited,
     planSpans: planSpans, nextUnvisited: nextUnvisited,
     bytesToHex: bytesToHex, hexToBytes: hexToBytes
