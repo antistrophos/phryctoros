@@ -43,6 +43,17 @@
   <button id="capBtn" disabled>Capture <input id="capSecs" type="number" value="8" min="3" style="width:3rem"> s → decode</button>
   <label style="border:1px dashed #555; padding:.4rem .6rem">video file (§9.1): <input id="fileIn" type="file" accept="video/*"></label>
 </p>
+
+<fieldset><legend>Harvest (payload modes) — droplet-aware hop + early exit</legend>
+  <label><input id="m_harvest" type="checkbox" checked> harvest file decodes</label>
+  <label>bootstrap (s) <input id="m_boot" type="number" value="10" min="4" style="width:3.5rem"></label>
+  <button id="ledSaveBtn">Export ledger</button>
+  <button id="ledClearBtn">Clear ledger</button>
+  <label style="border:1px dashed #555; padding:.2rem .4rem">load ledger: <input id="ledIn" type="file" accept="application/json,.json"></label>
+  <span id="ledInfo" class="dim">ledger: empty</span>
+  <div id="harvest"></div>
+</fieldset>
+
 <div id="status">idle</div>
 <video id="vid" muted playsinline style="display:none"></video>
 <canvas id="prev" width="380" height="214" style="display:none"></canvas>
@@ -68,6 +79,7 @@
 <script src="../src/rowtime.js"></script>
 <script src="../src/demap.js"></script>
 <script src="../src/fountain.js"></script>
+<script src="../src/harvest.js"></script>
 <script src="../src/ser.js"></script>
 <script src="../src/degrade.js"></script>
 <script src="../src/pipeline.js"></script>
@@ -240,13 +252,176 @@ $("capBtn").onclick = () => {
   else requestAnimationFrame(grab);
 };
 
+/* ---------- the harvest ledger (cross-clip: it outlives the clip) ---------- */
+let ledger = null;
+function ensureLedger() {
+  if (!ledger) ledger = OC.harvest.createLedger(currentProfile(), $("m_notes").value || null);
+  return ledger;
+}
+function ledgerInfo() {
+  if (!ledger) { $("ledInfo").textContent = "ledger: empty"; return; }
+  const cn = OC.harvest.counts(ledger);
+  $("ledInfo").textContent = "ledger: " + cn.droplets + " droplets / " + cn.rings + " rings" +
+    (cn.header ? " / header K=" + ledger.header.K : " / no header") +
+    (ledger.session ? " / session “" + ledger.session + "”" : "");
+}
+$("ledSaveBtn").onclick = () => {
+  if (!ledger) { setStatus("nothing to export — the ledger is empty", "warn"); return; }
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([OC.harvest.serializeLedger(ledger)], { type: "application/json" }));
+  a.download = "phryctoros-ledger-" + (ledger.session || "session") + ".json";
+  a.click();
+};
+$("ledClearBtn").onclick = () => { ledger = null; ledgerInfo(); $("harvest").innerHTML = ""; };
+$("ledIn").onchange = async () => {
+  const f = $("ledIn").files[0];
+  if (!f) return;
+  try {
+    ledger = OC.harvest.parseLedger(await f.text());
+    ledgerInfo();
+    setStatus("ledger loaded — the next harvest mines only what it lacks", "ok");
+  } catch (e) { setStatus("ledger load failed: " + e.message, "bad"); }
+};
+
+/* Seek-capture one time-window [tA, tB) of the loaded clip at the capture
+   cadence, cropped at native resolution. Frames carry LOCAL emission indices
+   (0-based at the window's first emission frame) — the pipeline sees each
+   window exactly like a capture that started there; the caller keeps fBase to
+   place results on the clip's absolute axis. Returns the seek count: the
+   harvest receipt's currency. */
+async function seekWindow(v, geo, tA, tB, capFps, emitFps, onStep) {
+  const seek = t => new Promise(r => { v.onseeked = () => r(); v.currentTime = t; });
+  const fBase = Math.round(tA * emitFps);
+  const frames = []; const perIdx = {}; let seeks = 0;
+  const tEnd = Math.min(tB, v.duration - 0.05);
+  for (let i = Math.ceil(tA * capFps); ; i++) {
+    const t = i / capFps;
+    if (t >= tEnd) break;
+    await seek(t); seeks++;
+    const idx = Math.round(t * emitFps) - fBase;
+    if ((perIdx[idx] || 0) < 2) {
+      geo.ctx.drawImage(v, geo.sx, geo.sy, geo.sw, geo.sh, 0, 0, geo.W, geo.H);
+      frames.push({ f: idx, img: toLumFromCanvas(geo.ctx, geo.W, geo.H) });
+      perIdx[idx] = (perIdx[idx] || 0) + 1;
+    }
+    if (seeks % 60 === 0) {
+      if (onStep) onStep(t);
+      await new Promise(r => setTimeout(r, 0));
+    }
+  }
+  return { frames, seeks, fBase };
+}
+
+/* The harvest decoder (file path): bootstrap-then-hop. Decode a bootstrap
+   window, lock the carousel phase per ring, consult the ledger, seek-hop
+   between UNKNOWN spans only (held droplets and banked headers price at
+   zero), pool incrementally, and EARLY-EXIT the moment the peel completes —
+   field34 decoded 64 s when the payload may have been in hand by 40. One
+   window is planned at a time so every plan uses the freshest ledger. With
+   no lock it degrades to a chunked classic pass (same coverage, nothing
+   lost); with locks exhausted and the peel still short it sweeps what's
+   unvisited before declaring the clip dry. */
+async function harvestDecode(v, geo, file) {
+  const profile = currentProfile(), R = profile.frame_rate_hz, capFps = captureFps();
+  const HV = OC.harvest;
+  const led = ensureLedger();
+  if (led.droplet_bits !== OC.fountain.geom(profile).dropletBits) {
+    setStatus("ledger droplet_bits " + led.droplet_bits + " ≠ profile's " + OC.fountain.geom(profile).dropletBits + " — export or clear it first", "bad");
+    return;
+  }
+  const durS = v.duration, durF = Math.floor((durS - 0.06) * R);
+  const baseline = Math.ceil(durS * capFps);
+  const minWinF = Math.round(8 * R), joinGapF = Math.round(1.5 * R), chunkF = Math.round(10 * R);
+  const bootF = Math.min(Math.max(minWinF, Math.round((+$("m_boot").value || 10) * R)), durF);
+  const t0Wall = performance.now();
+  const visited = [], locks = {};
+  let seeks = 0, wrun = 0, peel = HV.tryPeel(led, profile);
+  const clipLog = { name: file.name, windows: [] };
+  led.clips.push(clipLog);
+  $("harvest").innerHTML = "<b>harvest: " + file.name + "</b> — " + durS.toFixed(1) + " s, baseline " + baseline + " seeks<br>";
+  // Already in hand? Then nothing is seeked at all — the carried ledger
+  // completes before the clip is touched (never pay twice for the same drop).
+  const queue = peel.ok ? [] : [[0, bootF]];
+  if (peel.ok) $("harvest").innerHTML += "<span class='ok'>carried ledger already peels — the clip is not needed</span><br>";
+  while (queue.length) {
+    const [wf0, wf1] = queue.shift();
+    wrun++;
+    const cap = await seekWindow(v, geo, wf0 / R, wf1 / R, capFps, R,
+      t => setStatus("harvest w" + wrun + ": seeking " + t.toFixed(1) + " s…", "warn"));
+    seeks += cap.seeks;
+    HV.markVisited(visited, wf0, wf1);
+    clipLog.windows.push([Math.round(wf0 / R * 10) / 10, Math.round(wf1 / R * 10) / 10]);
+    const hints = {};
+    for (const k in locks) { const h = HV.predictLag(locks[k], cap.fBase); if (h) hints[k] = h; }
+    setStatus("harvest w" + wrun + ": decoding " + cap.frames.length + " frames…", "warn");
+    const res = await new Promise(rp => setTimeout(() => {
+      try {
+        rp(OC.pipeline.decodeSequence(cap.frames, profile, {
+          aligned: false, handheld: $("m_hand").checked,
+          loopSeconds: +$("m_loop").value || 60,
+          mirror: { receive: false }, maxEmitters: 4,
+          payload: true, alignHints: hints
+        }));
+      } catch (e) { rp({ error: e.message }); }
+    }, 30));
+    let line = "w" + wrun + " [" + (wf0 / R).toFixed(1) + "–" + (wf1 / R).toFixed(1) + " s] " + cap.seeks + " seeks";
+    if (res.error) line += " — <span class='bad'>" + res.error + "</span>";
+    else {
+      const got = HV.absorb(led, res, profile);
+      for (const em of res.emitters) for (const a of (em.annuli || [])) {
+        // A ring outvoted on lag is quarantined — no droplets banked above,
+        // and no lock taken here (a false lock would poison the plan too).
+        if (got.lagConsensus != null && a.alignLag != null && Math.abs(a.alignLag - got.lagConsensus) > 1) continue;
+        const pa = profile.annuli.find(x => x.index === a.annulus);
+        const lk = pa && HV.lockFrom(a, pa, profile, cap.fBase);
+        if (lk) locks[a.annulus] = lk;
+      }
+      peel = HV.tryPeel(led, profile);
+      line += " — +" + got.added + " droplets (" + got.dup + " dup" +
+        (got.quarantined ? ", <span class='warn'>" + got.quarantined + " quarantined</span>" : "") +
+        (got.conflicts ? ", <span class='bad'>" + got.conflicts + " byte-conflicts</span>" : "") +
+        ") — " +
+        (peel.ok ? "<span class='ok'>PEEL COMPLETE</span>"
+                 : peel.K ? (peel.recovered || 0) + "/" + peel.K + " blocks"
+                 : "no header yet");
+      $("results").innerHTML = layerSummary(res);
+    }
+    $("harvest").innerHTML += line + "<br>";
+    ledgerInfo();
+    if (peel && peel.ok) break;
+    if (!queue.length) {
+      const plan = HV.planSpans(led, Object.values(locks), 0, durF,
+        { visited, minFrames: minWinF, joinGap: joinGapF, maxFrames: Math.round(12 * R) });
+      if (plan.windows.length) queue.push(plan.windows[0]);
+      else {
+        const nx = HV.nextUnvisited(visited, 0, durF, chunkF);
+        if (nx && nx[1] - nx[0] >= Math.round(2 * R)) queue.push(nx);
+      }
+    }
+  }
+  const wall = ((performance.now() - t0Wall) / 1000).toFixed(1);
+  const saved = Math.max(0, Math.round(100 * (1 - seeks / baseline)));
+  const visitedS = visited.reduce((s, sp) => s + (sp[1] - sp[0]), 0) / R;
+  const receipt = peel && peel.ok
+    ? "<b class='ok'>EARLY EXIT — payload in hand after " + visitedS.toFixed(1) + " s of " + durS.toFixed(1) + " s</b>" +
+      " — " + seeks + " seeks of " + baseline + " baseline (" + saved + "% skipped), wall " + wall + " s<br>" +
+      "<span class='ok' style='font-size:15px'><b>PAYLOAD:</b> “" + peel.text + "”</span> (" + peel.recovered + "/" + peel.K + " blocks, " + peel.droplets + " droplets)"
+    : "<b class='warn'>clip exhausted — payload incomplete</b> (" +
+      (peel && peel.K ? (peel.recovered || 0) + "/" + peel.K + " blocks" : "no header yet") +
+      ") — " + seeks + " seeks of " + baseline + " (" + saved + "% skipped), wall " + wall + " s — export the ledger and film another take: the next harvest mines only what this one lacked";
+  $("harvest").innerHTML += receipt + "<br>";
+  setStatus(peel && peel.ok ? "harvest complete — early exit" : "harvest exhausted — ledger holds the progress", peel && peel.ok ? "ok" : "warn");
+}
+
 /* ---------- recorded input (§9.1 — first-class, works without camera/secure ctx) ----------
    Seek-stepped, crop-at-native-resolution. Browser-agnostic by construction: no
    rVFC dependence (Firefox lacks it — its rAF fallback jittered frame timing),
    and no 800 px downscale (which cost the phase margin that made laptop decodes
    work at 1200). Pre-scan finds the emitter; capture crops around it at source
    resolution (≤1280 wide), stepping exact 1/30 s seeks mapped to the 15 fps
-   emission clock with duplicates kept (tear defense). */
+   emission clock with duplicates kept (tear defense). In payload modes the
+   HARVEST path replaces the whole-clip pass: it hops between unknown droplet
+   spans and stops when the peel completes. */
 $("fileIn").onchange = async () => {
   const file = $("fileIn").files[0];
   if (!file) return;
@@ -305,27 +480,19 @@ $("fileIn").onchange = async () => {
     if (box) ({ sx, sy, sw, sh } = box);
     const W = Math.min(1024, sw), H = Math.round(sh * W / sw);
     c.width = W; c.height = H;
-    setStatus(box ? ("emitter found — cropping " + sw + "×" + sh + " at native res, seek-stepping…")
-                  : "no emitter in pre-scan — capturing uncropped (decode may still find it)…", "warn");
-    const frames = []; const perIdx = {};
+    const geo = { ctx, sx, sy, sw, sh, W, H };
     const capFps = captureFps();
-    let steps = 0;
-    for (let i = 0; ; i++) {
-      const t = i / capFps;
-      if (t >= v.duration - 0.05) break;
-      await seek(t);
-      const idx = Math.round(t * fps);
-      if ((perIdx[idx] || 0) < 2) {
-        ctx.drawImage(v, sx, sy, sw, sh, 0, 0, W, H);
-        frames.push({ f: idx, img: toLumFromCanvas(ctx, W, H) });
-        perIdx[idx] = (perIdx[idx] || 0) + 1;
-      }
-      if (++steps % 60 === 0) {
-        setStatus("seek-capture " + t.toFixed(1) + "/" + v.duration.toFixed(1) + " s…", "warn");
-        await new Promise(r => setTimeout(r, 0));
-      }
+    if (payloadMode() && $("m_harvest").checked) {
+      setStatus(box ? "emitter found — harvest begins (bootstrap first)…"
+                    : "no emitter in pre-scan — harvesting uncropped…", "warn");
+      await harvestDecode(v, geo, file);
+    } else {
+      setStatus(box ? ("emitter found — cropping " + sw + "×" + sh + " at native res, seek-stepping…")
+                    : "no emitter in pre-scan — capturing uncropped (decode may still find it)…", "warn");
+      const cap = await seekWindow(v, geo, 0, v.duration, capFps, fps,
+        t => setStatus("seek-capture " + t.toFixed(1) + "/" + v.duration.toFixed(1) + " s…", "warn"));
+      decodeFrames(cap.frames, "video-file-seek(" + file.name + ")", "seek" + capFps + (box ? "-crop" : ""));
     }
-    decodeFrames(frames, "video-file-seek(" + file.name + ")", "seek" + capFps + (box ? "-crop" : ""));
   } catch (e) { setStatus("file decode failed: " + e.message, "bad"); console.error(e); }
 };
 

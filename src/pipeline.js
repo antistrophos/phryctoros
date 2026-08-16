@@ -194,8 +194,11 @@
           if (!align) {
             // Payload mode has no reference stream — CRC-pass scanning is the
             // mid-loop sync (fountain.js); reference mode correlates the seeds.
+            // opts.alignHints[annulus index] = {min,max} predicted-lag band
+            // (harvest hop windows price their own lag from the bootstrap lock).
             align = opts.payload
-              ? dep("fountain").crcAlign(track, a, profile, syncBase, maxLagSym)
+              ? dep("fountain").crcAlign(track, a, profile, syncBase, maxLagSym,
+                  opts.alignHints && opts.alignHints[a.index])
               : demap.correlateStream(track, a, profile, maxLagSym, syncBase);
           }
           if (!align)

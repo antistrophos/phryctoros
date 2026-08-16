@@ -225,25 +225,37 @@
 
   /* Alignment without a reference stream: scan (offset, lag) and score by
      CRC passes — the true framing lights up (chance rate 1/256/droplet).
-     Needs ≥2 passes to lock. */
-  function crcAlign(track, annulus, profile, baseOverride, maxLagSymbols) {
+     Needs ≥2 passes to lock. lagHint ({min,max}, harvest): a hop window's
+     lag is already priced by the bootstrap lock, so the predicted band is
+     scanned FIRST and the full carousel scan becomes the fallback, not the
+     routine — the scan is most of a window's self-alignment cost, and the
+     hint deletes it when the lock holds while losing nothing when it
+     doesn't (a stale lock past an emitter loop restart just falls through). */
+  function crcAlign(track, annulus, profile, baseOverride, maxLagSymbols, lagHint) {
     var demap = (typeof module !== "undefined" && module.exports) ? require("./demap.js") : global.OC.demap;
     var F = annulus.rotation.frames_per_symbol;
     var maxLag = maxLagSymbols || 4096;
     var base = (baseOverride !== undefined && baseOverride !== null) ? baseOverride : (track.firstValid || 0);
-    var best = null;
-    for (var off = base; off < base + F; off++) {
-      var decoded = demap.decode(track, annulus, profile, off);
-      if (!decoded.length) continue;
-      for (var lag = 0; lag <= maxLag; lag++) {
-        var col = collect(decoded, lag, annulus, profile);
-        if (col.passed.length < 2) continue;
-        if (!best || col.passed.length > best.score ||
-            (col.passed.length === best.score && lag < best.lag))
-          best = { offset: off, lag: lag, score: col.passed.length, max: col.tried, method: "crc" };
+    function scan(lagLo, lagHi) {
+      var best = null;
+      for (var off = base; off < base + F; off++) {
+        var decoded = demap.decode(track, annulus, profile, off);
+        if (!decoded.length) continue;
+        for (var lag = lagLo; lag <= lagHi; lag++) {
+          var col = collect(decoded, lag, annulus, profile);
+          if (col.passed.length < 2) continue;
+          if (!best || col.passed.length > best.score ||
+              (col.passed.length === best.score && lag < best.lag))
+            best = { offset: off, lag: lag, score: col.passed.length, max: col.tried, method: "crc" };
+        }
       }
+      return best;
     }
-    return best;
+    if (lagHint && lagHint.max >= 0 && lagHint.max >= (lagHint.min | 0)) {
+      var hinted = scan(Math.max(0, lagHint.min | 0), Math.min(maxLag, lagHint.max | 0));
+      if (hinted) { hinted.hinted = true; return hinted; }
+    }
+    return scan(0, maxLag);
   }
 
   /* Pool verified droplets from every ring (and eventually every tile) and
@@ -324,6 +336,7 @@
 
   var API = { encodeCarousels: encodeCarousels, collect: collect, crcAlign: crcAlign, assemble: assemble,
               geom: geom, ringD: ringD, carouselLen: carouselLen, subsetFor: subsetFor,
+              isHeaderSlot: isHeaderSlot, parseHeader: parseHeader, HEADER_EVERY: HEADER_EVERY,
               crc8: crc8, crc16: crc16, toGray: toGray, fromGray: fromGray,
               textToBytes: textToBytes, bytesToText: bytesToText, MAGIC: MAGIC };
   if (typeof module !== "undefined" && module.exports) module.exports = API;

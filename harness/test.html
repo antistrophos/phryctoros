@@ -41,6 +41,7 @@ software loop the field harness sits on.</p>
 <script src="../src/rowtime.js"></script>
 <script src="../src/demap.js"></script>
 <script src="../src/fountain.js"></script>
+<script src="../src/harvest.js"></script>
 <script src="../src/ser.js"></script>
 <script src="../src/degrade.js"></script>
 <script src="../src/pipeline.js"></script>
@@ -867,6 +868,227 @@ async function main() {
     record("T21b clean capture: fitted k2 under the self-gating floor, applied:false, annuli byte-identical with the module off",
       !!(conB && conB.applied === false && identical && cleanOk),
       (conB ? "conic " + JSON.stringify(conB) : "no diag") + "  identical:" + identical);
+  }
+
+  // TH — the HARVEST decoder (practitioner's design, 2026-08-15: droplet-aware
+  // bootstrap-then-hop — skip the seeks for what you hold, stop when the peel
+  // completes). TH1/TH2/TH4 drive the pure logic (ledger, locks, planner);
+  // TH3 runs the whole hop loop against a rendered payload stream and asserts
+  // the harvest's two promises: the SAME payload as a full pass, from a
+  // strict SUBSET of the clip. (The v3 suite family is already named T22 by
+  // the frozen contract, so harvest tests carry TH.)
+  await tick("TH1: ledger mechanics…");
+  {
+    const pH = OC.profile.defaultProfile({ carriage: { droplet_bits: 24 } });
+    const led = OC.harvest.createLedger(pH, "th1");
+    const fake = { emitters: [{ annuli: [
+      { annulus: 0, droplets: [{ c: 1, hex: "beef" }, { c: 2, hex: "cafe" }] },
+      { annulus: 2, droplets: [{ c: 0, hex: "a703" }, { c: 1, hex: "beef" }] }
+    ] }] };
+    const got = OC.harvest.absorb(led, fake, pH);
+    const cn = OC.harvest.counts(led);
+    const again = OC.harvest.absorb(led, fake, pH);
+    const led2 = OC.harvest.parseLedger(OC.harvest.serializeLedger(led));
+    record("TH1 ledger: absorb banks raw hex under ring seeds, one header sighting banks the header, dedupe is (ring,c), JSON round-trips",
+      got.added === 4 && cn.droplets === 4 && cn.rings === 2 &&
+      !!led.header && led.header.K === 3 &&
+      again.added === 0 && again.dup === 4 &&
+      OC.harvest.serializeLedger(led2) === OC.harvest.serializeLedger(led),
+      "added " + got.added + "/" + cn.droplets + ", header " + JSON.stringify(led.header) + ", re-absorb dup " + again.dup);
+    const led48 = OC.harvest.createLedger(OC.profile.defaultProfile(), null);
+    const mm = OC.harvest.absorb(led48, fake, pH);
+    record("TH1b ledger: droplet_bits mismatch refuses the absorb (no silent framing mix)",
+      !!mm.mismatch && mm.added === 0, JSON.stringify(mm));
+  }
+
+  await tick("TH2: lock math and the hop planner…");
+  {
+    const pH = OC.profile.defaultProfile({ carriage: { droplet_bits: 24 } });
+    const HV = OC.harvest;
+    const a2 = pH.annuli[2]; // M=4 → D = 12 symbols, F = 4 → 48 frames per droplet
+    const lock = HV.lockFrom({ annulus: 2, alignOffset: 5, alignLag: 7 }, a2, pH, 100);
+    const sp3 = HV.slotSpan(lock, 3);
+    const inv = HV.slotAtFrame(lock, (sp3[0] + sp3[1]) / 2) === 3 && HV.slotAtFrame(lock, sp3[0]) === 3;
+    record("TH2 lock math: slotSpan and slotAtFrame are inverses on the absolute frame axis",
+      inv, "slot3 " + JSON.stringify(sp3) + " D=" + lock.D + " F=" + lock.F + " Pn=" + lock.Pn);
+
+    const led = HV.createLedger(pH, "th2");
+    led.header = { K: 2, len: null, hex: "a702" };            // banked header: slots 0,8 price at zero
+    const ring = led.rings[a2.rotation.seed] = {};
+    for (let c = 2; c <= 7; c++) ring[c] = "beef";            // a held mid-run — the hop should vault it
+    const plan = HV.planSpans(led, [lock], 0, 600, { minFrames: 60, joinGap: 15 });
+    const planOk = plan.spans.length === 2 &&
+      plan.spans[0][0] === 157 && plan.spans[0][1] === 205 &&
+      plan.spans[1][0] === 541 && plan.spans[1][1] === 600 &&
+      plan.windows.length === 2 &&
+      plan.windows[0][0] === 157 && plan.windows[0][1] === 217 &&
+      plan.windows[1][0] === 540 && plan.windows[1][1] === 600;
+    record("TH2 planner: held slots and the banked header price at zero — two hop windows, the held mid-run never seeked",
+      planOk, "spans " + JSON.stringify(plan.spans) + " windows " + JSON.stringify(plan.windows));
+
+    const plan2 = HV.planSpans(led, [lock], 0, 600, { minFrames: 60, joinGap: 15, visited: [[150, 220]] });
+    record("TH2b planner: visited spans subtract whatever they yielded — one window remains",
+      plan2.windows.length === 1 && plan2.windows[0][0] === 540 && plan2.windows[0][1] === 600,
+      JSON.stringify(plan2.windows));
+
+    const hint = HV.predictLag(lock, 400);
+    record("TH2c predictLag: a hop window's lag is priced by the lock (pred 81 ± 24)",
+      !!hint && hint.pred === 81 && hint.min === 57 && hint.max === 105, JSON.stringify(hint));
+  }
+
+  await tick("TH3: rendering the harvest payload stream (280 frames)…");
+  {
+    const pTH = OC.profile.defaultProfile({
+      render: { size_px: 768, scale_px_per_unit: 124 },
+      preamble_symbols: 4,
+      carriage: { droplet_bits: 24 }
+    });
+    const textTH = "HARVEST!";                                 // 8 bytes → K=4
+    const encTH = OC.fountain.encodeCarousels(pTH, OC.fountain.textToBytes(textTH));
+    const NTH = 280;
+    const seqTH = OC.emission.renderSequence(pTH, NTH, { carousels: encTH.carousels });
+    const allTH = seqTH.frames.map((fr, i) => ({ f: i, img: fr.img }));
+
+    await tick("TH3: full-pass reference decode…");
+    const rFull = OC.pipeline.decodeSequence(allTH, pTH, { aligned: true, payload: true });
+    const pFull = rFull.error ? null : rFull.emitters[0].payload;
+    record("TH3 reference: the full pass recovers the payload (precondition)",
+      !!(pFull && pFull.ok && pFull.text === textTH),
+      rFull.error || JSON.stringify(pFull && { ok: pFull.ok, rec: pFull.recovered, drops: pFull.droplets }));
+
+    await tick("TH3: harvest — bootstrap, hop, early exit…");
+    const HV = OC.harvest;
+    const R = pTH.frame_rate_hz;
+    // The whole hop loop, exactly as the harness drives it (consensus-gated
+    // locks, capped windows, one plan per round, fallback sweep, early exit).
+    const runHarvest = (led) => {
+      const visited = [], locks = {};
+      let framesSeen = 0, wins = 0, peel = HV.tryPeel(led, pTH), planViolated = false;
+      // Already in hand? Then nothing is seeked at all — the strongest form
+      // of the early exit ("stop drinking when full; never re-drink").
+      const queue = peel.ok ? [] : [[0, Math.round(6 * R)]];   // 6 s bootstrap
+      while (queue.length && wins < 12) {
+        const [wf0, wf1] = queue.shift();
+        wins++;
+        if (wf0 < 0 || wf1 > NTH || wf1 <= wf0) { planViolated = true; break; }
+        const slice = [];
+        for (const fr of allTH) if (fr.f >= wf0 && fr.f < wf1) slice.push({ f: fr.f - wf0, img: fr.img });
+        framesSeen += slice.length;
+        const hints = {};
+        for (const k in locks) { const h = HV.predictLag(locks[k], wf0); if (h) hints[k] = h; }
+        const res = OC.pipeline.decodeSequence(slice, pTH, { payload: true, alignHints: hints });
+        HV.markVisited(visited, wf0, wf1);
+        if (!res.error) {
+          const got = HV.absorb(led, res, pTH);
+          for (const a of res.emitters[0].annuli) {
+            if (got.lagConsensus != null && a.alignLag != null && Math.abs(a.alignLag - got.lagConsensus) > 1) continue;
+            const pa = pTH.annuli.find(x => x.index === a.annulus);
+            const lk = pa && HV.lockFrom(a, pa, pTH, wf0);
+            if (lk) locks[a.annulus] = lk;
+          }
+          peel = HV.tryPeel(led, pTH);
+          if (peel.ok) break;
+        }
+        if (!queue.length) {
+          const plan = HV.planSpans(led, Object.keys(locks).map(k => locks[k]), 0, NTH,
+            { visited, minFrames: Math.round(8 * R), joinGap: Math.round(1.5 * R), maxFrames: Math.round(12 * R) });
+          if (plan.windows.length) queue.push(plan.windows[0]);
+          else {
+            const nx = HV.nextUnvisited(visited, 0, NTH, Math.round(10 * R));
+            if (nx) queue.push(nx);
+          }
+        }
+      }
+      return { framesSeen, wins, peel, planViolated, locks };
+    };
+
+    const led1 = HV.createLedger(pTH, "th3");
+    const run1 = runHarvest(led1);
+    record("TH3 harvest: bootstrap-then-hop recovers the SAME payload as the full pass (fresh ledger)",
+      !!(run1.peel && run1.peel.ok && run1.peel.text === textTH && !run1.planViolated && run1.wins >= 2),
+      "windows " + run1.wins + ", frames seen " + run1.framesSeen + "/" + NTH +
+      (run1.peel && run1.peel.K ? ", blocks " + run1.peel.recovered + "/" + run1.peel.K : ", no header") +
+      (run1.planViolated ? ", PLAN OUT OF RANGE" : ""));
+    note("TH3 receipt", "fresh ledger visited " + run1.framesSeen + " of " + NTH + " frames across " + run1.wins +
+      " windows (this clip's post-bootstrap remainder is indivisible under the 8 s alignment floor — the field's longer clips split)");
+
+    // Run 2 — the same clip against the CARRIED ledger (through JSON, the
+    // sneakernet path): everything is already held, so the pre-check peels
+    // before any window and the clip is never touched — never pay twice for
+    // the same drop.
+    const led2 = HV.parseLedger(HV.serializeLedger(led1));
+    const run2 = runHarvest(led2);
+    record("TH3b harvest re-run on a carried ledger: the pre-check peels and NOTHING is seeked",
+      !!(run2.peel && run2.peel.ok && run2.peel.text === textTH && run2.wins === 0 && run2.framesSeen === 0),
+      "windows " + run2.wins + ", frames seen " + run2.framesSeen + "/" + NTH);
+
+    // TH4 — cross-clip: the ledger is the clip-to-clip carrier. Split the
+    // full pass's REAL verified droplets into two "takes", bank take A,
+    // round-trip the ledger through JSON (the export/import path), absorb
+    // take B, and the union peels — clip 2 mined only for what clip 1 lacked.
+    await tick("TH4: cross-clip ledger…");
+    {
+      const dropletsOf = res => res.emitters[0].annuli.map(a => ({ annulus: a.annulus, droplets: (a.droplets || []) }));
+      const takeA = { emitters: [{ annuli: dropletsOf(rFull).map(r => ({ annulus: r.annulus, droplets: r.droplets.filter(d => d.c % 2 === 0) })) }] };
+      const takeB = { emitters: [{ annuli: dropletsOf(rFull).map(r => ({ annulus: r.annulus, droplets: r.droplets.filter(d => d.c % 2 === 1) })) }] };
+      const ledA = HV.createLedger(pTH, "th4");
+      HV.absorb(ledA, takeA, pTH);
+      const carried = HV.parseLedger(HV.serializeLedger(ledA));   // the sneakernet hop
+      const gotB = HV.absorb(carried, takeB, pTH);
+      const peelAB = HV.tryPeel(carried, pTH);
+      record("TH4 cross-clip: take A's ledger survives JSON, take B tops it up, the union peels the payload",
+        !!(peelAB.ok && peelAB.text === textTH && gotB.added > 0),
+        "A+B droplets " + HV.counts(carried).droplets + ", peel " + JSON.stringify({ ok: peelAB.ok, rec: peelAB.recovered }));
+    }
+
+    // TH5 — the alignment hint: a correct band and a WRONG band must land the
+    // same lock (the wrong band falls through to the full scan — a stale lock
+    // past a loop restart costs a scan, never data).
+    await tick("TH5: hinted realignment vs fallback…");
+    {
+      const wf0 = Math.round(9 * R), wf1 = Math.min(NTH, wf0 + Math.round(9 * R));
+      const slice = [];
+      for (const fr of allTH) if (fr.f >= wf0 && fr.f < wf1) slice.push({ f: fr.f - wf0, img: fr.img });
+      const locksTH = run1.locks;
+      const lk = locksTH[2] || locksTH[Object.keys(locksTH)[0]];
+      const goodHints = {}, badHints = {};
+      for (const k in locksTH) {
+        const h = HV.predictLag(locksTH[k], wf0);
+        if (h) { goodHints[k] = h; badHints[k] = { min: h.min + 500, max: h.max + 500 }; }
+      }
+      const rGood = OC.pipeline.decodeSequence(slice, pTH, { payload: true, alignHints: goodHints });
+      const rBad = OC.pipeline.decodeSequence(slice, pTH, { payload: true, alignHints: badHints });
+      const lagOf = (res, idx) => { const a = res.error ? null : res.emitters[0].annuli.find(x => x.annulus === idx); return a && a.alignLag != null ? a.alignLag : null; };
+      let same = !!lk, anyLock = false, det = [];
+      for (const k in locksTH) {
+        const lg = lagOf(rGood, +k), lb = lagOf(rBad, +k);
+        det.push("a" + k + ": good " + lg + " / bad " + lb);
+        if (lg !== null || lb !== null) anyLock = true;
+        if (lg !== lb) same = false;
+      }
+      record("TH5 hint: hinted and wrong-hinted windows land identical lags (fallback rescues a stale lock)",
+        same && anyLock, det.join("  "));
+    }
+
+    // TH5b — the lag-consensus quarantine: a lone ring whose lag disagrees
+    // with its siblings is a chance CRC double-pass wearing a lock (the base
+    // ring produced exactly this in TH5's window: lag 0 against 34/34).
+    // Persistence turns that 1/256 residual into first-seen poison that
+    // blocks the real bytes forever — so absorb must bank nothing from it.
+    await tick("TH5b: lag-consensus quarantine…");
+    {
+      const ledQ = HV.createLedger(pTH, "th5b");
+      const fakeQ = { emitters: [{ annuli: [
+        { annulus: 0, alignLag: 34, droplets: [{ c: 5, hex: "beef" }] },
+        { annulus: 1, alignLag: 34, droplets: [{ c: 5, hex: "cafe" }] },
+        { annulus: 2, alignLag: 0,  droplets: [{ c: 5, hex: "dead" }, { c: 6, hex: "f00d" }] }
+      ] }] };
+      const gotQ = HV.absorb(ledQ, fakeQ, pTH);
+      const cnQ = HV.counts(ledQ);
+      record("TH5b quarantine: the outvoted ring banks nothing; the agreeing rings bank normally",
+        gotQ.added === 2 && gotQ.quarantined === 2 && gotQ.lagConsensus === 34 && cnQ.droplets === 2,
+        JSON.stringify(gotQ) + " droplets " + cnQ.droplets);
+    }
   }
 
   // Determinism spot-check: dtrig render of one frame is identical across two runs.

@@ -45,6 +45,17 @@
   <button id="capBtn" disabled>Capture <input id="capSecs" type="number" value="8" min="3" style="width:3rem"> s → decode</button>
   <label style="border:1px dashed #555; padding:.4rem .6rem">video file (§9.1): <input id="fileIn" type="file" accept="video/*"></label>
 </p>
+
+<fieldset><legend>Harvest (payload modes) — droplet-aware hop + early exit</legend>
+  <label><input id="m_harvest" type="checkbox" checked> harvest file decodes</label>
+  <label>bootstrap (s) <input id="m_boot" type="number" value="10" min="4" style="width:3.5rem"></label>
+  <button id="ledSaveBtn">Export ledger</button>
+  <button id="ledClearBtn">Clear ledger</button>
+  <label style="border:1px dashed #555; padding:.2rem .4rem">load ledger: <input id="ledIn" type="file" accept="application/json,.json"></label>
+  <span id="ledInfo" class="dim">ledger: empty</span>
+  <div id="harvest"></div>
+</fieldset>
+
 <div id="status">idle</div>
 <video id="vid" muted playsinline style="display:none"></video>
 <canvas id="prev" width="380" height="214" style="display:none"></canvas>
@@ -2712,25 +2723,37 @@
 
   /* Alignment without a reference stream: scan (offset, lag) and score by
      CRC passes — the true framing lights up (chance rate 1/256/droplet).
-     Needs ≥2 passes to lock. */
-  function crcAlign(track, annulus, profile, baseOverride, maxLagSymbols) {
+     Needs ≥2 passes to lock. lagHint ({min,max}, harvest): a hop window's
+     lag is already priced by the bootstrap lock, so the predicted band is
+     scanned FIRST and the full carousel scan becomes the fallback, not the
+     routine — the scan is most of a window's self-alignment cost, and the
+     hint deletes it when the lock holds while losing nothing when it
+     doesn't (a stale lock past an emitter loop restart just falls through). */
+  function crcAlign(track, annulus, profile, baseOverride, maxLagSymbols, lagHint) {
     var demap = (typeof module !== "undefined" && module.exports) ? require("./demap.js") : global.OC.demap;
     var F = annulus.rotation.frames_per_symbol;
     var maxLag = maxLagSymbols || 4096;
     var base = (baseOverride !== undefined && baseOverride !== null) ? baseOverride : (track.firstValid || 0);
-    var best = null;
-    for (var off = base; off < base + F; off++) {
-      var decoded = demap.decode(track, annulus, profile, off);
-      if (!decoded.length) continue;
-      for (var lag = 0; lag <= maxLag; lag++) {
-        var col = collect(decoded, lag, annulus, profile);
-        if (col.passed.length < 2) continue;
-        if (!best || col.passed.length > best.score ||
-            (col.passed.length === best.score && lag < best.lag))
-          best = { offset: off, lag: lag, score: col.passed.length, max: col.tried, method: "crc" };
+    function scan(lagLo, lagHi) {
+      var best = null;
+      for (var off = base; off < base + F; off++) {
+        var decoded = demap.decode(track, annulus, profile, off);
+        if (!decoded.length) continue;
+        for (var lag = lagLo; lag <= lagHi; lag++) {
+          var col = collect(decoded, lag, annulus, profile);
+          if (col.passed.length < 2) continue;
+          if (!best || col.passed.length > best.score ||
+              (col.passed.length === best.score && lag < best.lag))
+            best = { offset: off, lag: lag, score: col.passed.length, max: col.tried, method: "crc" };
+        }
       }
+      return best;
     }
-    return best;
+    if (lagHint && lagHint.max >= 0 && lagHint.max >= (lagHint.min | 0)) {
+      var hinted = scan(Math.max(0, lagHint.min | 0), Math.min(maxLag, lagHint.max | 0));
+      if (hinted) { hinted.hinted = true; return hinted; }
+    }
+    return scan(0, maxLag);
   }
 
   /* Pool verified droplets from every ring (and eventually every tile) and
@@ -2811,10 +2834,358 @@
 
   var API = { encodeCarousels: encodeCarousels, collect: collect, crcAlign: crcAlign, assemble: assemble,
               geom: geom, ringD: ringD, carouselLen: carouselLen, subsetFor: subsetFor,
+              isHeaderSlot: isHeaderSlot, parseHeader: parseHeader, HEADER_EVERY: HEADER_EVERY,
               crc8: crc8, crc16: crc16, toGray: toGray, fromGray: fromGray,
               textToBytes: textToBytes, bytesToText: bytesToText, MAGIC: MAGIC };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   global.OC = global.OC || {}; global.OC.fountain = API;
+})(typeof window !== "undefined" ? window : globalThis);
+
+</script>
+<script>
+/* inlined: harvest.js */
+/* harvest.js — the harvest decoder's bookkeeping: the droplet LEDGER, the
+   slot↔time LOCKS, and the hop PLANNER (practitioner's design, 2026-08-15:
+   droplet-aware bootstrap-then-hop — "skip the seeks for what you hold, stop
+   when the peel completes"). SEEKING dominates decode wall-clock (~7,000
+   browser video seeks per full pass at 60 fps stepping; the DSP is cheap
+   beside it), so droplet-awareness deletes seeks: a held droplet's span is
+   ~96 seeks that never happen. This module is the pure logic — no DOM, no
+   video. The receive harness drives it against a clip; the suite drives it
+   against synthetic decodes.
+
+   The ledger retains RAW BYTES ALWAYS (a lesson bought twice) and is JSON
+   round-trippable so it travels BETWEEN clips: the two-fresh-takes filming
+   pattern becomes decoder-exploited — clip 2 is mined only for what clip 1
+   lacked. Locks are NOT in the ledger: an alignment is a fact about one
+   clip's time axis; droplets are facts about the session. */
+(function (global) {
+  "use strict";
+
+  function F() { return (typeof module !== "undefined" && module.exports) ? require("./fountain.js") : global.OC.fountain; }
+
+  function bytesToHex(u8) {
+    var s = "";
+    for (var i = 0; i < u8.length; i++) s += (u8[i] < 16 ? "0" : "") + u8[i].toString(16);
+    return s;
+  }
+  function hexToBytes(hex) {
+    var out = new Uint8Array(hex.length >> 1);
+    for (var i = 0; i < out.length; i++) out[i] = parseInt(hex.substr(i * 2, 2), 16);
+    return out;
+  }
+
+  /* ---------- the ledger ---------- */
+
+  function createLedger(profile, session) {
+    return {
+      version: 1,
+      profile_version: profile.profile_version,
+      droplet_bits: F().geom(profile).dropletBits,
+      session: session || null,
+      header: null,               // { K, len, hex } once any header droplet lands
+      rings: {},                  // rings[seed][c] = hex — witnessed droplets only
+      clips: []                   // provenance: { name, windows: [[t0,t1],…] } per clip harvested
+    };
+  }
+
+  function serializeLedger(ledger) { return JSON.stringify(ledger); }
+
+  function parseLedger(text) {
+    var l = JSON.parse(text);
+    if (l.version !== 1 || !l.rings) throw new Error("not a harvest ledger (version " + l.version + ")");
+    return l;
+  }
+
+  function counts(ledger) {
+    var rings = 0, droplets = 0;
+    for (var seed in ledger.rings) {
+      rings++;
+      for (var c in ledger.rings[seed]) droplets++; // eslint-disable-line no-unused-vars
+    }
+    return { rings: rings, droplets: droplets, header: !!ledger.header };
+  }
+
+  /* Feed one window's decodeSequence result (payload mode) into the ledger.
+     Every CRC-passed droplet enters under its ring's seed; duplicates are
+     free (the same wire bytes recur every carousel period and across clips —
+     the dedupe key is (ring, c); session identity is the operator's ledger
+     choice pre-v3). The header is banked once: header BYTES are identical at
+     every header slot of every ring (they depend only on K + payload), so
+     one sighting holds them all — the planner prices every header slot as
+     held from that moment. A droplet_bits mismatch refuses the absorb
+     rather than silently mixing framings. */
+  function absorb(ledger, res, profile) {
+    var g = F().geom(profile);
+    if (ledger.droplet_bits !== g.dropletBits)
+      return { added: 0, dup: 0, conflicts: 0, quarantined: 0, mismatch: true };
+    var added = 0, dup = 0, conflicts = 0, quarantined = 0, consensus = null;
+    if (!res || res.error || !res.emitters)
+      return { added: 0, dup: 0, conflicts: 0, quarantined: 0, lagConsensus: null };
+    for (var e = 0; e < res.emitters.length; e++) {
+      var annuli = res.emitters[e].annuli || [];
+      // Lag consensus. Every ring shares the emission clock and the capture
+      // start (all profiles run one frames_per_symbol), so within a window
+      // every locked ring's lag must agree. A lone disagreeing ring is a
+      // chance CRC double-pass wearing a lock — transient before the ledger
+      // (a 1/256 residual per decode), but PERSISTENT now: its droplets
+      // would enter as first-seen poison and block the real bytes forever.
+      // With ≥2 rings in agreement the outlier is quarantined: nothing
+      // banked, no lock taken from it (callers gate on lagConsensus).
+      var lags = [];
+      for (var li = 0; li < annuli.length; li++) {
+        var al = annuli[li];
+        if (al && al.alignLag != null && al.droplets && al.droplets.length) lags.push(al.alignLag);
+      }
+      if (lags.length >= 2) {
+        var bestN = 0;
+        for (var bi = 0; bi < lags.length; bi++) {
+          var n = 0;
+          for (var bj = 0; bj < lags.length; bj++) if (Math.abs(lags[bj] - lags[bi]) <= 1) n++;
+          if (n > bestN || (n === bestN && (consensus === null || lags[bi] < consensus))) { bestN = n; consensus = lags[bi]; }
+        }
+        if (bestN < 2) consensus = null; // no two rings agree — judge nothing
+      }
+      for (var ai = 0; ai < annuli.length; ai++) {
+        var a = annuli[ai];
+        if (!a || !a.droplets || !a.droplets.length) continue;
+        if (consensus !== null && a.alignLag != null && Math.abs(a.alignLag - consensus) > 1) {
+          quarantined += a.droplets.length;
+          continue;
+        }
+        var pa = annulusByIndex(profile, a.annulus);
+        if (!pa) continue;
+        var seed = pa.rotation.seed;
+        var ring = ledger.rings[seed] || (ledger.rings[seed] = {});
+        for (var d = 0; d < a.droplets.length; d++) {
+          var dr = a.droplets[d]; // { c, hex }
+          if (ring[dr.c] !== undefined) {
+            if (ring[dr.c] !== dr.hex) conflicts++; // same slot, different bytes — surfaced, never silent
+            dup++;
+            continue;
+          }
+          ring[dr.c] = dr.hex;
+          added++;
+          if (!ledger.header && F().isHeaderSlot(dr.c)) {
+            var h = F().parseHeader(hexToBytes(dr.hex), g);
+            if (h) ledger.header = { K: h.K, len: h.len, hex: dr.hex };
+          }
+        }
+      }
+    }
+    return { added: added, dup: dup, conflicts: conflicts, quarantined: quarantined, lagConsensus: consensus };
+  }
+
+  /* The ledger in fountain.assemble's shape — the peel never knows whether a
+     droplet arrived this window, last window, or from another clip's take. */
+  function ringsFor(ledger, profile) {
+    return profile.annuli.map(function (a) {
+      var seed = a.rotation.seed;
+      var held = ledger.rings[seed] || {};
+      var droplets = [];
+      for (var c in held) droplets.push({ c: +c, bytes: hexToBytes(held[c]) });
+      return { seed: seed, droplets: droplets };
+    });
+  }
+
+  /* EARLY EXIT's question, asked after every window: is the payload in hand?
+     (field34 decoded 64 s; the payload may have been in hand by 40.) */
+  function tryPeel(ledger, profile) {
+    return F().assemble(ringsFor(ledger, profile), profile);
+  }
+
+  function annulusByIndex(profile, index) {
+    for (var i = 0; i < profile.annuli.length; i++)
+      if (profile.annuli[i].index === index) return profile.annuli[i];
+    return null;
+  }
+
+  /* ---------- locks: the capture-time→carousel-slot mapping ---------- */
+
+  /* A lock binds one ring's carousel to the clip's absolute emission-frame
+     axis: emission symbol j sits at absolute frame
+         frameOfSymbol(j) = fBase + offset + (j − lag)·F
+     (fBase = the window's first absolute frame; offset/lag from that
+     window's own alignment). Extrapolated forward it prices every future
+     slot's span. It can be WRONG past an emitter loop restart — priced in:
+     a window planned on a stale lock fails its narrow realign, the full CRC
+     scan re-locks it, and planning continues on the fresh lock. A wrong
+     prediction costs a wasted window, never wrong data — CRC gates the
+     ledger. */
+  function lockFrom(a, annulus, profile, fBase) {
+    if (!a || a.alignOffset == null || a.alignLag == null) return null;
+    var g = F().geom(profile);
+    return {
+      annulus: a.annulus, seed: annulus.rotation.seed,
+      F: annulus.rotation.frames_per_symbol, D: F().ringD(annulus, g),
+      Pn: profile.preamble_symbols,
+      fBase: fBase, offset: a.alignOffset, lag: a.alignLag
+    };
+  }
+
+  function frameOfSymbol(lock, j) { return lock.fBase + lock.offset + (j - lock.lag) * lock.F; }
+  function symbolAtFrame(lock, f) { return (f - lock.fBase - lock.offset) / lock.F + lock.lag; }
+  function slotSpan(lock, c) {
+    var j0 = lock.Pn + c * lock.D;
+    return [frameOfSymbol(lock, j0), frameOfSymbol(lock, j0 + lock.D)];
+  }
+  function slotAtFrame(lock, f) {
+    return Math.floor((symbolAtFrame(lock, f) - lock.Pn) / lock.D);
+  }
+
+  /* Predicted-lag band for a window starting at absolute frame fBase — the
+     crcAlign hint that turns a hop window's full carousel scan into a narrow
+     confirmation. Band ±24 symbols covers rounding + mild emitter drift. */
+  function predictLag(lock, fBase, band) {
+    var b = band || 24;
+    var pred = Math.round(symbolAtFrame(lock, fBase));
+    if (pred + b < 0) return null;
+    return { min: Math.max(0, pred - b), max: pred + b, pred: pred };
+  }
+
+  /* ---------- interval bookkeeping (absolute emission frames) ---------- */
+
+  function mergeSpans(spans) {
+    if (!spans.length) return [];
+    var s = spans.slice().sort(function (a, b) { return a[0] - b[0]; });
+    var out = [s[0].slice()];
+    for (var i = 1; i < s.length; i++) {
+      var last = out[out.length - 1];
+      if (s[i][0] <= last[1]) { if (s[i][1] > last[1]) last[1] = s[i][1]; }
+      else out.push(s[i].slice());
+    }
+    return out;
+  }
+
+  function subtractSpans(spans, cut) {
+    var out = spans;
+    for (var i = 0; i < cut.length; i++) {
+      var next = [];
+      for (var j = 0; j < out.length; j++) {
+        var a = out[j][0], b = out[j][1], c0 = cut[i][0], c1 = cut[i][1];
+        if (c1 <= a || c0 >= b) { next.push([a, b]); continue; }
+        if (c0 > a) next.push([a, c0]);
+        if (c1 < b) next.push([c1, b]);
+      }
+      out = next;
+    }
+    return out;
+  }
+
+  /* Visited is a fact whatever the window yielded — a barren window is
+     marked, not retried. In-place insert-merge. */
+  function markVisited(visited, f0, f1) {
+    visited.push([f0, f1]);
+    var merged = mergeSpans(visited);
+    visited.length = 0;
+    for (var i = 0; i < merged.length; i++) visited.push(merged[i]);
+  }
+
+  /* ---------- the hop planner ---------- */
+
+  /* Spans worth seeking in [f0,f1]: wherever ANY locked ring holds an
+     UNKNOWN slot. Held slots price at zero; header slots price at zero once
+     the header is banked; never-locking rings contribute nothing (they drop
+     out of the union — a later lock brings their unknowns in: the
+     revisit-on-later-lock). Visited is subtracted whatever it yielded.
+     Raw spans are then clustered into WORK WINDOWS of at least minFrames
+     (~8–10 s), because below that a window cannot confirm its own CRC
+     alignment — each window self-aligns; the padding spends a few held
+     seeks to keep every window self-sufficient. */
+  function planSpans(ledger, locks, f0, f1, opts) {
+    opts = opts || {};
+    var minF = opts.minFrames || 1, joinGap = opts.joinGap || 0;
+    var spans = [];
+    for (var li = 0; li < locks.length; li++) {
+      var lock = locks[li];
+      if (!lock) continue;
+      var held = ledger.rings[lock.seed] || {};
+      var cA = Math.max(0, slotAtFrame(lock, f0));
+      var cB = slotAtFrame(lock, f1);
+      for (var c = cA; c <= cB; c++) {
+        if (held[c] !== undefined) continue;
+        if (ledger.header && F().isHeaderSlot(c)) continue;
+        var s = slotSpan(lock, c);
+        var a = Math.max(f0, s[0]), b = Math.min(f1, s[1]);
+        if (b > a) spans.push([a, b]);
+      }
+    }
+    spans = mergeSpans(spans);
+    if (opts.visited && opts.visited.length) spans = subtractSpans(spans, opts.visited);
+    // Cluster into work windows: pad each span forward to minFrames (backward
+    // at the clip end), then merge windows separated by less than joinGap —
+    // seeking through a small held gap is cheaper than a second window's
+    // alignment overhead.
+    var wins = [];
+    for (var i = 0; i < spans.length; i++) {
+      var w0 = spans[i][0], w1 = spans[i][1];
+      if (w1 - w0 < minF) {
+        w1 = w0 + minF;
+        if (w1 > f1) { w1 = f1; w0 = Math.max(f0, w1 - minF); }
+      }
+      wins.push([w0, w1]);
+    }
+    var padded = [];
+    for (var k = 0; k < wins.length; k++) {
+      var last = padded[padded.length - 1];
+      if (last && wins[k][0] - last[1] <= joinGap) { if (wins[k][1] > last[1]) last[1] = wins[k][1]; }
+      else padded.push(wins[k]);
+    }
+    // The cap: window length IS the early-exit granularity — pooling happens
+    // per window, so one giant unknown remainder would postpone the peel
+    // check to the clip's end and early exit could never fire (field34's
+    // "in hand by 40 s" needs the tail to be SEPARATE windows). Split any
+    // over-cap window into consecutive pieces of ~minFrames; a window under
+    // 2×minFrames is indivisible (each piece must still self-align).
+    if (opts.maxFrames > 0) {
+      var split = [];
+      for (var q = 0; q < padded.length; q++) {
+        var w0q = padded[q][0], w1q = padded[q][1], len = w1q - w0q;
+        var pieces = len > opts.maxFrames ? Math.floor(len / minF) : 1;
+        if (pieces <= 1) { split.push(padded[q]); continue; }
+        var size = len / pieces;
+        for (var pz = 0; pz < pieces; pz++)
+          split.push([Math.round(w0q + pz * size), Math.round(w0q + (pz + 1) * size)]);
+      }
+      padded = split;
+    }
+    if (opts.visited && opts.visited.length) {
+      // Padding may have re-covered visited ground entirely (a window nested
+      // inside old coverage helps nobody) — drop windows that add nothing.
+      var keep = [];
+      for (var m = 0; m < padded.length; m++) {
+        var fresh = subtractSpans([padded[m]], opts.visited);
+        var freshLen = 0;
+        for (var n = 0; n < fresh.length; n++) freshLen += fresh[n][1] - fresh[n][0];
+        if (freshLen > 0) keep.push(padded[m]);
+      }
+      padded = keep;
+    }
+    return { spans: spans, windows: padded };
+  }
+
+  /* The no-lock / still-hungry fallback: the first unvisited chunk. With no
+     lock the harvest degrades to a chunked classic pass (same coverage, same
+     seeks, nothing lost); with locks exhausted and the peel still short it
+     keeps the coverage promise honest before declaring the clip dry. */
+  function nextUnvisited(visited, f0, f1, chunkFrames) {
+    var gaps = subtractSpans([[f0, f1]], visited);
+    if (!gaps.length) return null;
+    var g0 = gaps[0][0];
+    return [g0, Math.min(g0 + chunkFrames, gaps[0][1])];
+  }
+
+  var API = {
+    createLedger: createLedger, serializeLedger: serializeLedger, parseLedger: parseLedger,
+    counts: counts, absorb: absorb, ringsFor: ringsFor, tryPeel: tryPeel,
+    lockFrom: lockFrom, frameOfSymbol: frameOfSymbol, symbolAtFrame: symbolAtFrame,
+    slotSpan: slotSpan, slotAtFrame: slotAtFrame, predictLag: predictLag,
+    mergeSpans: mergeSpans, subtractSpans: subtractSpans, markVisited: markVisited,
+    planSpans: planSpans, nextUnvisited: nextUnvisited,
+    bytesToHex: bytesToHex, hexToBytes: hexToBytes
+  };
+  if (typeof module !== "undefined" && module.exports) module.exports = API;
+  global.OC = global.OC || {}; global.OC.harvest = API;
 })(typeof window !== "undefined" ? window : globalThis);
 
 </script>
@@ -3234,8 +3605,11 @@
           if (!align) {
             // Payload mode has no reference stream — CRC-pass scanning is the
             // mid-loop sync (fountain.js); reference mode correlates the seeds.
+            // opts.alignHints[annulus index] = {min,max} predicted-lag band
+            // (harvest hop windows price their own lag from the bootstrap lock).
             align = opts.payload
-              ? dep("fountain").crcAlign(track, a, profile, syncBase, maxLagSym)
+              ? dep("fountain").crcAlign(track, a, profile, syncBase, maxLagSym,
+                  opts.alignHints && opts.alignHints[a.index])
               : demap.correlateStream(track, a, profile, maxLagSym, syncBase);
           }
           if (!align)
@@ -3543,13 +3917,176 @@ $("capBtn").onclick = () => {
   else requestAnimationFrame(grab);
 };
 
+/* ---------- the harvest ledger (cross-clip: it outlives the clip) ---------- */
+let ledger = null;
+function ensureLedger() {
+  if (!ledger) ledger = OC.harvest.createLedger(currentProfile(), $("m_notes").value || null);
+  return ledger;
+}
+function ledgerInfo() {
+  if (!ledger) { $("ledInfo").textContent = "ledger: empty"; return; }
+  const cn = OC.harvest.counts(ledger);
+  $("ledInfo").textContent = "ledger: " + cn.droplets + " droplets / " + cn.rings + " rings" +
+    (cn.header ? " / header K=" + ledger.header.K : " / no header") +
+    (ledger.session ? " / session “" + ledger.session + "”" : "");
+}
+$("ledSaveBtn").onclick = () => {
+  if (!ledger) { setStatus("nothing to export — the ledger is empty", "warn"); return; }
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([OC.harvest.serializeLedger(ledger)], { type: "application/json" }));
+  a.download = "phryctoros-ledger-" + (ledger.session || "session") + ".json";
+  a.click();
+};
+$("ledClearBtn").onclick = () => { ledger = null; ledgerInfo(); $("harvest").innerHTML = ""; };
+$("ledIn").onchange = async () => {
+  const f = $("ledIn").files[0];
+  if (!f) return;
+  try {
+    ledger = OC.harvest.parseLedger(await f.text());
+    ledgerInfo();
+    setStatus("ledger loaded — the next harvest mines only what it lacks", "ok");
+  } catch (e) { setStatus("ledger load failed: " + e.message, "bad"); }
+};
+
+/* Seek-capture one time-window [tA, tB) of the loaded clip at the capture
+   cadence, cropped at native resolution. Frames carry LOCAL emission indices
+   (0-based at the window's first emission frame) — the pipeline sees each
+   window exactly like a capture that started there; the caller keeps fBase to
+   place results on the clip's absolute axis. Returns the seek count: the
+   harvest receipt's currency. */
+async function seekWindow(v, geo, tA, tB, capFps, emitFps, onStep) {
+  const seek = t => new Promise(r => { v.onseeked = () => r(); v.currentTime = t; });
+  const fBase = Math.round(tA * emitFps);
+  const frames = []; const perIdx = {}; let seeks = 0;
+  const tEnd = Math.min(tB, v.duration - 0.05);
+  for (let i = Math.ceil(tA * capFps); ; i++) {
+    const t = i / capFps;
+    if (t >= tEnd) break;
+    await seek(t); seeks++;
+    const idx = Math.round(t * emitFps) - fBase;
+    if ((perIdx[idx] || 0) < 2) {
+      geo.ctx.drawImage(v, geo.sx, geo.sy, geo.sw, geo.sh, 0, 0, geo.W, geo.H);
+      frames.push({ f: idx, img: toLumFromCanvas(geo.ctx, geo.W, geo.H) });
+      perIdx[idx] = (perIdx[idx] || 0) + 1;
+    }
+    if (seeks % 60 === 0) {
+      if (onStep) onStep(t);
+      await new Promise(r => setTimeout(r, 0));
+    }
+  }
+  return { frames, seeks, fBase };
+}
+
+/* The harvest decoder (file path): bootstrap-then-hop. Decode a bootstrap
+   window, lock the carousel phase per ring, consult the ledger, seek-hop
+   between UNKNOWN spans only (held droplets and banked headers price at
+   zero), pool incrementally, and EARLY-EXIT the moment the peel completes —
+   field34 decoded 64 s when the payload may have been in hand by 40. One
+   window is planned at a time so every plan uses the freshest ledger. With
+   no lock it degrades to a chunked classic pass (same coverage, nothing
+   lost); with locks exhausted and the peel still short it sweeps what's
+   unvisited before declaring the clip dry. */
+async function harvestDecode(v, geo, file) {
+  const profile = currentProfile(), R = profile.frame_rate_hz, capFps = captureFps();
+  const HV = OC.harvest;
+  const led = ensureLedger();
+  if (led.droplet_bits !== OC.fountain.geom(profile).dropletBits) {
+    setStatus("ledger droplet_bits " + led.droplet_bits + " ≠ profile's " + OC.fountain.geom(profile).dropletBits + " — export or clear it first", "bad");
+    return;
+  }
+  const durS = v.duration, durF = Math.floor((durS - 0.06) * R);
+  const baseline = Math.ceil(durS * capFps);
+  const minWinF = Math.round(8 * R), joinGapF = Math.round(1.5 * R), chunkF = Math.round(10 * R);
+  const bootF = Math.min(Math.max(minWinF, Math.round((+$("m_boot").value || 10) * R)), durF);
+  const t0Wall = performance.now();
+  const visited = [], locks = {};
+  let seeks = 0, wrun = 0, peel = HV.tryPeel(led, profile);
+  const clipLog = { name: file.name, windows: [] };
+  led.clips.push(clipLog);
+  $("harvest").innerHTML = "<b>harvest: " + file.name + "</b> — " + durS.toFixed(1) + " s, baseline " + baseline + " seeks<br>";
+  // Already in hand? Then nothing is seeked at all — the carried ledger
+  // completes before the clip is touched (never pay twice for the same drop).
+  const queue = peel.ok ? [] : [[0, bootF]];
+  if (peel.ok) $("harvest").innerHTML += "<span class='ok'>carried ledger already peels — the clip is not needed</span><br>";
+  while (queue.length) {
+    const [wf0, wf1] = queue.shift();
+    wrun++;
+    const cap = await seekWindow(v, geo, wf0 / R, wf1 / R, capFps, R,
+      t => setStatus("harvest w" + wrun + ": seeking " + t.toFixed(1) + " s…", "warn"));
+    seeks += cap.seeks;
+    HV.markVisited(visited, wf0, wf1);
+    clipLog.windows.push([Math.round(wf0 / R * 10) / 10, Math.round(wf1 / R * 10) / 10]);
+    const hints = {};
+    for (const k in locks) { const h = HV.predictLag(locks[k], cap.fBase); if (h) hints[k] = h; }
+    setStatus("harvest w" + wrun + ": decoding " + cap.frames.length + " frames…", "warn");
+    const res = await new Promise(rp => setTimeout(() => {
+      try {
+        rp(OC.pipeline.decodeSequence(cap.frames, profile, {
+          aligned: false, handheld: $("m_hand").checked,
+          loopSeconds: +$("m_loop").value || 60,
+          mirror: { receive: false }, maxEmitters: 4,
+          payload: true, alignHints: hints
+        }));
+      } catch (e) { rp({ error: e.message }); }
+    }, 30));
+    let line = "w" + wrun + " [" + (wf0 / R).toFixed(1) + "–" + (wf1 / R).toFixed(1) + " s] " + cap.seeks + " seeks";
+    if (res.error) line += " — <span class='bad'>" + res.error + "</span>";
+    else {
+      const got = HV.absorb(led, res, profile);
+      for (const em of res.emitters) for (const a of (em.annuli || [])) {
+        // A ring outvoted on lag is quarantined — no droplets banked above,
+        // and no lock taken here (a false lock would poison the plan too).
+        if (got.lagConsensus != null && a.alignLag != null && Math.abs(a.alignLag - got.lagConsensus) > 1) continue;
+        const pa = profile.annuli.find(x => x.index === a.annulus);
+        const lk = pa && HV.lockFrom(a, pa, profile, cap.fBase);
+        if (lk) locks[a.annulus] = lk;
+      }
+      peel = HV.tryPeel(led, profile);
+      line += " — +" + got.added + " droplets (" + got.dup + " dup" +
+        (got.quarantined ? ", <span class='warn'>" + got.quarantined + " quarantined</span>" : "") +
+        (got.conflicts ? ", <span class='bad'>" + got.conflicts + " byte-conflicts</span>" : "") +
+        ") — " +
+        (peel.ok ? "<span class='ok'>PEEL COMPLETE</span>"
+                 : peel.K ? (peel.recovered || 0) + "/" + peel.K + " blocks"
+                 : "no header yet");
+      $("results").innerHTML = layerSummary(res);
+    }
+    $("harvest").innerHTML += line + "<br>";
+    ledgerInfo();
+    if (peel && peel.ok) break;
+    if (!queue.length) {
+      const plan = HV.planSpans(led, Object.values(locks), 0, durF,
+        { visited, minFrames: minWinF, joinGap: joinGapF, maxFrames: Math.round(12 * R) });
+      if (plan.windows.length) queue.push(plan.windows[0]);
+      else {
+        const nx = HV.nextUnvisited(visited, 0, durF, chunkF);
+        if (nx && nx[1] - nx[0] >= Math.round(2 * R)) queue.push(nx);
+      }
+    }
+  }
+  const wall = ((performance.now() - t0Wall) / 1000).toFixed(1);
+  const saved = Math.max(0, Math.round(100 * (1 - seeks / baseline)));
+  const visitedS = visited.reduce((s, sp) => s + (sp[1] - sp[0]), 0) / R;
+  const receipt = peel && peel.ok
+    ? "<b class='ok'>EARLY EXIT — payload in hand after " + visitedS.toFixed(1) + " s of " + durS.toFixed(1) + " s</b>" +
+      " — " + seeks + " seeks of " + baseline + " baseline (" + saved + "% skipped), wall " + wall + " s<br>" +
+      "<span class='ok' style='font-size:15px'><b>PAYLOAD:</b> “" + peel.text + "”</span> (" + peel.recovered + "/" + peel.K + " blocks, " + peel.droplets + " droplets)"
+    : "<b class='warn'>clip exhausted — payload incomplete</b> (" +
+      (peel && peel.K ? (peel.recovered || 0) + "/" + peel.K + " blocks" : "no header yet") +
+      ") — " + seeks + " seeks of " + baseline + " (" + saved + "% skipped), wall " + wall + " s — export the ledger and film another take: the next harvest mines only what this one lacked";
+  $("harvest").innerHTML += receipt + "<br>";
+  setStatus(peel && peel.ok ? "harvest complete — early exit" : "harvest exhausted — ledger holds the progress", peel && peel.ok ? "ok" : "warn");
+}
+
 /* ---------- recorded input (§9.1 — first-class, works without camera/secure ctx) ----------
    Seek-stepped, crop-at-native-resolution. Browser-agnostic by construction: no
    rVFC dependence (Firefox lacks it — its rAF fallback jittered frame timing),
    and no 800 px downscale (which cost the phase margin that made laptop decodes
    work at 1200). Pre-scan finds the emitter; capture crops around it at source
    resolution (≤1280 wide), stepping exact 1/30 s seeks mapped to the 15 fps
-   emission clock with duplicates kept (tear defense). */
+   emission clock with duplicates kept (tear defense). In payload modes the
+   HARVEST path replaces the whole-clip pass: it hops between unknown droplet
+   spans and stops when the peel completes. */
 $("fileIn").onchange = async () => {
   const file = $("fileIn").files[0];
   if (!file) return;
@@ -3608,27 +4145,19 @@ $("fileIn").onchange = async () => {
     if (box) ({ sx, sy, sw, sh } = box);
     const W = Math.min(1024, sw), H = Math.round(sh * W / sw);
     c.width = W; c.height = H;
-    setStatus(box ? ("emitter found — cropping " + sw + "×" + sh + " at native res, seek-stepping…")
-                  : "no emitter in pre-scan — capturing uncropped (decode may still find it)…", "warn");
-    const frames = []; const perIdx = {};
+    const geo = { ctx, sx, sy, sw, sh, W, H };
     const capFps = captureFps();
-    let steps = 0;
-    for (let i = 0; ; i++) {
-      const t = i / capFps;
-      if (t >= v.duration - 0.05) break;
-      await seek(t);
-      const idx = Math.round(t * fps);
-      if ((perIdx[idx] || 0) < 2) {
-        ctx.drawImage(v, sx, sy, sw, sh, 0, 0, W, H);
-        frames.push({ f: idx, img: toLumFromCanvas(ctx, W, H) });
-        perIdx[idx] = (perIdx[idx] || 0) + 1;
-      }
-      if (++steps % 60 === 0) {
-        setStatus("seek-capture " + t.toFixed(1) + "/" + v.duration.toFixed(1) + " s…", "warn");
-        await new Promise(r => setTimeout(r, 0));
-      }
+    if (payloadMode() && $("m_harvest").checked) {
+      setStatus(box ? "emitter found — harvest begins (bootstrap first)…"
+                    : "no emitter in pre-scan — harvesting uncropped…", "warn");
+      await harvestDecode(v, geo, file);
+    } else {
+      setStatus(box ? ("emitter found — cropping " + sw + "×" + sh + " at native res, seek-stepping…")
+                    : "no emitter in pre-scan — capturing uncropped (decode may still find it)…", "warn");
+      const cap = await seekWindow(v, geo, 0, v.duration, capFps, fps,
+        t => setStatus("seek-capture " + t.toFixed(1) + "/" + v.duration.toFixed(1) + " s…", "warn"));
+      decodeFrames(cap.frames, "video-file-seek(" + file.name + ")", "seek" + capFps + (box ? "-crop" : ""));
     }
-    decodeFrames(frames, "video-file-seek(" + file.name + ")", "seek" + capFps + (box ? "-crop" : ""));
   } catch (e) { setStatus("file decode failed: " + e.message, "bad"); console.error(e); }
 };
 
