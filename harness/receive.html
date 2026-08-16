@@ -118,6 +118,47 @@ $("caps").textContent =
 
 function setStatus(t, cls) { $("status").textContent = t; $("status").className = cls || ""; }
 
+/* ---------- the decode worker: heavy stages off the UI thread ----------
+   Frames transfer as ArrayBuffers (zero-copy; they are never reused after a
+   decode — previews draw at grab time). Fallback runs in-thread with the old
+   setTimeout yield, so the file:// standalone behaves exactly as before. */
+let dworker = null, dworkerId = 0;
+const dworkerCbs = {};
+function getWorker() {
+  if (dworker === false) return null;
+  if (dworker) return dworker;
+  try {
+    dworker = new Worker("worker.js");
+    dworker.onmessage = e => {
+      const cb = dworkerCbs[e.data.id];
+      delete dworkerCbs[e.data.id];
+      if (cb) cb(e.data);
+    };
+    dworker.onerror = () => {
+      for (const id in dworkerCbs) { dworkerCbs[id]({ error: "decode worker failed — re-run (in-thread fallback engaged)" }); delete dworkerCbs[id]; }
+      try { dworker.terminate(); } catch (_) {}
+      dworker = false;
+    };
+    return dworker;
+  } catch (e) { dworker = false; return null; }
+}
+function decodeAsync(frames, profile, opts, auto) {
+  const w = getWorker();
+  if (!w) return new Promise(rp => setTimeout(() => {
+    try { rp(auto ? OC.pipeline.decodeV3Auto(frames, opts) : OC.pipeline.decodeSequence(frames, profile, opts)); }
+    catch (e) { rp({ error: e.message }); }
+  }, 30));
+  return new Promise(rp => {
+    const id = ++dworkerId;
+    dworkerCbs[id] = m => rp(m.error ? { error: m.error } : m.result);
+    const payload = frames.map(fr => ({
+      f: fr.f, w: fr.img.w, h: fr.img.h, norm: fr.img.norm,
+      u8: fr.img.data instanceof Uint8Array, buf: fr.img.data.buffer
+    }));
+    w.postMessage({ id, auto: !!auto, frames: payload, profile, opts }, payload.map(p => p.buf));
+  });
+}
+
 function toLumFromCanvas(ctx, w, h) {
   const id = ctx.getImageData(0, 0, w, h).data;
   const out = new Uint8Array(w * h);
@@ -189,32 +230,28 @@ function logRow(res, source, fpsMeasured, nFrames) {
 }
 
 function decodeFrames(frames, source, fpsMeasured) {
-  setStatus("decoding " + frames.length + " frames (" + currentProfile().profile_version + ")…", "warn");
-  setTimeout(() => {
-    try {
-      const isV3 = v3Mode();
-      const opts = {
-        aligned: false, handheld: $("m_hand").checked,
-        loopSeconds: +$("m_loop").value || 60,
-        mirror: { receive: false }, maxEmitters: isV3 ? 6 : 4,
-        payload: payloadMode(),
-        plateSolve: isV3 && $("m_solve").checked,
-        beacon: isV3 && $("m_beacon").checked
-      };
-      let res, preset = null;
-      if ($("m_prof").value === "v3a") {
-        const auto = OC.pipeline.decodeV3Auto(frames, opts);
-        res = auto.result;
-        preset = auto.preset;
-        setStatus("auto-detect: preset " + (preset || "UNDETERMINED") + " (" + auto.passes + " CRC passes)", preset ? "ok" : "warn");
-      } else {
-        res = OC.pipeline.decodeSequence(frames, currentProfile(), opts);
-      }
-      $("results").innerHTML = (preset ? "<p class='" + (preset ? "ok" : "warn") + "'>auto-detect verdict: <b>" + (preset || "undetermined") + "</b></p>" : "") + layerSummary(res);
-      logRow(res, source, fpsMeasured, frames.length);
-      if (!preset) setStatus(res.error ? "decode failed: " + res.error : "decode complete", res.error ? "bad" : "ok");
-    } catch (e) { setStatus("decode error: " + e.message, "bad"); console.error(e); }
-  }, 30);
+  const isV3 = v3Mode(), isAuto = $("m_prof").value === "v3a";
+  const opts = {
+    aligned: false, handheld: $("m_hand").checked,
+    loopSeconds: +$("m_loop").value || 60,
+    mirror: { receive: false }, maxEmitters: isV3 ? 6 : 4,
+    payload: payloadMode(),
+    plateSolve: isV3 && $("m_solve").checked,
+    beacon: isV3 && $("m_beacon").checked
+  };
+  setStatus("decoding " + frames.length + " frames (" + currentProfile().profile_version + ")" +
+    (getWorker() ? " — off-thread, UI stays live…" : "…"), "warn");
+  decodeAsync(frames, currentProfile(), opts, isAuto).then(out => {
+    let res = out, preset = null;
+    if (isAuto && out && out.result !== undefined) {
+      res = out.result;
+      preset = out.preset;
+      setStatus("auto-detect: preset " + (preset || "UNDETERMINED") + " (" + out.passes + " CRC passes)", preset ? "ok" : "warn");
+    }
+    $("results").innerHTML = (isAuto ? "<p class='" + (preset ? "ok" : "warn") + "'>auto-detect verdict: <b>" + (preset || "undetermined") + "</b></p>" : "") + layerSummary(res);
+    logRow(res, source, fpsMeasured, frames.length);
+    if (!isAuto) setStatus(res.error ? "decode failed: " + res.error : "decode complete", res.error ? "bad" : "ok");
+  });
 }
 
 /* ---------- self-test: render → decode entirely in-page ---------- */
@@ -223,10 +260,14 @@ $("selftestBtn").onclick = () => {
   setTimeout(() => {
     const p = OC.profile.defaultProfile({ render: { size_px: 512, scale_px_per_unit: 82 }, preamble_symbols: 4 });
     const seq = OC.emission.renderSequence(p, 64, {});
-    const res = OC.pipeline.decodeSequence(seq.frames, p, { aligned: true });
-    $("results").innerHTML = layerSummary(res);
-    const a0 = res.emitters && res.emitters[0].annuli[0];
-    setStatus(a0 && a0.ser === 0 ? "self-test PASS — install works; decoder closes the loop" : "self-test FAIL", a0 && a0.ser === 0 ? "ok" : "bad");
+    // Routed through decodeAsync deliberately: the self-test now also proves
+    // the worker path (or the fallback) on this install.
+    decodeAsync(seq.frames, p, { aligned: true }).then(res => {
+      $("results").innerHTML = layerSummary(res);
+      const a0 = !res.error && res.emitters && res.emitters[0].annuli[0];
+      const via = getWorker() ? " (via decode worker)" : " (in-thread fallback)";
+      setStatus(a0 && a0.ser === 0 ? "self-test PASS — install works; decoder closes the loop" + via : "self-test FAIL" + via, a0 && a0.ser === 0 ? "ok" : "bad");
+    });
   }, 30);
 };
 
@@ -385,17 +426,15 @@ async function harvestDecode(v, geo, file) {
     clipLog.windows.push([Math.round(wf0 / R * 10) / 10, Math.round(wf1 / R * 10) / 10]);
     const hints = {};
     for (const k in locks) { const h = HV.predictLag(locks[k], cap.fBase); if (h) hints[k] = h; }
-    setStatus("harvest w" + wrun + ": decoding " + cap.frames.length + " frames…", "warn");
-    const res = await new Promise(rp => setTimeout(() => {
-      try {
-        rp(OC.pipeline.decodeSequence(cap.frames, profile, {
-          aligned: false, handheld: $("m_hand").checked,
-          loopSeconds: +$("m_loop").value || 60,
-          mirror: { receive: false }, maxEmitters: 4,
-          payload: true, alignHints: hints
-        }));
-      } catch (e) { rp({ error: e.message }); }
-    }, 30));
+    setStatus("harvest w" + wrun + ": decoding " + cap.frames.length + " frames" +
+      (getWorker() ? " (off-thread)" : "") + "…", "warn");
+    const res = await decodeAsync(cap.frames, profile, {
+      aligned: false, handheld: $("m_hand").checked,
+      loopSeconds: +$("m_loop").value || 60,
+      mirror: { receive: false },
+      maxEmitters: (profile.bands && profile.plate) ? 6 : 4,
+      payload: true, alignHints: hints
+    });
     let line = "w" + wrun + " [" + (wf0 / R).toFixed(1) + "–" + (wf1 / R).toFixed(1) + " s] " + cap.seeks + " seeks";
     let lockedAny = false;
     if (res.error) line += " — <span class='bad'>" + res.error + "</span>";
