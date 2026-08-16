@@ -445,6 +445,18 @@ async function harvestDecode(v, geo, file) {
 $("fileIn").onchange = async () => {
   const file = $("fileIn").files[0];
   if (!file) return;
+  // Guard (a field lesson — a mis-set selector burned a whole classic pass):
+  // harvest needs a "+ payload" profile. A loaded ledger under a non-payload
+  // profile is always a mistake — refuse before any seeking. Bare harvest-on
+  // just warns and falls through to the classic pass (acuity work is normal).
+  if ($("m_harvest").checked && !payloadMode()) {
+    if (ledger && OC.harvest.counts(ledger).droplets > 0) {
+      setStatus("a ledger is loaded but the profile is not a payload mode — pick a “+ payload” profile, then re-choose the clip", "bad");
+      $("fileIn").value = "";
+      return;
+    }
+    $("harvest").innerHTML += "<span class='warn'>harvest is on but the profile has no payload — running the classic pass (pick a “+ payload” profile to harvest)</span><br>";
+  }
   const v = $("vid");
   v.srcObject = null; v.src = URL.createObjectURL(file); v.style.display = ""; v.muted = true;
   const fps = currentProfile().frame_rate_hz;
