@@ -21,13 +21,14 @@
   "use strict";
 
   function G() { return (typeof module !== "undefined" && module.exports) ? require("./geom.js") : global.OC.geom; }
+  function SM() { return (typeof module !== "undefined" && module.exports) ? require("./sample.js") : global.OC.sample; }
 
   var TAU = Math.PI * 2;
 
   /* Fit one circle edge around center (cx,cy) px: per-angle subpixel crossing
      nearest rExp px (searched within ±tol·rExp), direction "up" (dark→light
      walking outward) or "down". Returns { n, mean, dx, dy } px or null. */
-  function fitCircleEdge(img, cx, cy, rExp, dir, tol, NANG) {
+  function fitCircleEdge(img, cx, cy, rExp, dir, tol, NANG, floor) {
     var g = G();
     var norm = img.norm || 1;
     var lo = rExp * (1 - tol), hi = rExp * (1 + tol);
@@ -63,7 +64,7 @@
       sum += rEdge;
       sxr += rEdge * ct; syr += rEdge * st; sct += ct; sst += st;
     }
-    if (found < NANG * 0.55) return null;
+    if (found < NANG * (floor || 0.55)) return null;
     var mean = sum / found;
     // First radial harmonic ≈ center offset (the ring-reg refine identity).
     // Subtract the mean's projection so missing angles (Σcosθ ≠ 0 over a
@@ -83,11 +84,15 @@
     var sPx = (Math.hypot(u1[0] - o[0], u1[1] - o[1]) + Math.hypot(u2[0] - o[0], u2[1] - o[1])) / 2;
     var cx = p0[0], cy = p0[1];
     var NANG = opts.NANG || 40;
+    // A dark surround (screen bezel) can crush the outward-facing half of a
+    // peripheral bullseye's fits — the gauge's field42 lesson. Callers near
+    // the canvas edge pass a lower floor; the ratio verify stays the guard.
+    var eFloor = opts.edgeFloor || 0.55;
     var edges = null;
     for (var it = 0; it < 3; it++) {
-      var e1 = fitCircleEdge(img, cx, cy, 0.4 * R * sPx, "up", 0.35, NANG);
-      var e2 = fitCircleEdge(img, cx, cy, 0.6 * R * sPx, "down", 0.28, NANG);
-      var e3 = fitCircleEdge(img, cx, cy, 1.0 * R * sPx, "up", 0.22, NANG);
+      var e1 = fitCircleEdge(img, cx, cy, 0.4 * R * sPx, "up", 0.35, NANG, eFloor);
+      var e2 = fitCircleEdge(img, cx, cy, 0.6 * R * sPx, "down", 0.28, NANG, eFloor);
+      var e3 = fitCircleEdge(img, cx, cy, 1.0 * R * sPx, "up", 0.22, NANG, eFloor);
       var got = [e1, e2, e3].filter(function (e) { return e; });
       if (got.length < 2) return null;
       var dx = 0, dy = 0;
@@ -153,6 +158,52 @@
       Hwork[5] += c0.cy - oW[1];
     }
 
+    // Stage 1b — the FLAT GAUGE as stage-1's substitute when the center
+    // bullseye is absent (qr_persistent: the QR sits there). The first anchor
+    // attempt (H-derived point, fires after 3 corners verify) failed in the
+    // field at 0/601 — the failure was UPSTREAM: without a measured
+    // center+scale, corners seed from the raw static H and ≤2 verify. §4's
+    // unmodulated outer circle is present in every variant and radially
+    // symmetric: fit it per frame (k=1 center + mean-radius scale, the
+    // ring-reg refine identity), fold the measurement into Hwork, THEN seek
+    // corners — and its measured center becomes the fifth correspondence.
+    var gaugeC = null;
+    if (!c0 && opts.hCenter) {
+      var flatA = { r0: profile.flat_circle_r, crossing: "up",
+                    boundary: { harmonics: [], amplitudes: [0.06], phases_deg: [] } };
+      var Hg = H;
+      for (var gi = 0; gi < 3; gi++) {
+        var sb = SM().sampleBoundary(img, Hg, flatA);
+        // Floor 0.35, not 0.5: with a dark screen surround the gray margin
+        // beyond 3.00 is a ~5 px sliver and bezel-adjacent angles lose the
+        // crossing — field42 measured 41% coverage with mean 2.988 (accurate
+        // where found). The mean-sanity gate below keeps a low-coverage
+        // decoy arc from impersonating the gauge.
+        if (sb.found < sb.N * 0.35) { Hg = null; break; }
+        var n9 = 0, mean9 = 0, sct9 = 0, sst9 = 0, sxr9 = 0, syr9 = 0;
+        for (var i9 = 0; i9 < sb.N; i9++) {
+          if (isNaN(sb.r[i9])) continue;
+          var th9 = TAU * i9 / sb.N, ct9 = Math.cos(th9), st9 = Math.sin(th9);
+          mean9 += sb.r[i9]; sxr9 += sb.r[i9] * ct9; syr9 += sb.r[i9] * st9;
+          sct9 += ct9; sst9 += st9; n9++;
+        }
+        mean9 /= n9;
+        if (Math.abs(mean9 - profile.flat_circle_r) > 0.2) { Hg = null; break; }
+        var dxU = 2 * (sxr9 - mean9 * sct9) / n9, dyU = 2 * (syr9 - mean9 * sst9) / n9;
+        var kG = mean9 / profile.flat_circle_r;
+        // compose Hg ∘ [k,0,dx; 0,k,dy; 0,0,1] — unit-domain scale+shift
+        Hg = [Hg[0] * kG, Hg[1] * kG, Hg[0] * dxU + Hg[1] * dyU + Hg[2],
+              Hg[3] * kG, Hg[4] * kG, Hg[3] * dxU + Hg[4] * dyU + Hg[5],
+              Hg[6] * kG, Hg[7] * kG, Hg[6] * dxU + Hg[7] * dyU + Hg[8]];
+        if (Math.abs(dxU) < 0.003 && Math.abs(dyU) < 0.003 && Math.abs(kG - 1) < 0.003) break;
+      }
+      if (Hg) {
+        Hwork = Hg;
+        var gp = g.applyH(Hg, 0, 0);
+        gaugeC = { cx: gp[0], cy: gp[1] };
+      }
+    }
+
     // Stage 2: corners from the corrected seed.
     var wantC = [
       { ux: pl.corners.at, uy: pl.corners.at },
@@ -162,9 +213,16 @@
     ];
     for (var i = 0; i < wantC.length; i++) {
       var w = wantC[i];
-      var b = findBullseye(img, Hwork, w.ux, w.uy, pl.corners.r_out, {});
+      var b = findBullseye(img, Hwork, w.ux, w.uy, pl.corners.r_out, { edgeFloor: 0.4 });
       points.push(b ? { ux: w.ux, uy: w.uy, cx: b.cx, cy: b.cy } : null);
       if (b) { src.push([w.ux, w.uy]); dst.push([b.cx, b.cy]); }
+    }
+    // The gauge center as the fifth correspondence when a corner is missing:
+    // MEASURED (the flat-circle k=1 fit), not H-derived. Four verified
+    // corners still solve alone — no center drag when none is needed.
+    if (gaugeC && src.length === (opts.minPoints || 4) - 1) {
+      src.unshift([0, 0]); dst.unshift([gaugeC.cx, gaugeC.cy]);
+      points[0] = { ux: 0, uy: 0, cx: gaugeC.cx, cy: gaugeC.cy, anchor: "gauge" };
     }
     if (src.length < (opts.minPoints || 4)) return null;
     var Hs = g.homographyFromPointsN(src, dst);

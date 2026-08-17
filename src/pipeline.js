@@ -116,8 +116,11 @@
       var plateM = dep("plate");
       solveBriefs = emitters.map(function (_, pe) {
         var HsP = tracksH[pe].Hs, solved = 0, residSum = 0, usedMin = 9;
+        // qr_persistent: the center is a QR, not a bullseye — allow the
+        // H-derived center anchor when a corner is missing (the A/B fix).
+        var solveOpts = { hCenter: !!profile.qr_persistent };
         for (var pf = 0; pf < groups.length; pf++) {
-          var sol = plateM.plateSolve(groups[pf].imgs[0], HsP[pf], profile);
+          var sol = plateM.plateSolve(groups[pf].imgs[0], HsP[pf], profile, solveOpts);
           if (sol) { HsP[pf] = sol.H; solved++; residSum += sol.residPx; if (sol.used < usedMin) usedMin = sol.used; }
         }
         return { solved: solved, frames: groups.length, usedMin: solved ? usedMin : null,
