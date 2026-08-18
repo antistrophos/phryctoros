@@ -114,13 +114,18 @@
     var solveBriefs = null;
     if (opts.plateSolve && profile.plate) {
       var plateM = dep("plate");
+      // v3.1 quadrant corners: the per-frame solve IS the saddle tracker —
+      // project last H, cross-selective refine, re-DLT (solve-as-tracker,
+      // §9's shape). Bullseye corners keep the circle-fit plateSolve.
+      var saddleM = profile.plate.corner_style === "quadrant" ? dep("saddle") : null;
       solveBriefs = emitters.map(function (_, pe) {
         var HsP = tracksH[pe].Hs, solved = 0, residSum = 0, usedMin = 9;
         // qr_persistent: the center is a QR, not a bullseye — allow the
         // H-derived center anchor when a corner is missing (the A/B fix).
         var solveOpts = { hCenter: !!profile.qr_persistent };
         for (var pf = 0; pf < groups.length; pf++) {
-          var sol = plateM.plateSolve(groups[pf].imgs[0], HsP[pf], profile, solveOpts);
+          var sol = saddleM ? saddleM.trackSolve(groups[pf].imgs[0], HsP[pf], profile, solveOpts)
+                            : plateM.plateSolve(groups[pf].imgs[0], HsP[pf], profile, solveOpts);
           if (sol) { HsP[pf] = sol.H; solved++; residSum += sol.residPx; if (sol.used < usedMin) usedMin = sol.used; }
         }
         return { solved: solved, frames: groups.length, usedMin: solved ? usedMin : null,

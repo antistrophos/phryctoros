@@ -283,6 +283,14 @@
       // huge, so the F1-dividend contrast is the right spend here too.
       plate: {
         shade: 0.32,
+        // corner_style "quadrant" = v3.1 amendment 2 (practitioner's mark):
+        // quadrant swap-target — saddle center is PROJECTIVELY EXACT (lines map
+        // to lines; the circle-center DLT's eccentricity bias vanishes), the
+        // swap circle at 0.5·r_out carries sizing + phase-flip verify, and the
+        // folded rendering orients every mark radially from plate center so
+        // diagonal corner pairs share polarity (roll mod 180 for free).
+        // Default stays "bullseye" — the frozen v3 contract's geometry.
+        corner_style: "bullseye",
         corners: { r_out: 0.40, at: 2.65 },
         center: { r_out: 0.60 },
         breaker: { r_in: 0.70, r_out: 0.80 },
@@ -382,6 +390,11 @@
       errors.push("corner bullseye " + pl.corners.r_out + " at ±" + pl.corners.at + " fails axis containment (needs " + (pl.corners.at + pl.corners.r_out).toFixed(3) + " vs half-size " + halfSizeUnits.toFixed(3) + ")");
     if (Math.hypot(pl.corners.at, pl.corners.at) - pl.corners.r_out < p.flat_circle_r + 0.03)
       errors.push("corner bullseye intrudes on the flat circle + 0.03 margin");
+    var cstyle = pl.corner_style || "bullseye";
+    if (cstyle !== "bullseye" && cstyle !== "quadrant")
+      errors.push("plate.corner_style must be \"bullseye\" (frozen v3) or \"quadrant\" (v3.1 amendment 2)");
+    if (cstyle === "quadrant")
+      warnings.push("corner_style quadrant is the v3.1 amendment-2 mark — pending the full v3.1 freeze; the frozen v3 contract's corners are bullseyes");
     if (pl.center.r_out + 0.02 > pl.breaker.r_in - beaconSum)
       errors.push("beacon excursion erodes the center-bullseye/breaker gap (0.60→0.70 must hold at worst wiggle)");
     if (pl.breaker.r_out + beaconSum > pl.quiet_r)

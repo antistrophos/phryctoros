@@ -9,6 +9,7 @@
   "use strict";
 
   function G() { return (typeof module !== "undefined" && module.exports) ? require("./geom.js") : global.OC.geom; }
+  function SD() { return (typeof module !== "undefined" && module.exports) ? require("./saddle.js") : global.OC.saddle; }
 
   var FC = 0.5 - 3.5 / 25; // 0.36
 
@@ -488,6 +489,32 @@
     // while the QR still reads.
     var pV3 = opts.profile;
     var isV3reg = !!(pV3 && pV3.bands && pV3.plate);
+    // v3.1 amendment 2: quadrant corners register SADDLE-FIRST — the
+    // constellation solve is pose-free and projectively exact, so it is the
+    // rung that survives angle (the interim envelope's 30°/45° walls). Single
+    // plate only for now (the 6-up constellation rides the tile-keyed work);
+    // any failure falls through to the rings/finder ladder unchanged.
+    if (isV3reg && pV3.plate.corner_style === "quadrant" && !opts.noSaddles) {
+      var layoutN = pV3.tiling || 1;
+      if (layoutN <= 1) {
+        var sres = SD().solve(img, pV3, opts.saddleOpts || {});
+        if (sres) {
+          var gS = G();
+          var pC = gS.applyH(sres.H, 0, 0);
+          var pX = gS.applyH(sres.H, pV3.flat_circle_r, 0);
+          var pY = gS.applyH(sres.H, 0, pV3.flat_circle_r);
+          var sEff = (Math.hypot(pX[0] - pC[0], pX[1] - pC[1]) +
+                      Math.hypot(pY[0] - pC[0], pY[1] - pC[1])) / 2;
+          var mkS = function (ux, uy) { var pq = gS.applyH(sres.H, ux, uy); return { x: pq[0], y: pq[1], unit: sEff / 25 }; };
+          var emS = {
+            H: sres.H, moduleSizePx: sEff / 25, fiducialWidthPx: sEff, chirality: 1,
+            corners: { TL: mkS(-FC, -FC), TR: mkS(FC, -FC), BL: mkS(-FC, FC) },
+            method: "saddles", timingScore: sres.bandContrast, structureScore: 1 - sres.phiErr / 0.7
+          };
+          return { emitters: [emS], candidates: [], method: "saddles" };
+        }
+      }
+    }
     // qr_persistent (diagnostic): the QR is guaranteed present, so the
     // finder path leads again (it is the perspective-capable one) and rings
     // return to being the fallback — the v2-proven order, deliberately.

@@ -202,6 +202,25 @@
     return covDisc > covRing ? covDisc : covRing;
   }
 
+  /* v3.1 amendment-2 corner mark: the quadrant swap-target. Dark where
+     dx·dy > 0 outside the swap circle (0.5R), polarity inverted inside it.
+     The saddle center is projectively exact (lines map to lines under H —
+     no eccentricity bias); the swap circle carries sizing + the phase-flip
+     verify. Coverage stays analytic: half-plane ramps multiply per quadrant
+     (exactly 0.5 on each axis, 0.5 at the crossing = a soft saddle), the
+     swap blends by ring membership. Callers pass FOLDED local coords at
+     plate corners (each mark oriented radially from plate center — diagonal
+     pairs share polarity) and ABSOLUTE offsets at gutter vertices (a third
+     φ2 class: vertex-vs-corner identity by phase). */
+  function quadrantCov(dx, dy, rr, R, scale, soft) {
+    var covDisc = clamp01((R - rr) * scale / soft + 0.5);
+    if (covDisc <= 0) return 0;
+    var sx = clamp01(dx * scale / soft + 0.5), sy = clamp01(dy * scale / soft + 0.5);
+    var q = sx * sy + (1 - sx) * (1 - sy);
+    var wIn = clamp01((0.5 * R - rr) * scale / soft + 0.5);
+    return (wIn * (1 - q) + (1 - wIn) * q) * covDisc;
+  }
+
   /* The v3 renderer. f is the EFFECTIVE frame (schedule position — the caller
      maps wall clock through timeline()). opts.countdown renders the freeze
      face: bands frozen at f, corners kept, center = envelope QR (the swap the
@@ -275,6 +294,7 @@
     }
 
     var cAt = pl.corners.at, cR = pl.corners.r_out;
+    var cornerQuad = pl.corner_style === "quadrant";
     var half = size / 2, d = img.data;
     for (var py = 0; py < size; py++) {
       var y = (py + 0.5 - half) / scale;
@@ -306,7 +326,8 @@
           var axc = (x < 0 ? -x : x) - cAt, ayc = (y < 0 ? -y : y) - cAt;
           if (axc >= -cR - pad && axc <= cR + pad && ayc >= -cR - pad && ayc <= cR + pad) {
             var rc = Math.sqrt(axc * axc + ayc * ayc);
-            var covK = bullseyeCov(rc, cR, scale, soft);
+            var covK = cornerQuad ? quadrantCov(axc, ayc, rc, cR, scale, soft)
+                                  : bullseyeCov(rc, cR, scale, soft);
             if (covK > 0) v = bg + (shade - bg) * covK;
           } else {
             for (var bi2 = 0; bi2 < bands.length; bi2++) {
@@ -428,6 +449,7 @@
     var vR = pl.corners.r_out;
 
     var cAt = pl.corners.at, cR = pl.corners.r_out;
+    var cornerQuad = pl.corner_style === "quadrant";
     var d = img.data, pitch = layout.pitch;
     for (var py = 0; py < hPx; py++) {
       var yG = (py + 0.5) / scale;
@@ -440,7 +462,8 @@
           var dvx = xG - verts[vi].x, dvy = yG - verts[vi].y;
           if (dvx >= -vR - pad && dvx <= vR + pad && dvy >= -vR - pad && dvy <= vR + pad) {
             var rv = Math.sqrt(dvx * dvx + dvy * dvy);
-            var covV = bullseyeCov(rv, vR, scale, soft);
+            var covV = cornerQuad ? quadrantCov(dvx, dvy, rv, vR, scale, soft)
+                                  : bullseyeCov(rv, vR, scale, soft);
             if (covV > 0) v = bg + (shade - bg) * covV;
             owned = true;
             break;
@@ -477,7 +500,8 @@
             var axc = (x < 0 ? -x : x) - cAt, ayc = (y < 0 ? -y : y) - cAt;
             if (axc >= -cR - pad && axc <= cR + pad && ayc >= -cR - pad && ayc <= cR + pad) {
               var rc = Math.sqrt(axc * axc + ayc * ayc);
-              var covK = bullseyeCov(rc, cR, scale, soft);
+              var covK = cornerQuad ? quadrantCov(axc, ayc, rc, cR, scale, soft)
+                                    : bullseyeCov(rc, cR, scale, soft);
               if (covK > 0) v = bg + (shade - bg) * covK;
             } else {
               var bands = bandsT[t];
@@ -630,6 +654,12 @@
           framesT.push({ f: ft, img: renderFrameV3Tiled(profile, ft, { trig: opts.trig, schedulesT: schedulesT, beaconSchedule: beaconSchedule, envBytes: envB }) });
         return { frames: framesT, schedulesT: schedulesT, beaconSchedule: beaconSchedule };
       }
+      // opts.payloadBytes triggers payload mode here exactly as in the tiled
+      // branch (it used to be tiled-only — an untiled payloadBytes sequence
+      // silently emitted the seeded REFERENCE stream: preamble locks, every
+      // droplet CRC fails; the T24 referee caught it).
+      if (opts.payloadBytes !== undefined && opts.payloadBytes !== null && !opts.carousels)
+        schedules = buildSchedules(profile, n, FN().encodeCarousels(profile, opts.payloadBytes).carousels);
       var frames3 = [];
       for (var f3 = 0; f3 < n; f3++)
         frames3.push({ f: f3, img: renderFrameV3(profile, f3, { trig: opts.trig, schedules: schedules, beaconSchedule: beaconSchedule, envBytes: envB }) });
@@ -659,7 +689,7 @@
     isV3: isV3, envelopeBytes: envelopeBytes, envelopeModules: envelopeModules,
     beaconSymbols: beaconSymbols, buildBeaconSchedule: buildBeaconSchedule,
     timeline: timeline, renderFrameV3: renderFrameV3, renderFrameV3Tiled: renderFrameV3Tiled,
-    tileLayout: tileLayout, centerMeans: centerMeans, bullseyeCov: bullseyeCov
+    tileLayout: tileLayout, centerMeans: centerMeans, bullseyeCov: bullseyeCov, quadrantCov: quadrantCov
   };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   global.OC = global.OC || {}; global.OC.emission = API;

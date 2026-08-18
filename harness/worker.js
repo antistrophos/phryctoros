@@ -10,7 +10,7 @@
 importScripts(
   "../src/prng.js", "../src/dtrig.js", "../src/geom.js", "../src/flicker.js",
   "../src/profile.js", "../src/emission.js", "../src/register.js",
-  "../src/plate.js", "../src/sample.js", "../src/conic.js",
+  "../src/plate.js", "../src/saddle.js", "../src/sample.js", "../src/conic.js",
   "../src/transform.js", "../src/separate.js", "../src/rowtime.js",
   "../src/demap.js", "../src/fountain.js", "../src/harvest.js",
   "../src/ser.js", "../src/degrade.js", "../src/pipeline.js"

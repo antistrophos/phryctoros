@@ -1,6 +1,9 @@
 # Field footage stays local: personal environment in frame, and heavy.
 clips/
 
+# Per-run suite verdicts posted by the pages (machine-local artifacts).
+harness/results/
+
 __pycache__/
 *.pyc
 .DS_Store
