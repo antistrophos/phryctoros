@@ -460,6 +460,35 @@ async function main() {
       "preset " + auto.preset + " passes " + auto.passes);
   }
 
+  await tick("T22k: inverted M-ladder trial — mirror integrity + full round-trip…");
+  {
+    // v3.1 TRIAL preset (practitioner's, field-motivated 2026-08-18): the four
+    // edge configs mirror across radii — base (M=4) innermost with the deepest
+    // harmonic ladder, M=16 outermost. Rates move WITH the configs so every
+    // k·f_rot flicker product is preserved exactly.
+    const pI = OC.profile.profileV3("inverted");
+    const vI = OC.profile.validate(pI);
+    const a0i = pI.annuli[0], a3i = pI.annuli[3];
+    const sums = pI.annuli.map(a => a.boundary.amplitudes.reduce((s, x) => s + x, 0));
+    const mirrorOk = a0i.rotation.M === 4 && a0i.layer === 0 && a0i.rotation.nominal_hz === 1.5 &&
+      a0i.boundary.harmonics.length === 3 &&
+      a3i.rotation.M === 16 && a3i.layer === 3 && a3i.rotation.nominal_hz === 0.75 &&
+      a3i.boundary.harmonics.length === 6 && a3i.boundary.harmonics.includes(13) &&
+      sums.every(s => Math.abs(s - 0.090) < 1e-9);
+    let seqI = OC.emission.renderSequence(pI, 200, { payloadBytes: OC.fountain.textToBytes("V3!") });
+    const rI = OC.pipeline.decodeSequence(seqI.frames, pI, { payload: true });
+    seqI = null;
+    const emI = rI.error ? null : rI.emitters[0];
+    const payI = emI && emI.payload;
+    record("T22k inverted ladder: validates clean, the mirror holds (base innermost at 1.5 Hz with the k≤13 ladder, M=16 outermost at 0.75 Hz), and the payload round-trips on all four rings",
+      !!(vI.ok && mirrorOk && emI && payI && payI.ok === true && payI.text === "V3!" &&
+         emI.annuli.every(a => !a.beacon && a.dropletsPassed > 0)),
+      "valid " + vI.ok + " mirror " + mirrorOk +
+      (emI ? " droplets " + emI.annuli.map(a => a.dropletsPassed).join("/") +
+             " → " + JSON.stringify(payI && { ok: payI.ok, text: payI.text })
+           : " no emitter: " + JSON.stringify(rI).slice(0, 120)));
+  }
+
   // ——— T23: tiling (§7) — the density knob, tile identity, the cross-tile pool ———
   await tick("T23a: 6-up render geometry (designated tile, gutter vertices, per-tile gauge)…");
   {

@@ -219,10 +219,11 @@
      the base edge never upgrades (must-decode tier + the M≤4 carrier gate). */
   function profileV3(preset, overrides) {
     var hi = preset === "high-rate";
+    var inv = preset === "inverted";
     var p = {
-      profile_version: hi ? "v3-hr" : "v3",
+      profile_version: hi ? "v3-hr" : (inv ? "v3-inv" : "v3"),
       units: "flat-circle-3.00",
-      preset: hi ? "high-rate" : "resilient",
+      preset: hi ? "high-rate" : (inv ? "resilient-inverted" : "resilient"),
       frame_rate_hz: 30,            // §7: 30 fps emission @ 60 fps capture baseline
       render: {
         size_px: 1024,
@@ -311,6 +312,24 @@
         { index: 3, role: "enhancement" }    // A-outer (close-range)
       ]
     };
+    // v3.1 TRIAL "inverted" (practitioner's, 2026-08-18, field-motivated: at
+    // range under saddle tracking the innermost edge out-delivered base by
+    // ~9 dB — registration error is radius-leveraged, and base's 12-symbol
+    // droplets die first at marginal SNR): mirror the four edge CONFIGS
+    // across radii — constellation, harmonic set, amplitudes, AND rotation
+    // rate move together; only geometry (r0, crossing, bands) stays put.
+    // Every k·f_rot flicker product is preserved exactly, and base inherits
+    // the deepest branch-guide ladder (k≤13). Base = innermost: layer 0 at
+    // annulus 0, matching the D-ring's coarse-near-center radial semantics.
+    if (inv) {
+      var cfgs = p.annuli.map(function (a) { return { rotation: a.rotation, boundary: a.boundary }; });
+      for (var iv = 0; iv < p.annuli.length; iv++) {
+        var srcC = cfgs[p.annuli.length - 1 - iv];
+        p.annuli[iv].rotation = srcC.rotation;
+        p.annuli[iv].boundary = srcC.boundary;
+        p.annuli[iv].layer = iv;
+      }
+    }
     if (overrides) deepMerge(p, overrides);
     return p;
   }
