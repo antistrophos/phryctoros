@@ -59,6 +59,7 @@
     <option value="6">6-up (3×2, the docked desk mode)</option>
   </select></label>
   <label style="margin-left:.8rem"><input id="qrPersChk" type="checkbox"> diagnostic: persistent center QR (angled-capture lock until saddle registration lands; off-contract)</label>
+  <label style="margin-left:.8rem"><input id="quadChk" type="checkbox"> v3.1: quadrant corner targets (amendment 2 — saddle registration)</label>
 </p>
 <details open><summary>Emission profile (JSON, editable)</summary>
   <textarea id="profileTxt"></textarea>
@@ -217,6 +218,42 @@ function bullseyeLive(ctx, cx, cy, Rpx, shade, bg) {
   ctx.fillStyle = gray(shade); ctx.beginPath(); ctx.arc(cx, cy, 0.4 * Rpx, 0, 2 * Math.PI); ctx.fill();
 }
 
+/* v3.1 amendment-2 quadrant swap-target, canvas twin of emission.quadrantCov:
+   dark bowtie sectors, polarity inverted inside the swap circle at 0.5R.
+   flip=false → dark where Δx·Δy > 0 (sectors [0,90°] and [180°,270°], canvas
+   y-down); flip=true rotates the dark pair 90° — the FOLD's mirroring, so
+   diagonal plate corners share polarity and adjacent ones differ. */
+function quadrantLive(ctx, cx, cy, Rpx, shade, bg, flip) {
+  const a0 = flip ? Math.PI / 2 : 0;
+  ctx.fillStyle = gray(bg);
+  ctx.beginPath(); ctx.arc(cx, cy, Rpx, 0, 2 * Math.PI); ctx.fill();
+  ctx.fillStyle = gray(shade);
+  for (const s of [0, Math.PI]) {
+    ctx.beginPath(); ctx.moveTo(cx, cy);
+    ctx.arc(cx, cy, Rpx, a0 + s, a0 + s + Math.PI / 2); ctx.closePath(); ctx.fill();
+  }
+  const r2 = 0.5 * Rpx;
+  ctx.fillStyle = gray(bg);
+  for (const s of [0, Math.PI]) {
+    ctx.beginPath(); ctx.moveTo(cx, cy);
+    ctx.arc(cx, cy, r2, a0 + s, a0 + s + Math.PI / 2); ctx.closePath(); ctx.fill();
+  }
+  ctx.fillStyle = gray(shade);
+  for (const s of [Math.PI / 2, 3 * Math.PI / 2]) {
+    ctx.beginPath(); ctx.moveTo(cx, cy);
+    ctx.arc(cx, cy, r2, a0 + s, a0 + s + Math.PI / 2); ctx.closePath(); ctx.fill();
+  }
+}
+
+/* Corner/vertex mark dispatch: quadrant when the profile says so. flip
+   follows the fold (corners: sx·sy < 0; vertices draw unfolded = false). */
+function plateMarkLive(ctx, cx, cy, Rpx, shade, bg, flip) {
+  if (profile.plate && profile.plate.corner_style === "quadrant")
+    quadrantLive(ctx, cx, cy, Rpx, shade, bg, !!flip);
+  else
+    bullseyeLive(ctx, cx, cy, Rpx, shade, bg);
+}
+
 function v3PlateBase(ctx, f, cx, cy, sched) {
   // one tile's bands + corners at (cx, cy); center face differs by caller
   const R = profile.render, scale = R.scale_px_per_unit;
@@ -259,8 +296,8 @@ function v3PlateBase(ctx, f, cx, cy, sched) {
     ctx.fill(path, "evenodd");
   });
   for (const sx of [-1, 1]) for (const sy of [-1, 1])
-    bullseyeLive(ctx, cx + sx * pl.corners.at * scale, cy + sy * pl.corners.at * scale,
-                 pl.corners.r_out * scale, shade, R.background);
+    plateMarkLive(ctx, cx + sx * pl.corners.at * scale, cy + sy * pl.corners.at * scale,
+                  pl.corners.r_out * scale, shade, R.background, sx * sy < 0);
   return { scale, pl, shade };
 }
 
@@ -325,11 +362,11 @@ function drawFrameV3(f) {
     }
   });
   if (layout.n > 1 && pl0) {
-    // interior gutter-vertex bullseyes on the shared lattice (§5)
+    // interior gutter-vertex marks on the shared lattice (§5; unfolded)
     for (let vc = 1; vc < layout.cols; vc++)
       for (let vr = 1; vr < layout.rows; vr++)
-        bullseyeLive(ctx, vc * layout.pitch * scale, vr * layout.pitch * scale,
-                     pl0.corners.r_out * scale, shade0, R.background);
+        plateMarkLive(ctx, vc * layout.pitch * scale, vr * layout.pitch * scale,
+                      pl0.corners.r_out * scale, shade0, R.background, false);
   }
 }
 
@@ -348,8 +385,8 @@ function drawCountdownV3(f, secsLeft) {
   if (layout.n > 1 && pl0) {
     for (let vc = 1; vc < layout.cols; vc++)
       for (let vr = 1; vr < layout.rows; vr++)
-        bullseyeLive(ctx, vc * layout.pitch * scale, vr * layout.pitch * scale,
-                     pl0.corners.r_out * scale, shade0, R.background);
+        plateMarkLive(ctx, vc * layout.pitch * scale, vr * layout.pitch * scale,
+                      pl0.corners.r_out * scale, shade0, R.background, false);
   }
   // small digit in the designated tile's vacant beacon zone; page chrome
   ctx.fillStyle = gray(profile.render.fill);
@@ -460,6 +497,7 @@ function startV3() {
   profile.countdown.freeze_s = Math.max(1, Math.min(+$("cdSecs").value || 3, profile.countdown.loop_s - 1));
   profile.tiling = +$("tileSel").value || 1;
   profile.qr_persistent = $("qrPersChk").checked;
+  profile.plate.corner_style = $("quadChk").checked ? "quadrant" : "bullseye";
   profile.session32 = (Math.random() * 4294967296) >>> 0;
   const layout = OC.emission.tileLayout(profile);
   let carousels = null, envInfo = null, payloadBytes = null;

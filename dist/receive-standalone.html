@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- single-file build 2026-08-16 — regenerate with build_standalone.py -->
+<!-- single-file build 2026-08-17 — regenerate with build_standalone.py -->
 
 <html lang="en">
 <head>
@@ -35,7 +35,7 @@
   <label>handheld <input id="m_hand" type="checkbox" checked></label>
   <label>emitter loop (s) <input id="m_loop" type="number" value="60" style="width:4rem"></label>
   <label>profile <select id="m_prof"><option value="v2">v2 (current)</option><option value="v2p">v2 + payload (Phase 1)</option><option value="v20">v2 @20 fps</option><option value="v20p">v2 @20 fps + payload</option><option value="v30">v2 @30 fps</option><option value="v30p">v2 @30 fps + payload</option><option value="v3">V3 resilient (payload; film at 60 fps)</option><option value="v3hr">V3 high-rate (payload; film at 60 fps)</option><option value="v3a">V3 auto-detect preset (payload)</option><option value="v1">v1 (legacy clips)</option></select></label>
-  <label id="v3opts" style="display:none"><input id="m_solve" type="checkbox" checked> plate solve <input id="m_beacon" type="checkbox" checked> beacon</label>
+  <label id="v3opts" style="display:none"><input id="m_solve" type="checkbox" checked> plate solve <input id="m_beacon" type="checkbox" checked> beacon <input id="m_quad" type="checkbox"> quadrant corners (v3.1)</label>
   <label>capture fps <select id="m_capfps"><option value="30">30</option><option value="60">60</option></select></label>
   <label>notes <input id="m_notes" style="width:12rem"></label>
 </fieldset>
@@ -654,6 +654,14 @@
       // huge, so the F1-dividend contrast is the right spend here too.
       plate: {
         shade: 0.32,
+        // corner_style "quadrant" = v3.1 amendment 2 (practitioner's mark):
+        // quadrant swap-target — saddle center is PROJECTIVELY EXACT (lines map
+        // to lines; the circle-center DLT's eccentricity bias vanishes), the
+        // swap circle at 0.5·r_out carries sizing + phase-flip verify, and the
+        // folded rendering orients every mark radially from plate center so
+        // diagonal corner pairs share polarity (roll mod 180 for free).
+        // Default stays "bullseye" — the frozen v3 contract's geometry.
+        corner_style: "bullseye",
         corners: { r_out: 0.40, at: 2.65 },
         center: { r_out: 0.60 },
         breaker: { r_in: 0.70, r_out: 0.80 },
@@ -753,6 +761,11 @@
       errors.push("corner bullseye " + pl.corners.r_out + " at ±" + pl.corners.at + " fails axis containment (needs " + (pl.corners.at + pl.corners.r_out).toFixed(3) + " vs half-size " + halfSizeUnits.toFixed(3) + ")");
     if (Math.hypot(pl.corners.at, pl.corners.at) - pl.corners.r_out < p.flat_circle_r + 0.03)
       errors.push("corner bullseye intrudes on the flat circle + 0.03 margin");
+    var cstyle = pl.corner_style || "bullseye";
+    if (cstyle !== "bullseye" && cstyle !== "quadrant")
+      errors.push("plate.corner_style must be \"bullseye\" (frozen v3) or \"quadrant\" (v3.1 amendment 2)");
+    if (cstyle === "quadrant")
+      warnings.push("corner_style quadrant is the v3.1 amendment-2 mark — pending the full v3.1 freeze; the frozen v3 contract's corners are bullseyes");
     if (pl.center.r_out + 0.02 > pl.breaker.r_in - beaconSum)
       errors.push("beacon excursion erodes the center-bullseye/breaker gap (0.60→0.70 must hold at worst wiggle)");
     if (pl.breaker.r_out + beaconSum > pl.quiet_r)
@@ -1025,6 +1038,25 @@
     return covDisc > covRing ? covDisc : covRing;
   }
 
+  /* v3.1 amendment-2 corner mark: the quadrant swap-target. Dark where
+     dx·dy > 0 outside the swap circle (0.5R), polarity inverted inside it.
+     The saddle center is projectively exact (lines map to lines under H —
+     no eccentricity bias); the swap circle carries sizing + the phase-flip
+     verify. Coverage stays analytic: half-plane ramps multiply per quadrant
+     (exactly 0.5 on each axis, 0.5 at the crossing = a soft saddle), the
+     swap blends by ring membership. Callers pass FOLDED local coords at
+     plate corners (each mark oriented radially from plate center — diagonal
+     pairs share polarity) and ABSOLUTE offsets at gutter vertices (a third
+     φ2 class: vertex-vs-corner identity by phase). */
+  function quadrantCov(dx, dy, rr, R, scale, soft) {
+    var covDisc = clamp01((R - rr) * scale / soft + 0.5);
+    if (covDisc <= 0) return 0;
+    var sx = clamp01(dx * scale / soft + 0.5), sy = clamp01(dy * scale / soft + 0.5);
+    var q = sx * sy + (1 - sx) * (1 - sy);
+    var wIn = clamp01((0.5 * R - rr) * scale / soft + 0.5);
+    return (wIn * (1 - q) + (1 - wIn) * q) * covDisc;
+  }
+
   /* The v3 renderer. f is the EFFECTIVE frame (schedule position — the caller
      maps wall clock through timeline()). opts.countdown renders the freeze
      face: bands frozen at f, corners kept, center = envelope QR (the swap the
@@ -1098,6 +1130,7 @@
     }
 
     var cAt = pl.corners.at, cR = pl.corners.r_out;
+    var cornerQuad = pl.corner_style === "quadrant";
     var half = size / 2, d = img.data;
     for (var py = 0; py < size; py++) {
       var y = (py + 0.5 - half) / scale;
@@ -1129,7 +1162,8 @@
           var axc = (x < 0 ? -x : x) - cAt, ayc = (y < 0 ? -y : y) - cAt;
           if (axc >= -cR - pad && axc <= cR + pad && ayc >= -cR - pad && ayc <= cR + pad) {
             var rc = Math.sqrt(axc * axc + ayc * ayc);
-            var covK = bullseyeCov(rc, cR, scale, soft);
+            var covK = cornerQuad ? quadrantCov(axc, ayc, rc, cR, scale, soft)
+                                  : bullseyeCov(rc, cR, scale, soft);
             if (covK > 0) v = bg + (shade - bg) * covK;
           } else {
             for (var bi2 = 0; bi2 < bands.length; bi2++) {
@@ -1251,6 +1285,7 @@
     var vR = pl.corners.r_out;
 
     var cAt = pl.corners.at, cR = pl.corners.r_out;
+    var cornerQuad = pl.corner_style === "quadrant";
     var d = img.data, pitch = layout.pitch;
     for (var py = 0; py < hPx; py++) {
       var yG = (py + 0.5) / scale;
@@ -1263,7 +1298,8 @@
           var dvx = xG - verts[vi].x, dvy = yG - verts[vi].y;
           if (dvx >= -vR - pad && dvx <= vR + pad && dvy >= -vR - pad && dvy <= vR + pad) {
             var rv = Math.sqrt(dvx * dvx + dvy * dvy);
-            var covV = bullseyeCov(rv, vR, scale, soft);
+            var covV = cornerQuad ? quadrantCov(dvx, dvy, rv, vR, scale, soft)
+                                  : bullseyeCov(rv, vR, scale, soft);
             if (covV > 0) v = bg + (shade - bg) * covV;
             owned = true;
             break;
@@ -1300,7 +1336,8 @@
             var axc = (x < 0 ? -x : x) - cAt, ayc = (y < 0 ? -y : y) - cAt;
             if (axc >= -cR - pad && axc <= cR + pad && ayc >= -cR - pad && ayc <= cR + pad) {
               var rc = Math.sqrt(axc * axc + ayc * ayc);
-              var covK = bullseyeCov(rc, cR, scale, soft);
+              var covK = cornerQuad ? quadrantCov(axc, ayc, rc, cR, scale, soft)
+                                    : bullseyeCov(rc, cR, scale, soft);
               if (covK > 0) v = bg + (shade - bg) * covK;
             } else {
               var bands = bandsT[t];
@@ -1453,6 +1490,12 @@
           framesT.push({ f: ft, img: renderFrameV3Tiled(profile, ft, { trig: opts.trig, schedulesT: schedulesT, beaconSchedule: beaconSchedule, envBytes: envB }) });
         return { frames: framesT, schedulesT: schedulesT, beaconSchedule: beaconSchedule };
       }
+      // opts.payloadBytes triggers payload mode here exactly as in the tiled
+      // branch (it used to be tiled-only — an untiled payloadBytes sequence
+      // silently emitted the seeded REFERENCE stream: preamble locks, every
+      // droplet CRC fails; the T24 referee caught it).
+      if (opts.payloadBytes !== undefined && opts.payloadBytes !== null && !opts.carousels)
+        schedules = buildSchedules(profile, n, FN().encodeCarousels(profile, opts.payloadBytes).carousels);
       var frames3 = [];
       for (var f3 = 0; f3 < n; f3++)
         frames3.push({ f: f3, img: renderFrameV3(profile, f3, { trig: opts.trig, schedules: schedules, beaconSchedule: beaconSchedule, envBytes: envB }) });
@@ -1482,7 +1525,7 @@
     isV3: isV3, envelopeBytes: envelopeBytes, envelopeModules: envelopeModules,
     beaconSymbols: beaconSymbols, buildBeaconSchedule: buildBeaconSchedule,
     timeline: timeline, renderFrameV3: renderFrameV3, renderFrameV3Tiled: renderFrameV3Tiled,
-    tileLayout: tileLayout, centerMeans: centerMeans, bullseyeCov: bullseyeCov
+    tileLayout: tileLayout, centerMeans: centerMeans, bullseyeCov: bullseyeCov, quadrantCov: quadrantCov
   };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   global.OC = global.OC || {}; global.OC.emission = API;
@@ -1502,6 +1545,7 @@
   "use strict";
 
   function G() { return (typeof module !== "undefined" && module.exports) ? require("./geom.js") : global.OC.geom; }
+  function SD() { return (typeof module !== "undefined" && module.exports) ? require("./saddle.js") : global.OC.saddle; }
 
   var FC = 0.5 - 3.5 / 25; // 0.36
 
@@ -1981,6 +2025,32 @@
     // while the QR still reads.
     var pV3 = opts.profile;
     var isV3reg = !!(pV3 && pV3.bands && pV3.plate);
+    // v3.1 amendment 2: quadrant corners register SADDLE-FIRST — the
+    // constellation solve is pose-free and projectively exact, so it is the
+    // rung that survives angle (the interim envelope's 30°/45° walls). Single
+    // plate only for now (the 6-up constellation rides the tile-keyed work);
+    // any failure falls through to the rings/finder ladder unchanged.
+    if (isV3reg && pV3.plate.corner_style === "quadrant" && !opts.noSaddles) {
+      var layoutN = pV3.tiling || 1;
+      if (layoutN <= 1) {
+        var sres = SD().solve(img, pV3, opts.saddleOpts || {});
+        if (sres) {
+          var gS = G();
+          var pC = gS.applyH(sres.H, 0, 0);
+          var pX = gS.applyH(sres.H, pV3.flat_circle_r, 0);
+          var pY = gS.applyH(sres.H, 0, pV3.flat_circle_r);
+          var sEff = (Math.hypot(pX[0] - pC[0], pX[1] - pC[1]) +
+                      Math.hypot(pY[0] - pC[0], pY[1] - pC[1])) / 2;
+          var mkS = function (ux, uy) { var pq = gS.applyH(sres.H, ux, uy); return { x: pq[0], y: pq[1], unit: sEff / 25 }; };
+          var emS = {
+            H: sres.H, moduleSizePx: sEff / 25, fiducialWidthPx: sEff, chirality: 1,
+            corners: { TL: mkS(-FC, -FC), TR: mkS(FC, -FC), BL: mkS(-FC, FC) },
+            method: "saddles", timingScore: sres.bandContrast, structureScore: 1 - sres.phiErr / 0.7
+          };
+          return { emitters: [emS], candidates: [], method: "saddles" };
+        }
+      }
+    }
     // qr_persistent (diagnostic): the QR is guaranteed present, so the
     // finder path leads again (it is the perspective-capable one) and rings
     // return to being the fallback — the v2-proven order, deliberately.
@@ -2056,13 +2126,14 @@
   "use strict";
 
   function G() { return (typeof module !== "undefined" && module.exports) ? require("./geom.js") : global.OC.geom; }
+  function SM() { return (typeof module !== "undefined" && module.exports) ? require("./sample.js") : global.OC.sample; }
 
   var TAU = Math.PI * 2;
 
   /* Fit one circle edge around center (cx,cy) px: per-angle subpixel crossing
      nearest rExp px (searched within ±tol·rExp), direction "up" (dark→light
      walking outward) or "down". Returns { n, mean, dx, dy } px or null. */
-  function fitCircleEdge(img, cx, cy, rExp, dir, tol, NANG) {
+  function fitCircleEdge(img, cx, cy, rExp, dir, tol, NANG, floor) {
     var g = G();
     var norm = img.norm || 1;
     var lo = rExp * (1 - tol), hi = rExp * (1 + tol);
@@ -2098,7 +2169,7 @@
       sum += rEdge;
       sxr += rEdge * ct; syr += rEdge * st; sct += ct; sst += st;
     }
-    if (found < NANG * 0.55) return null;
+    if (found < NANG * (floor || 0.55)) return null;
     var mean = sum / found;
     // First radial harmonic ≈ center offset (the ring-reg refine identity).
     // Subtract the mean's projection so missing angles (Σcosθ ≠ 0 over a
@@ -2118,11 +2189,15 @@
     var sPx = (Math.hypot(u1[0] - o[0], u1[1] - o[1]) + Math.hypot(u2[0] - o[0], u2[1] - o[1])) / 2;
     var cx = p0[0], cy = p0[1];
     var NANG = opts.NANG || 40;
+    // A dark surround (screen bezel) can crush the outward-facing half of a
+    // peripheral bullseye's fits — the gauge's field42 lesson. Callers near
+    // the canvas edge pass a lower floor; the ratio verify stays the guard.
+    var eFloor = opts.edgeFloor || 0.55;
     var edges = null;
     for (var it = 0; it < 3; it++) {
-      var e1 = fitCircleEdge(img, cx, cy, 0.4 * R * sPx, "up", 0.35, NANG);
-      var e2 = fitCircleEdge(img, cx, cy, 0.6 * R * sPx, "down", 0.28, NANG);
-      var e3 = fitCircleEdge(img, cx, cy, 1.0 * R * sPx, "up", 0.22, NANG);
+      var e1 = fitCircleEdge(img, cx, cy, 0.4 * R * sPx, "up", 0.35, NANG, eFloor);
+      var e2 = fitCircleEdge(img, cx, cy, 0.6 * R * sPx, "down", 0.28, NANG, eFloor);
+      var e3 = fitCircleEdge(img, cx, cy, 1.0 * R * sPx, "up", 0.22, NANG, eFloor);
       var got = [e1, e2, e3].filter(function (e) { return e; });
       if (got.length < 2) return null;
       var dx = 0, dy = 0;
@@ -2188,6 +2263,52 @@
       Hwork[5] += c0.cy - oW[1];
     }
 
+    // Stage 1b — the FLAT GAUGE as stage-1's substitute when the center
+    // bullseye is absent (qr_persistent: the QR sits there). The first anchor
+    // attempt (H-derived point, fires after 3 corners verify) failed in the
+    // field at 0/601 — the failure was UPSTREAM: without a measured
+    // center+scale, corners seed from the raw static H and ≤2 verify. §4's
+    // unmodulated outer circle is present in every variant and radially
+    // symmetric: fit it per frame (k=1 center + mean-radius scale, the
+    // ring-reg refine identity), fold the measurement into Hwork, THEN seek
+    // corners — and its measured center becomes the fifth correspondence.
+    var gaugeC = null;
+    if (!c0 && opts.hCenter) {
+      var flatA = { r0: profile.flat_circle_r, crossing: "up",
+                    boundary: { harmonics: [], amplitudes: [0.06], phases_deg: [] } };
+      var Hg = H;
+      for (var gi = 0; gi < 3; gi++) {
+        var sb = SM().sampleBoundary(img, Hg, flatA);
+        // Floor 0.35, not 0.5: with a dark screen surround the gray margin
+        // beyond 3.00 is a ~5 px sliver and bezel-adjacent angles lose the
+        // crossing — field42 measured 41% coverage with mean 2.988 (accurate
+        // where found). The mean-sanity gate below keeps a low-coverage
+        // decoy arc from impersonating the gauge.
+        if (sb.found < sb.N * 0.35) { Hg = null; break; }
+        var n9 = 0, mean9 = 0, sct9 = 0, sst9 = 0, sxr9 = 0, syr9 = 0;
+        for (var i9 = 0; i9 < sb.N; i9++) {
+          if (isNaN(sb.r[i9])) continue;
+          var th9 = TAU * i9 / sb.N, ct9 = Math.cos(th9), st9 = Math.sin(th9);
+          mean9 += sb.r[i9]; sxr9 += sb.r[i9] * ct9; syr9 += sb.r[i9] * st9;
+          sct9 += ct9; sst9 += st9; n9++;
+        }
+        mean9 /= n9;
+        if (Math.abs(mean9 - profile.flat_circle_r) > 0.2) { Hg = null; break; }
+        var dxU = 2 * (sxr9 - mean9 * sct9) / n9, dyU = 2 * (syr9 - mean9 * sst9) / n9;
+        var kG = mean9 / profile.flat_circle_r;
+        // compose Hg ∘ [k,0,dx; 0,k,dy; 0,0,1] — unit-domain scale+shift
+        Hg = [Hg[0] * kG, Hg[1] * kG, Hg[0] * dxU + Hg[1] * dyU + Hg[2],
+              Hg[3] * kG, Hg[4] * kG, Hg[3] * dxU + Hg[4] * dyU + Hg[5],
+              Hg[6] * kG, Hg[7] * kG, Hg[6] * dxU + Hg[7] * dyU + Hg[8]];
+        if (Math.abs(dxU) < 0.003 && Math.abs(dyU) < 0.003 && Math.abs(kG - 1) < 0.003) break;
+      }
+      if (Hg) {
+        Hwork = Hg;
+        var gp = g.applyH(Hg, 0, 0);
+        gaugeC = { cx: gp[0], cy: gp[1] };
+      }
+    }
+
     // Stage 2: corners from the corrected seed.
     var wantC = [
       { ux: pl.corners.at, uy: pl.corners.at },
@@ -2197,9 +2318,16 @@
     ];
     for (var i = 0; i < wantC.length; i++) {
       var w = wantC[i];
-      var b = findBullseye(img, Hwork, w.ux, w.uy, pl.corners.r_out, {});
+      var b = findBullseye(img, Hwork, w.ux, w.uy, pl.corners.r_out, { edgeFloor: 0.4 });
       points.push(b ? { ux: w.ux, uy: w.uy, cx: b.cx, cy: b.cy } : null);
       if (b) { src.push([w.ux, w.uy]); dst.push([b.cx, b.cy]); }
+    }
+    // The gauge center as the fifth correspondence when a corner is missing:
+    // MEASURED (the flat-circle k=1 fit), not H-derived. Four verified
+    // corners still solve alone — no center drag when none is needed.
+    if (gaugeC && src.length === (opts.minPoints || 4) - 1) {
+      src.unshift([0, 0]); dst.unshift([gaugeC.cx, gaugeC.cy]);
+      points[0] = { ux: 0, uy: 0, cx: gaugeC.cx, cy: gaugeC.cy, anchor: "gauge" };
     }
     if (src.length < (opts.minPoints || 4)) return null;
     var Hs = g.homographyFromPointsN(src, dst);
@@ -2277,6 +2405,486 @@
               beaconAnnulus: beaconAnnulus, beaconDecode: beaconDecode };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   global.OC = global.OC || {}; global.OC.plate = API;
+})(typeof window !== "undefined" ? window : globalThis);
+
+</script>
+<script>
+/* inlined: saddle.js */
+/* saddle.js — quadrant swap-target detection + constellation solve
+   (v3.1 amendment 2: saddle-first registration).
+
+   The mark: a disc of radius R whose quadrants alternate shade/background,
+   polarity inverted inside the swap circle at 0.5R (emission.quadrantCov).
+   Three properties carry the whole design:
+     1. The crossing point is PROJECTIVELY EXACT — the two boundary lines map
+        to lines under any homography, so their intersection is the true
+        projected center. No eccentricity bias (the failure that killed the
+        circle-center DLT at angle).
+     2. The pattern is CENTRALLY SYMMETRIC, and central symmetry survives any
+        linear map — so odd angular harmonics vanish at ANY pose. The
+        detector's |c2| >> |c1|,|c3| gate is tilt-immune, and it is the
+        anti-decoy discriminator: QR corners and texture junk have no such
+        symmetry.
+     3. The swap circle gives a radial 2nd-harmonic profile with two lobes in
+        ANTI-PHASE — a signature no accidental saddle (QR module diagonals
+        included) reproduces, plus a size estimate (flip radius = 0.5R).
+
+   Detection: pyramid ring-response scan (16-point rings, radius 5px/level)
+   → per-candidate radial-profile verify → cross-selective Förstner subpixel
+   (gradients on the crossing lines vote for the center; ring/ellipse edges,
+   whose gradients run radial, are weighted out — keeping the refined point
+   exact under tilt). Constellation: 4-subset enumeration ordered by angle,
+   scored by the fold's φ2 pattern (each plate corner is oriented radially
+   from plate center, so diagonal pairs share polarity — roll resolves mod
+   180°, which DPSK absorbs) + per-corner scale coherence + a flat-circle
+   band-contrast gate. Mirrored captures produce reversed winding and fall
+   through to ring registration, which is mirror-invariant. */
+(function (global) {
+  "use strict";
+
+  function G() { return (typeof module !== "undefined" && module.exports) ? require("./geom.js") : global.OC.geom; }
+
+  var NS = 16, RESP_RHO = 5;
+  var COS = [], SIN = [], C1R = [], C1I = [], C2R = [], C2I = [], C3R = [], C3I = [];
+  (function () {
+    for (var k = 0; k < NS; k++) {
+      var th = 2 * Math.PI * k / NS;
+      COS.push(Math.cos(th)); SIN.push(Math.sin(th));
+      C1R.push(Math.cos(th)); C1I.push(-Math.sin(th));
+      C2R.push(Math.cos(2 * th)); C2I.push(-Math.sin(2 * th));
+      C3R.push(Math.cos(3 * th)); C3I.push(-Math.sin(3 * th));
+    }
+  })();
+
+  function wrapPi(a) {
+    while (a > Math.PI) a -= 2 * Math.PI;
+    while (a < -Math.PI) a += 2 * Math.PI;
+    return a;
+  }
+
+  /* Angular harmonics 1..3 on a 16-sample ring about (cx, cy). Returns null
+     when the ring leaves the frame. phi2 = arg Σ (I−mean)·e^{−2iθ}; for a
+     quadrant mark whose DARK diagonal sits at image angle β this reads
+     π − 2β (asserted empirically by T24b — the convention the constellation
+     scorer encodes). */
+  function ringHarm(img, cx, cy, rho) {
+    var w = img.w, h = img.h, d = img.data;
+    if (cx - rho < 1 || cy - rho < 1 || cx + rho >= w - 2 || cy + rho >= h - 2) return null;
+    var vals = new Float64Array(NS), m = 0;
+    for (var k = 0; k < NS; k++) {
+      var x = cx + rho * COS[k], y = cy + rho * SIN[k];
+      var x0 = Math.floor(x), y0 = Math.floor(y), fx = x - x0, fy = y - y0;
+      var o = y0 * w + x0;
+      var v = d[o] * (1 - fx) * (1 - fy) + d[o + 1] * fx * (1 - fy) +
+              d[o + w] * (1 - fx) * fy + d[o + w + 1] * fx * fy;
+      vals[k] = v; m += v;
+    }
+    m /= NS;
+    var a1r = 0, a1i = 0, a2r = 0, a2i = 0, a3r = 0, a3i = 0, ss = 0;
+    for (var q = 0; q < NS; q++) {
+      var dv = vals[q] - m;
+      ss += dv * dv;
+      a1r += dv * C1R[q]; a1i += dv * C1I[q];
+      a2r += dv * C2R[q]; a2i += dv * C2I[q];
+      a3r += dv * C3R[q]; a3i += dv * C3I[q];
+    }
+    var s = 2 / NS;
+    return { mean: m, rms: Math.sqrt(ss / NS),
+             m1: Math.hypot(a1r, a1i) * s, m2: Math.hypot(a2r, a2i) * s, m3: Math.hypot(a3r, a3i) * s,
+             re2: a2r * s, im2: a2i * s, phi2: Math.atan2(a2i, a2r) };
+  }
+
+  function downsample2(img) {
+    var w2 = img.w >> 1, h2 = img.h >> 1, d = img.data;
+    var out = { w: w2, h: h2, data: new Float32Array(w2 * h2) };
+    for (var y = 0; y < h2; y++) {
+      var o0 = (2 * y) * img.w, o1 = o0 + img.w, oo = y * w2;
+      for (var x = 0; x < w2; x++) {
+        var x2 = 2 * x;
+        out.data[oo + x] = 0.25 * (d[o0 + x2] + d[o0 + x2 + 1] + d[o1 + x2] + d[o1 + x2 + 1]);
+      }
+    }
+    return out;
+  }
+
+  /* Förstner subpixel: solve (Σ w·ggᵀ)·x = Σ w·ggᵀ·p over the window — the
+     point every weighted gradient line passes through. crossOnly weights by
+     sin⁴ of the angle between the gradient and the radius from the current
+     estimate: crossing-line edges (tangential gradients) keep full weight,
+     ring/ellipse edges (radial gradients) drop out — the projective-exactness
+     selector. */
+  function forstner(img, cx, cy, rad, crossOnly) {
+    var w = img.w, h = img.h, d = img.data;
+    var x0 = Math.max(1, Math.round(cx - rad)), x1 = Math.min(w - 2, Math.round(cx + rad));
+    var y0 = Math.max(1, Math.round(cy - rad)), y1 = Math.min(h - 2, Math.round(cy + rad));
+    if (x1 - x0 < 3 || y1 - y0 < 3) return null;
+    var Sxx = 0, Sxy = 0, Syy = 0, Bx = 0, By = 0;
+    for (var y = y0; y <= y1; y++) {
+      var o = y * w + x0;
+      for (var x = x0; x <= x1; x++, o++) {
+        var gx = (d[o + 1] - d[o - 1]) * 0.5;
+        var gy = (d[o + w] - d[o - w]) * 0.5;
+        var g2 = gx * gx + gy * gy;
+        if (g2 < 1e-8) continue;
+        var wgt = 1;
+        if (crossOnly) {
+          var rx = x - cx, ry = y - cy, rr2 = rx * rx + ry * ry;
+          if (rr2 > 1e-9) {
+            var dot = gx * rx + gy * ry;
+            wgt = 1 - (dot * dot) / (g2 * rr2);
+            wgt *= wgt;
+          }
+        }
+        var wxx = wgt * gx * gx, wxy = wgt * gx * gy, wyy = wgt * gy * gy;
+        Sxx += wxx; Sxy += wxy; Syy += wyy;
+        Bx += wxx * x + wxy * y;
+        By += wxy * x + wyy * y;
+      }
+    }
+    var det = Sxx * Syy - Sxy * Sxy;
+    if (det < 1e-10) return null;
+    var px = (Syy * Bx - Sxy * By) / det;
+    var py = (Sxx * By - Sxy * Bx) / det;
+    if (!isFinite(px) || !isFinite(py) || Math.hypot(px - cx, py - cy) > rad) return null;
+    var tr = Sxx + Syy, disc = Math.sqrt(Math.max(0, tr * tr * 0.25 - det));
+    var lmax = tr / 2 + disc, lmin = tr / 2 - disc;
+    if (lmax <= 0 || lmin / lmax < 0.08) return null;
+    return { x: px, y: py, cond: lmin / lmax };
+  }
+
+  /* Cheap 2D-structure check for a scan hit: the gradient structure tensor's
+     eigenvalue conditioning over a small window. A straight edge through the
+     ring center is ALSO pure 2nd harmonic (the flooded-scan lesson: every
+     point along a boundary line ties a true crossing on |c2| alone), but its
+     tensor is rank-1; a crossing is 2D. */
+  function structure2D(img, cx, cy, rad) {
+    var w = img.w, h = img.h, d = img.data;
+    var x0 = Math.max(1, cx - rad), x1 = Math.min(w - 2, cx + rad);
+    var y0 = Math.max(1, cy - rad), y1 = Math.min(h - 2, cy + rad);
+    var Sxx = 0, Sxy = 0, Syy = 0;
+    for (var y = y0; y <= y1; y++) {
+      var o = y * w + x0;
+      for (var x = x0; x <= x1; x++, o++) {
+        var gx = (d[o + 1] - d[o - 1]) * 0.5;
+        var gy = (d[o + w] - d[o - w]) * 0.5;
+        Sxx += gx * gx; Sxy += gx * gy; Syy += gy * gy;
+      }
+    }
+    var tr = Sxx + Syy;
+    if (tr <= 0) return 0;
+    var det = Sxx * Syy - Sxy * Sxy;
+    var disc = Math.sqrt(Math.max(0, tr * tr * 0.25 - det));
+    var lmax = tr / 2 + disc, lmin = tr / 2 - disc;
+    return lmax > 0 ? lmin / lmax : 0;
+  }
+
+  /* One pyramid level: grid scan of the 16-point ring response. The gates:
+     absolute contrast floor, |c2| ≥ 1.1·rms (quadrant signature — an ideal
+     square wave reads 1.27, blur pushes it UP toward the sine's 1.41),
+     |c2| ≥ 1.5·max(|c1|,|c3|) (central symmetry — tilt-immune), and 2D
+     structure (rejects the boundary-line flood before the caps). */
+  function scanLevel(img, opts) {
+    var w = img.w, h = img.h;
+    var margin = RESP_RHO + 2, step = 2;
+    var floorRms = opts.contrastFloor !== undefined ? opts.contrastFloor : 0.015;
+    var hits = [];
+    for (var y = margin; y < h - margin; y += step) {
+      for (var x = margin; x < w - margin; x += step) {
+        var hm = ringHarm(img, x, y, RESP_RHO);
+        if (!hm || hm.rms < floorRms) continue;
+        if (hm.m2 < 1.1 * hm.rms) continue;
+        if (hm.m2 < 1.5 * Math.max(hm.m1, hm.m3)) continue;
+        if (structure2D(img, x, y, 4) < 0.15) continue;
+        hits.push({ x: x, y: y, strength: hm.m2 });
+      }
+    }
+    hits.sort(function (a, b) { return b.strength - a.strength; });
+    var keep = [], cap = opts.maxPerLevel || 32;
+    for (var i = 0; i < hits.length && keep.length < cap; i++) {
+      var c = hits[i], sup = false;
+      for (var j = 0; j < keep.length; j++)
+        if (Math.abs(keep[j].x - c.x) <= 6 && Math.abs(keep[j].y - c.y) <= 6) { sup = true; break; }
+      if (!sup) keep.push(c);
+    }
+    return keep;
+  }
+
+  /* Full-res verify + refine of one candidate. The radial φ2 profile is
+     projected onto its dominant complex axis (angle-doubling estimate), which
+     turns the two anti-phase lobes into a signed profile: inner lobe one
+     sign, outer lobe the other, zero crossing = the swap circle. Checks: both
+     lobes present (inner ≥ 0.2·outer — blur eats the inner one first), outer
+     death by ~2.8× flip radius, purity at the outer peak. Then two rounds of
+     cross-selective Förstner. */
+  function measureAt(img, x0, y0, opts) {
+    opts = opts || {};
+    var c0 = forstner(img, x0, y0, 6, false);
+    var cx = c0 ? c0.x : x0, cy = c0 ? c0.y : y0;
+    var floorC = opts.contrastFloor !== undefined ? opts.contrastFloor : 0.015;
+    var rMaxLim = opts.rMax || 96;
+
+    var prof = [];
+    for (var r = 2; r <= rMaxLim; r++) {
+      var hm = ringHarm(img, cx, cy, r);
+      if (!hm) break;
+      prof.push(hm);
+      if (prof.length > 8) {
+        // stop once well past a strong outer lobe: last 3 radii all under 15% of peak
+        var pk = 0;
+        for (var t = 0; t < prof.length; t++) if (prof[t].m2 > pk) pk = prof[t].m2;
+        var n = prof.length;
+        if (pk > floorC && prof[n - 1].m2 < 0.15 * pk && prof[n - 2].m2 < 0.15 * pk && prof[n - 3].m2 < 0.15 * pk) break;
+      }
+    }
+    if (prof.length < 5) return null;
+
+    // dominant axis by angle doubling: ψ = arg(Σ z²)/2, z = m2·e^{iφ2}
+    var zr = 0, zi = 0;
+    for (var i = 0; i < prof.length; i++) {
+      var p = prof[i];
+      zr += p.re2 * p.re2 - p.im2 * p.im2;
+      zi += 2 * p.re2 * p.im2;
+    }
+    var psi = 0.5 * Math.atan2(zi, zr);
+    var cs = Math.cos(psi), sn = Math.sin(psi);
+    var s = prof.map(function (p) { return p.re2 * cs + p.im2 * sn; });
+
+    // extreme lobes: global min and max of the signed profile
+    var iMin = 0, iMax = 0;
+    for (var k = 1; k < s.length; k++) { if (s[k] < s[iMin]) iMin = k; if (s[k] > s[iMax]) iMax = k; }
+    var inner = Math.min(iMin, iMax), outer = Math.max(iMin, iMax);
+    var innerMag = Math.abs(s[inner]), outerMag = Math.abs(s[outer]);
+    if (inner === outer || outerMag < floorC) return null;
+    if (s[inner] * s[outer] >= 0) return null;                 // must be anti-phase
+    if (innerMag < 0.2 * outerMag) return null;                // both lobes present
+    // zero crossing between the lobes = the swap circle
+    var flipI = -1;
+    for (var f = inner; f < outer; f++) {
+      if (s[f] * s[f + 1] <= 0) {
+        flipI = f; break;
+      }
+    }
+    if (flipI < 0) return null;
+    var frac = s[flipI] === s[flipI + 1] ? 0.5 : s[flipI] / (s[flipI] - s[flipI + 1]);
+    var rFlip = (2 + flipI) + frac;
+    // outer death → R̂. The death must be OBSERVED inside the profile window:
+    // a runaway (concentric-ring junk walking structure after structure, or a
+    // frame-edge truncation) can't verify a mark.
+    var died = false, rEnd = 0;
+    for (var e = outer; e < s.length; e++) {
+      if (Math.abs(s[e]) < 0.25 * outerMag) { rEnd = 2 + e; died = true; break; }
+    }
+    if (!died) return null;
+    var Rhat = rEnd;
+    if (Rhat / rFlip < 1.4 || Rhat / rFlip > 3.0) return null;
+    // purity at the outer peak (central symmetry, pose-invariant)
+    var po = prof[outer];
+    if (po.m2 < 1.4 * Math.max(po.m1, po.m3)) return null;
+    // central symmetry along the WHOLE mark: odd harmonics quiet at every
+    // radius. An off-center point among concentric circles (the center-
+    // bullseye junk class) reads a ladder of strong |c1| instead.
+    var m1sum = 0;
+    for (var q1 = 0; q1 <= outer; q1++) m1sum += prof[q1].m1;
+    if (m1sum / (outer + 1) > 0.3 * outerMag) return null;
+
+    // outer-lobe phase (grid orientation reference)
+    var phi2 = s[outer] > 0 ? psi : psi + Math.PI;
+    phi2 = Math.atan2(Math.sin(phi2), Math.cos(phi2));
+
+    // cross-selective Förstner, window inside the swap circle
+    var rad = Math.max(4, Math.min(14, 0.9 * rFlip));
+    var f1 = forstner(img, cx, cy, rad, true);
+    if (!f1) return null;
+    var f2 = forstner(img, f1.x, f1.y, rad, true) || f1;
+    return { x: f2.x, y: f2.y, phi2: phi2, rFlip: rFlip, R: Rhat,
+             strength: outerMag, rms: prof[outer].rms, cond: f2.cond };
+  }
+
+  /* Pyramid detect: scan every level, map hits to full-res, verify + refine
+     each at full res, dedupe. Strongest first. */
+  function detect(img, opts) {
+    opts = opts || {};
+    var pyr = [img], maxLevels = opts.maxLevels || 4;
+    while (pyr.length < maxLevels) {
+      var top = pyr[pyr.length - 1];
+      if (Math.min(top.w, top.h) < 96) break;
+      pyr.push(downsample2(top));
+    }
+    var raw = [];
+    for (var L = 0; L < pyr.length; L++) {
+      var hits = scanLevel(pyr[L], opts);
+      var fct = 1 << L, off = (fct - 1) / 2;
+      for (var i = 0; i < hits.length; i++)
+        raw.push({ x: hits[i].x * fct + off, y: hits[i].y * fct + off,
+                   strength: hits[i].strength, level: L });
+    }
+    raw.sort(function (a, b) { return b.strength - a.strength; });
+    var seeds = [];
+    for (var r = 0; r < raw.length; r++) {
+      var c = raw[r], dup = false;
+      for (var m = 0; m < seeds.length; m++) {
+        var tol = 3 * (1 << Math.max(c.level, seeds[m].level));
+        if (Math.hypot(seeds[m].x - c.x, seeds[m].y - c.y) < tol) { dup = true; break; }
+      }
+      if (!dup) seeds.push(c);
+    }
+    var out = [], cap = opts.maxCandidates || 24;
+    for (var v = 0; v < seeds.length && out.length < cap; v++) {
+      var meas = measureAt(img, seeds[v].x, seeds[v].y, opts);
+      if (!meas) continue;
+      var dupe = false;
+      for (var o = 0; o < out.length; o++)
+        if (Math.hypot(out[o].x - meas.x, out[o].y - meas.y) < 3) { dupe = true; break; }
+      if (dupe) continue;
+      meas.level = seeds[v].level;
+      out.push(meas);
+    }
+    out.sort(function (a, b) { return b.strength - a.strength; });
+    return out;
+  }
+
+  function jacobianAt(H, x, y) {
+    var w = H[6] * x + H[7] * y + H[8];
+    var X = H[0] * x + H[1] * y + H[2], Y = H[3] * x + H[4] * y + H[5];
+    var a = (H[0] * w - X * H[6]) / (w * w), b = (H[1] * w - X * H[7]) / (w * w);
+    var c = (H[3] * w - Y * H[6]) / (w * w), d = (H[4] * w - Y * H[7]) / (w * w);
+    return { a: a, b: b, c: c, d: d, det: a * d - b * c };
+  }
+
+  function ringMeanH(img, H, radiusU, g) {
+    var n = 24, sum = 0, cnt = 0;
+    var w = img.w, h = img.h;
+    for (var k = 0; k < n; k++) {
+      var th = 2 * Math.PI * k / n;
+      var p = g.applyH(H, radiusU * Math.cos(th), radiusU * Math.sin(th));
+      if (p[0] < 1 || p[1] < 1 || p[0] >= w - 2 || p[1] >= h - 2) continue;
+      sum += g.bilinear(img, p[0], p[1]); cnt++;
+    }
+    if (cnt < n * 0.7) return null;
+    return sum / cnt;
+  }
+
+  /* Score one correspondence hypothesis: model corners (plate units) → 4
+     image candidates. Gates: positive orientation (mirror rejected), φ2
+     pattern match through the local Jacobian (the fold's radial orientation
+     — kills wrong rotations beyond the harmless 180°), per-corner scale
+     coherence (R̂ vs Jacobian scale), then the decisive flat-circle
+     band-contrast gate (C band fill inside r=2.85 vs background outside at
+     r=3.20 — vote-safety against off-plate constellations). */
+  function scoreHypothesis(model, pts, profile, img, g, opts) {
+    var dst = pts.map(function (p) { return [p.x, p.y]; });
+    var H = g.homographyFromPoints(model, dst);
+    if (!H) return null;
+    if (jacobianAt(H, 0, 0).det <= 0) return null;
+    var cR = profile.plate.corners.r_out;
+    var phiErr = 0, ratios = [];
+    for (var c = 0; c < 4; c++) {
+      var J = jacobianAt(H, model[c][0], model[c][1]);
+      if (J.det <= 0) return null;
+      var dx = 1, dy = model[c][0] * model[c][1] > 0 ? 1 : -1;   // dark diagonal, model frame
+      var ix = J.a * dx + J.b * dy, iy = J.c * dx + J.d * dy;
+      var expPhi = Math.PI - 2 * Math.atan2(iy, ix);
+      phiErr += Math.abs(wrapPi(pts[c].phi2 - expPhi));
+      ratios.push(pts[c].R / (cR * Math.sqrt(J.det)));
+    }
+    phiErr /= 4;
+    if (phiErr > (opts.phiTol !== undefined ? opts.phiTol : 0.7)) return null;
+    ratios.sort(function (a, b) { return a - b; });
+    if (ratios[0] < 0.5 || ratios[3] > 2.0 || ratios[3] / ratios[0] > 2.0) return null;
+    // outer reference hugs the flat circle: the emitter canvas leaves only
+    // 0.084u of background beyond it (half-size 3.084), so anything farther
+    // out walks off the plate's own canvas on suite frames and off-screen
+    // content on field frames.
+    var flatR = profile.flat_circle_r;
+    var inMean = ringMeanH(img, H, flatR * 0.95, g);
+    var outMean = ringMeanH(img, H, flatR + 0.06, g);
+    if (inMean === null || outMean === null) return null;
+    var bandContrast = outMean - inMean;
+    if (bandContrast < (opts.bandContrastMin !== undefined ? opts.bandContrastMin : 0.06)) return null;
+    var total = bandContrast + 0.3 * (0.7 - phiErr);
+    return { total: total, H: H, phiErr: phiErr, bandContrast: bandContrast };
+  }
+
+  /* Constellation: choose 4 of ≤12 candidates, order by angle about their
+     centroid (mirror winds backwards and never matches), try the 4 cyclic
+     assignments, keep the best hypothesis passing every gate. */
+  function constellation(cands, profile, img, opts) {
+    opts = opts || {};
+    if (!cands || cands.length < 4) return null;
+    var g = G();
+    var a = profile.plate.corners.at;
+    var model = [[-a, -a], [a, -a], [a, a], [-a, a]];   // ascending atan2 about origin
+    var n = Math.min(cands.length, opts.maxConstellation || 12);
+    var list = cands.slice(0, n);
+    var best = null, bestPts = null;
+    for (var i = 0; i <= n - 4; i++)
+      for (var j = i + 1; j <= n - 3; j++)
+        for (var k = j + 1; k <= n - 2; k++)
+          for (var l = k + 1; l <= n - 1; l++) {
+            var quad = [list[i], list[j], list[k], list[l]];
+            var rs = [quad[0].R, quad[1].R, quad[2].R, quad[3].R].sort(function (A, B) { return A - B; });
+            if (rs[3] > 2.4 * rs[0]) continue;
+            var mx = (quad[0].x + quad[1].x + quad[2].x + quad[3].x) / 4;
+            var my = (quad[0].y + quad[1].y + quad[2].y + quad[3].y) / 4;
+            var byAng = quad.slice().sort(function (A, B) {
+              return Math.atan2(A.y - my, A.x - mx) - Math.atan2(B.y - my, B.x - mx);
+            });
+            for (var rot = 0; rot < 4; rot++) {
+              var pts = [byAng[rot], byAng[(rot + 1) % 4], byAng[(rot + 2) % 4], byAng[(rot + 3) % 4]];
+              var sc = scoreHypothesis(model, pts, profile, img, g, opts);
+              if (sc && (!best || sc.total > best.total)) { best = sc; bestPts = pts; }
+            }
+          }
+    if (!best) return null;
+    return { H: best.H, points: bestPts, phiErr: best.phiErr,
+             bandContrast: best.bandContrast, candidates: cands.length };
+  }
+
+  /* One-call registration: detect + constellation. */
+  function solve(img, profile, opts) {
+    var cands = detect(img, opts);
+    return constellation(cands, profile, img, opts);
+  }
+
+  /* Per-frame solve-as-tracker: project the 4 model corners through the
+     current H, refine each with cross-selective Förstner, light-verify the
+     anti-phase signature at two radii, re-DLT. All four must hold — a miss
+     returns null and the caller keeps its conic-corrected track (each rung
+     degrades to the one below, exactly plateSolve's shape). residPx reports
+     mean point movement (the drift the solve absorbed). */
+  function trackSolve(img, Hprev, profile, opts) {
+    opts = opts || {};
+    var g = G();
+    var a = profile.plate.corners.at, cR = profile.plate.corners.r_out;
+    var model = [[-a, -a], [a, -a], [a, a], [-a, a]];
+    var floorC = opts.contrastFloor !== undefined ? opts.contrastFloor : 0.01;
+    var pts = [], moved = 0;
+    for (var c = 0; c < 4; c++) {
+      var p = g.applyH(Hprev, model[c][0], model[c][1]);
+      var J = jacobianAt(Hprev, model[c][0], model[c][1]);
+      if (J.det <= 0) return null;
+      var rFlipPx = 0.5 * cR * Math.sqrt(J.det);
+      var rad = Math.max(4, Math.min(14, 0.9 * rFlipPx));
+      var f1 = forstner(img, p[0], p[1], rad, true);
+      if (!f1) return null;
+      var f2 = forstner(img, f1.x, f1.y, rad, true) || f1;
+      var hIn = ringHarm(img, f2.x, f2.y, Math.max(2, 0.6 * rFlipPx));
+      var hOut = ringHarm(img, f2.x, f2.y, 1.5 * rFlipPx);
+      if (!hIn || !hOut) return null;
+      if (hOut.m2 < floorC || hOut.m2 < 1.2 * Math.max(hOut.m1, hOut.m3)) return null;
+      if (Math.cos(hIn.phi2 - hOut.phi2) > -0.2) return null;
+      moved += Math.hypot(f2.x - p[0], f2.y - p[1]);
+      pts.push([f2.x, f2.y]);
+    }
+    var Hn = g.homographyFromPoints(model, pts);
+    if (!Hn) return null;
+    return { H: Hn, points: pts, residPx: moved / 4, used: 4 };
+  }
+
+  var API = { detect: detect, measureAt: measureAt, constellation: constellation,
+              solve: solve, trackSolve: trackSolve, ringHarm: ringHarm, forstner: forstner };
+  if (typeof module !== "undefined" && module.exports) module.exports = API;
+  global.OC = global.OC || {}; global.OC.saddle = API;
 })(typeof window !== "undefined" ? window : globalThis);
 
 </script>
@@ -4646,10 +5254,18 @@
     var solveBriefs = null;
     if (opts.plateSolve && profile.plate) {
       var plateM = dep("plate");
+      // v3.1 quadrant corners: the per-frame solve IS the saddle tracker —
+      // project last H, cross-selective refine, re-DLT (solve-as-tracker,
+      // §9's shape). Bullseye corners keep the circle-fit plateSolve.
+      var saddleM = profile.plate.corner_style === "quadrant" ? dep("saddle") : null;
       solveBriefs = emitters.map(function (_, pe) {
         var HsP = tracksH[pe].Hs, solved = 0, residSum = 0, usedMin = 9;
+        // qr_persistent: the center is a QR, not a bullseye — allow the
+        // H-derived center anchor when a corner is missing (the A/B fix).
+        var solveOpts = { hCenter: !!profile.qr_persistent };
         for (var pf = 0; pf < groups.length; pf++) {
-          var sol = plateM.plateSolve(groups[pf].imgs[0], HsP[pf], profile);
+          var sol = saddleM ? saddleM.trackSolve(groups[pf].imgs[0], HsP[pf], profile, solveOpts)
+                            : plateM.plateSolve(groups[pf].imgs[0], HsP[pf], profile, solveOpts);
           if (sol) { HsP[pf] = sol.H; solved++; residSum += sol.residPx; if (sol.used < usedMin) usedMin = sol.used; }
         }
         return { solved: solved, frames: groups.length, usedMin: solved ? usedMin : null,
@@ -5019,9 +5635,15 @@ function currentProfile() {
   if (v === "v1") return OC.profile.profileV1();
   if (v === "v20" || v === "v20p") return OC.profile.profileV2r20();
   if (v === "v30" || v === "v30p") return OC.profile.profileV2r30();
-  if (v === "v3" || v === "v3a") return OC.profile.profileV3();
-  if (v === "v3hr") return OC.profile.profileV3("high-rate");
+  if (v === "v3" || v === "v3a") return v31Opts(OC.profile.profileV3());
+  if (v === "v3hr") return v31Opts(OC.profile.profileV3("high-rate"));
   return OC.profile.defaultProfile();
+}
+// v3.1 amendment-2 toggle: quadrant corners → saddle-first registration +
+// saddle track-solve (for clips filmed with the quadrant emitter).
+function v31Opts(p) {
+  if ($("m_quad") && $("m_quad").checked) p.plate.corner_style = "quadrant";
+  return p;
 }
 function payloadMode() { const v = $("m_prof") && $("m_prof").value; return v === "v2p" || v === "v20p" || v === "v30p" || v3Mode(); }
 function v3Mode() { const v = $("m_prof") && $("m_prof").value; return v === "v3" || v === "v3hr" || v === "v3a"; }
