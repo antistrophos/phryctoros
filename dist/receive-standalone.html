@@ -25,6 +25,12 @@
 <h1>Receiver — acuity harness (Phase 0)</h1>
 <div id="caps" class="dim"></div>
 
+<fieldset style="border-color:#4a5568"><legend style="font-weight:bold;color:#9ecbff">Emitter settings — paste the string from the emit page</legend>
+  <input id="pasteStr" placeholder="oc1 prof=v3 payload=1 tiling=1 quad=1 qrp=0 loop=60 freeze=3 capfps=60" style="width:30rem;max-width:100%;background:#0d0f12;color:#9ecbff;font:12.5px monospace;padding:.3rem .45rem;border:1px solid #444">
+  <button id="applyStrBtn" type="button">Apply</button>
+  <div id="rxSummary" style="font-size:1.05rem;padding:.35rem .6rem;border-radius:4px;margin-top:.4rem"></div>
+</fieldset>
+
 <fieldset><legend>Session metadata (logged with every decode — spec §6)</legend>
   <label>range (m) <input id="m_range" type="number" step="0.5" style="width:4.5rem"></label>
   <label>lighting <select id="m_light"><option>indoor-dim</option><option>indoor-bright</option><option>dark</option><option>daylight-shade</option><option>daylight-direct</option></select></label>
@@ -35,7 +41,7 @@
   <label>handheld <input id="m_hand" type="checkbox" checked></label>
   <label>emitter loop (s) <input id="m_loop" type="number" value="60" style="width:4rem"></label>
   <label>profile <select id="m_prof"><option value="v2">v2 (current)</option><option value="v2p">v2 + payload (Phase 1)</option><option value="v20">v2 @20 fps</option><option value="v20p">v2 @20 fps + payload</option><option value="v30">v2 @30 fps</option><option value="v30p">v2 @30 fps + payload</option><option value="v3">V3 resilient (payload; film at 60 fps)</option><option value="v3hr">V3 high-rate (payload; film at 60 fps)</option><option value="v3a">V3 auto-detect preset (payload)</option><option value="v1">v1 (legacy clips)</option></select></label>
-  <label id="v3opts" style="display:none"><input id="m_solve" type="checkbox" checked> plate solve <input id="m_beacon" type="checkbox" checked> beacon <input id="m_quad" type="checkbox"> quadrant corners (v3.1)</label>
+  <label id="v3opts" style="display:none"><input id="m_solve" type="checkbox" checked> plate solve <input id="m_beacon" type="checkbox" checked> beacon <input id="m_quad" type="checkbox"> quadrant corners (v3.1) <input id="m_qrp" type="checkbox"> persistent QR (diagnostic)</label>
   <label>capture fps <select id="m_capfps"><option value="30">30</option><option value="60">60</option></select></label>
   <label>notes <input id="m_notes" style="width:12rem"></label>
 </fieldset>
@@ -5640,9 +5646,11 @@ function currentProfile() {
   return OC.profile.defaultProfile();
 }
 // v3.1 amendment-2 toggle: quadrant corners → saddle-first registration +
-// saddle track-solve (for clips filmed with the quadrant emitter).
+// saddle track-solve (for clips filmed with the quadrant emitter). The
+// persistent-QR toggle decodes the diagnostic-variant clips (finder-first).
 function v31Opts(p) {
   if ($("m_quad") && $("m_quad").checked) p.plate.corner_style = "quadrant";
+  if ($("m_qrp") && $("m_qrp").checked) p.qr_persistent = true;
   return p;
 }
 function payloadMode() { const v = $("m_prof") && $("m_prof").value; return v === "v2p" || v === "v20p" || v === "v30p" || v3Mode(); }
@@ -6180,6 +6188,48 @@ function drawPlot() {
   });
 }
 drawPlot();
+</script>
+<script>
+"use strict";
+/* Settings-string intake: the emit page's "Copy for receiver" string
+   configures profile, capture fps, loop seconds, and the v3.1 toggles in
+   one paste — the mode-mismatch class of field errors (tonight's: a v3
+   reference emission harvested in payload mode) dies at the UI layer. */
+function ocApplySettings(str) {
+  const t = (str || "").trim().split(/\s+/);
+  if (t[0] !== "oc1") return { err: "unrecognized string (expected: oc1 key=value …)" };
+  const kv = {};
+  for (const p of t.slice(1)) { const i = p.indexOf("="); if (i > 0) kv[p.slice(0, i)] = p.slice(i + 1); }
+  const pay = kv.payload === "1";
+  const map = { "15": pay ? "v2p" : "v2", "20": pay ? "v20p" : "v20", "30": pay ? "v30p" : "v30", "v3": "v3", "v3hr": "v3hr" };
+  const target = map[kv.prof];
+  if (!target) return { err: "unknown prof \"" + kv.prof + "\"" };
+  $("m_prof").value = target;
+  if ($("m_prof").onchange) $("m_prof").onchange();
+  if (kv.capfps) $("m_capfps").value = kv.capfps;
+  if (kv.loop) $("m_loop").value = kv.loop;
+  if ($("m_quad")) $("m_quad").checked = kv.quad === "1";
+  if ($("m_qrp")) $("m_qrp").checked = kv.qrp === "1";
+  const bits = [target, "capture " + (kv.capfps || "?") + " fps", (kv.tiling || "1") + "-up emitter"];
+  if (kv.quad === "1") bits.push("quadrant corners");
+  if (kv.qrp === "1") bits.push("persistent QR");
+  const v3fam = kv.prof === "v3" || kv.prof === "v3hr";
+  const warn = v3fam && !pay;
+  return {
+    text: "applied:  " + bits.join("  ·  ") +
+      (warn ? "  —  WARNING: v3 WITHOUT payload is a REFERENCE emission; harvest/payload decode will find NOTHING" : ""),
+    warn: warn
+  };
+}
+$("applyStrBtn").addEventListener("click", () => {
+  const r = ocApplySettings($("pasteStr").value);
+  const el = $("rxSummary");
+  el.textContent = r.err ? r.err : r.text;
+  el.style.background = r.err || r.warn ? "#3a2b12" : "#12331a";
+  el.style.color = r.err || r.warn ? "#ffc46b" : "#7ce38b";
+  el.style.fontWeight = r.err || r.warn ? "bold" : "normal";
+});
+$("pasteStr").addEventListener("keydown", e => { if (e.key === "Enter") $("applyStrBtn").click(); });
 </script>
 </body>
 </html>

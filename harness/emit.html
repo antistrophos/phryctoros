@@ -15,6 +15,12 @@
   #stage { text-align: center; background: #000; margin-top: .6rem; }
   canvas { max-width: 100%; }
   #hud { font: 12px monospace; color: #9aa3ad; }
+  #modePanel { border: 1px solid #4a5568; padding: .6rem .9rem; margin: .8rem 0; max-width: 46rem; }
+  #modePanel legend { font-weight: bold; color: #9ecbff; padding: 0 .4rem; }
+  #modeSummary { font-size: 1.12rem; padding: .45rem .7rem; border-radius: 4px; margin-bottom: .5rem; }
+  .modeOk { background: #12331a; color: #7ce38b; }
+  .modeWarn { background: #3a2b12; color: #ffc46b; font-weight: bold; }
+  #settingsStr { width: 30rem; max-width: 100%; background: #0d0f12; color: #9ecbff; font: 12.5px monospace; padding: .3rem .45rem; border: 1px solid #444; }
 </style>
 </head>
 <body>
@@ -39,28 +45,39 @@
   <label style="margin-left:.8rem"><input id="freezeChk" type="checkbox" checked> freeze between loops,
     <input id="cdSecs" type="number" value="3" min="1" max="10" style="width:3rem"> s countdown</label>
 </p>
-<p>
-  <label><input id="payloadChk" type="checkbox"> <b>Phase 1: carry a payload</b> (fountain carousel on every ring; receiver must decode in payload mode)</label>
-  <input id="payloadTxt" value="PHRYCTOROS CARRIES THE STORE" style="width:26rem" maxlength="1000">
-  <span id="payloadInfo" class="dim"></span>
-</p>
-<p>
-  <label>rate <select id="rateSel">
-    <option value="15">15 fps — v2 (the banker; film at 30 fps)</option>
-    <option value="20">20 fps — v2r20 (+33%; film at 30 fps, leans on tear repair)</option>
-    <option value="30">30 fps — v2r30 (+100%; MUST film at 60 fps — 2 looks/frame)</option>
-    <option value="v3">30 fps — V3 resilient (calibration plate, 4 edges, 24-bit droplets; film at 60 fps)</option>
-    <option value="v3hr">30 fps — V3 high-rate (M=32 close-range preset, 48-bit droplets; film at 60 fps)</option>
-  </select></label>
-  <span class="dim">rewrites the profile JSON below; receiver must decode with the matching profile AND capture fps</span>
-  <label style="margin-left:.8rem">tiling <select id="tileSel">
-    <option value="1">1-up</option>
-    <option value="2">2-up (2×1)</option>
-    <option value="6">6-up (3×2, the docked desk mode)</option>
-  </select></label>
-  <label style="margin-left:.8rem"><input id="qrPersChk" type="checkbox"> diagnostic: persistent center QR (angled-capture lock until saddle registration lands; off-contract)</label>
-  <label style="margin-left:.8rem"><input id="quadChk" type="checkbox"> v3.1: quadrant corner targets (amendment 2 — saddle registration)</label>
-</p>
+<fieldset id="modePanel">
+  <legend>Emission settings — the receiver must match these</legend>
+  <div id="modeSummary"></div>
+  <p style="margin:.3rem 0">
+    <label><input id="payloadChk" type="checkbox"> <b>Phase 1: carry a payload</b> (fountain carousel on every ring; receiver must decode in payload mode)</label>
+    <input id="payloadTxt" value="PHRYCTOROS CARRIES THE STORE" style="width:26rem" maxlength="1000">
+    <span id="payloadInfo" class="dim"></span>
+  </p>
+  <p style="margin:.3rem 0">
+    <label>rate <select id="rateSel">
+      <option value="15">15 fps — v2 (the banker; film at 30 fps)</option>
+      <option value="20">20 fps — v2r20 (+33%; film at 30 fps, leans on tear repair)</option>
+      <option value="30">30 fps — v2r30 (+100%; MUST film at 60 fps — 2 looks/frame)</option>
+      <option value="v3">30 fps — V3 resilient (calibration plate, 4 edges, 24-bit droplets; film at 60 fps)</option>
+      <option value="v3hr">30 fps — V3 high-rate (M=32 close-range preset, 48-bit droplets; film at 60 fps)</option>
+    </select></label>
+    <label style="margin-left:.8rem">tiling <select id="tileSel">
+      <option value="1">1-up</option>
+      <option value="2">2-up (2×1)</option>
+      <option value="6">6-up (3×2, the docked desk mode)</option>
+    </select></label>
+  </p>
+  <p style="margin:.3rem 0">
+    <label><input id="quadChk" type="checkbox"> <b>v3.1: quadrant corner targets</b> (amendment 2 — saddle registration)</label>
+    <label style="margin-left:.8rem"><input id="qrPersChk" type="checkbox"> diagnostic: persistent center QR (off-contract)</label>
+  </p>
+  <p style="margin:.4rem 0 .1rem">
+    <label>settings string <input id="settingsStr" readonly></label>
+    <button id="copySettingsBtn" type="button">Copy for receiver</button>
+    <span id="copyOk" class="ok"></span>
+  </p>
+  <span class="dim">rate rewrites the profile JSON below; paste the settings string into the receive page to configure it in one step</span>
+</fieldset>
 <details open><summary>Emission profile (JSON, editable)</summary>
   <textarea id="profileTxt"></textarea>
 </details>
@@ -570,6 +587,58 @@ $("startBtn").onclick = () => {
 $("stopBtn").onclick = () => { running = false; if (ticker) { clearInterval(ticker); ticker = null; } $("cv").style.display = "none"; $("hud").textContent = "stopped"; };
 $("fsBtn").onclick = () => { $("cv").requestFullscreen && $("cv").requestFullscreen(); };
 validate();
+</script>
+<script>
+"use strict";
+/* Emission-mode panel: one glance answers "what am I emitting", one copy
+   configures the receiver. The settings string is versioned (oc1) and
+   deliberately static — session32 is stamped at Start and never rides it. */
+function ocSettingsString() {
+  const rate = $("rateSel").value;
+  return ["oc1",
+    "prof=" + rate,
+    "payload=" + ($("payloadChk").checked ? 1 : 0),
+    "tiling=" + $("tileSel").value,
+    "quad=" + ($("quadChk").checked ? 1 : 0),
+    "qrp=" + ($("qrPersChk").checked ? 1 : 0),
+    "loop=" + (+$("loopSecs").value || 60),
+    "freeze=" + (+$("cdSecs").value || 3),
+    "capfps=" + ((rate === "15" || rate === "20") ? 30 : 60)].join(" ");
+}
+function ocRefreshMode() {
+  const rate = $("rateSel").value, pay = $("payloadChk").checked;
+  const names = { "15": "v2 @15 fps", "20": "v2r20", "30": "v2r30", "v3": "V3 resilient", "v3hr": "V3 high-rate" };
+  const bits = [names[rate] || rate,
+    pay ? "PAYLOAD" : "REFERENCE (no content!)",
+    $("tileSel").value + "-up"];
+  if ($("quadChk").checked) bits.push("quadrant corners");
+  if ($("qrPersChk").checked) bits.push("persistent QR");
+  bits.push("film at " + ((rate === "15" || rate === "20") ? "30" : "60") + " fps");
+  const el = $("modeSummary");
+  el.textContent = bits.join("  ·  ") +
+    (pay ? "" : "  —  receivers can measure this emission but NOTHING DECODES from it");
+  el.className = pay ? "modeOk" : "modeWarn";
+  $("settingsStr").value = ocSettingsString();
+}
+for (const id of ["payloadChk", "rateSel", "tileSel", "quadChk", "qrPersChk", "loopSecs", "cdSecs"])
+  $(id).addEventListener("change", ocRefreshMode);
+/* v3's ruled purpose is carriage — selecting it turns the payload on
+   (uncheck deliberately for a reference/diagnostic emission). */
+$("rateSel").addEventListener("change", () => {
+  const r = $("rateSel").value;
+  if ((r === "v3" || r === "v3hr") && !$("payloadChk").checked) {
+    $("payloadChk").checked = true;
+    ocRefreshMode();
+  }
+});
+$("copySettingsBtn").addEventListener("click", () => {
+  const s = $("settingsStr").value;
+  const done = () => { $("copyOk").textContent = "copied ✓"; setTimeout(() => { $("copyOk").textContent = ""; }, 2500); };
+  if (navigator.clipboard && navigator.clipboard.writeText)
+    navigator.clipboard.writeText(s).then(done, () => { $("settingsStr").select(); document.execCommand("copy"); done(); });
+  else { $("settingsStr").select(); document.execCommand("copy"); done(); }
+});
+ocRefreshMode();
 </script>
 </body>
 </html>
