@@ -113,6 +113,30 @@ $("rateSel").onchange = () => {
 let running = false, schedules = null, loopFrames = 0, t0 = 0, lastF = -1, fidCanvas = null;
 let drawn = 0, fpsWindow = [], ticker = null;
 let beaconSchedule = null, qrCanvas = null, effLoopFrames = 0, schedulesT = null; // v3 state
+let skippedF = 0;   // whole emission frames never displayed (the per-take health receipt)
+let thTab = null;   // theta tables for the live contour math (built at Start)
+
+/* Precompute cos(k·θ)/sin(k·θ) for every harmonic the profile uses, once per
+   Start. The per-frame contour then folds each harmonic's phase into two
+   coefficients and runs pure multiply-adds — ~54 trig calls per frame
+   instead of ~33k (the render-cost half of the reliability fix). */
+function buildThetaTables() {
+  const N = 256;
+  const ks = new Set([1]);
+  for (const a of profile.annuli) for (const k of a.boundary.harmonics) ks.add(k);
+  if (profile.beacon) for (const k of profile.beacon.harmonics) ks.add(k);
+  const ct = {}, st = {};
+  for (const k of ks) {
+    ct[k] = new Float64Array(N + 1); st[k] = new Float64Array(N + 1);
+    for (let i = 0; i <= N; i++) {
+      const th = 2 * Math.PI * i / N;
+      ct[k][i] = Math.cos(k * th); st[k][i] = Math.sin(k * th);
+    }
+  }
+  thTab = { N, ct, st };
+}
+
+function getCtx() { return $("cv").getContext("2d", { alpha: false, desynchronized: true }); }
 
 function gray(v) { const g = Math.round(v * 255); return "rgb(" + g + "," + g + "," + g + ")"; }
 
@@ -274,41 +298,43 @@ function plateMarkLive(ctx, cx, cy, Rpx, shade, bg, flip) {
 }
 
 function v3PlateBase(ctx, f, cx, cy, sched) {
-  // one tile's bands + corners at (cx, cy); center face differs by caller
+  // one tile's bands + corners at (cx, cy); center face differs by caller.
+  // Contours run on the theta tables: per edge, each harmonic's phase folds
+  // into two coefficients (r(θ) = r0 + Σ C·cos(kθ) + S·sin(kθ)) — no
+  // per-point trig. N=256 keeps chord sag under 0.04 px at these radii.
   const R = profile.render, scale = R.scale_px_per_unit;
   const pl = profile.plate, shade = pl.shade !== undefined ? pl.shade : R.fill;
-  const N = 512;
-  const contourFn = (edgeIdx) => {
+  if (!thTab) buildThetaTables();
+  const N = thTab.N, ct = thTab.ct, st = thTab.st;
+  const edgeR = (edgeIdx) => {
     const a = profile.annuli[edgeIdx];
     const phi = OC.emission.phaseAt(a, sched[edgeIdx], profile.frame_rate_hz, f);
-    return th => {
-      let r = a.r0;
-      for (let j = 0; j < a.boundary.harmonics.length; j++)
-        r += a.boundary.amplitudes[j] * Math.cos(a.boundary.harmonics[j] * (th - phi) + a.boundary.phases_deg[j] * Math.PI / 180);
-      return r;
-    };
+    const out = new Float64Array(N + 1);
+    out.fill(a.r0);
+    for (let j = 0; j < a.boundary.harmonics.length; j++) {
+      const k = a.boundary.harmonics[j];
+      const b = k * phi - a.boundary.phases_deg[j] * Math.PI / 180;
+      const C = a.boundary.amplitudes[j] * Math.cos(b), S = a.boundary.amplitudes[j] * Math.sin(b);
+      const ck = ct[k], sk = st[k];
+      for (let i = 0; i <= N; i++) out[i] += C * ck[i] + S * sk[i];
+    }
+    return out;
+  };
+  const tracePath = (path, r) => {
+    const c1 = ct[1], s1 = st[1];
+    for (let i = 0; i <= N; i++) {
+      const x = cx + r[i] * scale * c1[i], y = cy + r[i] * scale * s1[i];
+      if (i === 0) path.moveTo(x, y); else path.lineTo(x, y);
+    }
+    path.closePath();
   };
   profile.bands.forEach(band => {
-    const hasHiEdge = band.hi.edge !== undefined, hasLoEdge = band.lo.edge !== undefined;
-    const hi = hasHiEdge ? contourFn(band.hi.edge) : (() => band.hi.fixed);
-    const lo = hasLoEdge ? contourFn(band.lo.edge) : (() => band.lo.fixed);
     const path = new Path2D();
-    if (hasHiEdge) {
-      for (let i = 0; i <= N; i++) {
-        const th = 2 * Math.PI * i / N, r = hi(th);
-        const x = cx + r * scale * Math.cos(th), y = cy + r * scale * Math.sin(th);
-        if (i === 0) path.moveTo(x, y); else path.lineTo(x, y);
-      }
-      path.closePath();
-    } else path.arc(cx, cy, band.hi.fixed * scale, 0, 2 * Math.PI); // the flat gauge: a true circle
-    if (hasLoEdge) {
+    if (band.hi.edge !== undefined) tracePath(path, edgeR(band.hi.edge));
+    else path.arc(cx, cy, band.hi.fixed * scale, 0, 2 * Math.PI); // the flat gauge: a true circle
+    if (band.lo.edge !== undefined) {
       const p2 = new Path2D();
-      for (let i = 0; i <= N; i++) {
-        const th = 2 * Math.PI * i / N, r = lo(th);
-        const x = cx + r * scale * Math.cos(th), y = cy + r * scale * Math.sin(th);
-        if (i === 0) p2.moveTo(x, y); else p2.lineTo(x, y);
-      }
-      p2.closePath();
+      tracePath(p2, edgeR(band.lo.edge));
       path.addPath(p2);
     } else path.arc(cx, cy, band.lo.fixed * scale, 0, 2 * Math.PI);
     ctx.fillStyle = gray(R.fill);
@@ -337,7 +363,7 @@ function v3TileCenters() {
 }
 
 function drawFrameV3(f) {
-  const ctx = $("cv").getContext("2d");
+  const ctx = getCtx();
   const { layout, centers } = v3TileCenters();
   const R = profile.render, scale = R.scale_px_per_unit;
   ctx.fillStyle = gray(R.background); ctx.fillRect(0, 0, $("cv").width, $("cv").height);
@@ -355,26 +381,27 @@ function drawFrameV3(f) {
     if (t === 0) {
       // the beacon ring pair, designated tile only: both edges share one δ
       const bphi = OC.emission.phaseAt({ rotation: profile.beacon.rotation }, beaconSchedule, profile.frame_rate_hz, f);
-      const del = th => {
-        let d0 = 0;
-        for (let j = 0; j < profile.beacon.harmonics.length; j++)
-          d0 += profile.beacon.amplitudes[j] * Math.cos(profile.beacon.harmonics[j] * (th - bphi) + profile.beacon.phases_deg[j] * Math.PI / 180);
-        return d0;
+      if (!thTab) buildThetaTables();
+      const bN = thTab.N, bct = thTab.ct, bst = thTab.st;
+      const del = new Float64Array(bN + 1);
+      for (let j = 0; j < profile.beacon.harmonics.length; j++) {
+        const k = profile.beacon.harmonics[j];
+        const b = k * bphi - profile.beacon.phases_deg[j] * Math.PI / 180;
+        const C = profile.beacon.amplitudes[j] * Math.cos(b), S = profile.beacon.amplitudes[j] * Math.sin(b);
+        for (let i = 0; i <= bN; i++) del[i] += C * bct[k][i] + S * bst[k][i];
+      }
+      const traceB = (path, r0b) => {
+        for (let i = 0; i <= bN; i++) {
+          const r = r0b + del[i];
+          const x = c.cx + r * scale * bct[1][i], y = c.cy + r * scale * bst[1][i];
+          if (i === 0) path.moveTo(x, y); else path.lineTo(x, y);
+        }
+        path.closePath();
       };
-      const N = 256, bp = new Path2D();
-      for (let i = 0; i <= N; i++) {
-        const th = 2 * Math.PI * i / N, r = pl.breaker.r_out + del(th);
-        const x = c.cx + r * scale * Math.cos(th), y = c.cy + r * scale * Math.sin(th);
-        if (i === 0) bp.moveTo(x, y); else bp.lineTo(x, y);
-      }
-      bp.closePath();
+      const bp = new Path2D();
+      traceB(bp, pl.breaker.r_out);
       const bp2 = new Path2D();
-      for (let i = 0; i <= N; i++) {
-        const th = 2 * Math.PI * i / N, r = pl.breaker.r_in + del(th);
-        const x = c.cx + r * scale * Math.cos(th), y = c.cy + r * scale * Math.sin(th);
-        if (i === 0) bp2.moveTo(x, y); else bp2.lineTo(x, y);
-      }
-      bp2.closePath();
+      traceB(bp2, pl.breaker.r_in);
       bp.addPath(bp2);
       ctx.fillStyle = gray(shade);
       ctx.fill(bp, "evenodd");
@@ -390,7 +417,7 @@ function drawFrameV3(f) {
 }
 
 function drawCountdownV3(f, secsLeft) {
-  const ctx = $("cv").getContext("2d");
+  const ctx = getCtx();
   const { layout, centers } = v3TileCenters();
   const R = profile.render, scale = R.scale_px_per_unit;
   ctx.fillStyle = gray(R.background); ctx.fillRect(0, 0, $("cv").width, $("cv").height);
@@ -429,13 +456,19 @@ function buildQrCanvas(envBytes) {
   return c;
 }
 
-function loopV3(now) {
+/* The render body is SPLIT from the rAF re-arm: the timer fallback used to
+   call the loop function itself, and every tick spawned another self-
+   sustaining rAF chain — 30 new chains per second, unbounded, grinding the
+   tab minutes into an emission (the trial-night frame-skip mechanism). The
+   ticker now calls renderV3 only; exactly ONE rAF chain ever exists. */
+function renderV3(now) {
   if (!running) return;
   const fps = profile.frame_rate_hz;
   const freezeF = Math.round(profile.countdown.freeze_s * fps);
   const fTot = Math.floor((now - t0) / 1000 * fps);
   const tl = OC.emission.timeline(profile, fTot);
   if (fTot !== lastF) {
+    if (lastF >= 0 && fTot > lastF + 1) skippedF += fTot - lastF - 1;
     lastF = fTot; drawn++;
     fpsWindow.push(now);
     while (fpsWindow.length && now - fpsWindow[0] > 2000) fpsWindow.shift();
@@ -456,14 +489,21 @@ function loopV3(now) {
         ctx.fillText("⚠ RENDERING STALLED (" + rfps.toFixed(0) + "/" + fps + " fps) — click this window · plug in power · disable battery saver · use Fullscreen", cv.width / 2, Math.round(cv.height * 0.035));
       }
       $("hud").textContent = "V3 eff " + (tl.eff % effLoopFrames) + "/" + effLoopFrames +
-        "  |  rendered fps ≈ " + rfps.toFixed(1) + "  |  loop " + tl.loopIdx +
+        "  |  rendered fps ≈ " + rfps.toFixed(1) +
+        "  |  skipped " + skippedF + " (" + (lastF > 0 ? (100 * skippedF / lastF).toFixed(1) : "0.0") + "%)" +
+        "  |  loop " + tl.loopIdx +
         (rfps < fps * 0.7 && fpsWindow.length >= 4 ? "  |  ⚠ STALLED — do not film" : "");
     }
   }
+}
+
+function loopV3(now) {
+  if (!running) return;
+  renderV3(now);
   requestAnimationFrame(loopV3);
 }
 
-function loop(now) {
+function renderV2(now) {
   if (!running) return;
   const fps = profile.frame_rate_hz;
   const freeze = $("freezeChk").checked;
@@ -503,6 +543,11 @@ function loop(now) {
         (rfps < fps * 0.7 && fpsWindow.length >= 4 ? "  |  ⚠ STALLED — do not film" : (f < fps ? "  |  ── EMISSION JUST STARTED ──" : ""));
     }
   }
+}
+
+function loop(now) {
+  if (!running) return;
+  renderV2(now);
   requestAnimationFrame(loop);
 }
 
@@ -550,11 +595,13 @@ function startV3() {
   const geom3 = v3TileCenters();
   cv.width = geom3.w; cv.height = geom3.h;
   cv.style.display = "";
+  buildThetaTables();
+  skippedF = 0; fpsWindow = [];
   running = true; t0 = performance.now(); lastF = -1;
   $("stopBtn").disabled = false; $("fsBtn").disabled = false;
   requestAnimationFrame(loopV3);
   if (ticker) clearInterval(ticker);
-  ticker = setInterval(() => loopV3(performance.now()), Math.floor(1000 / fps));
+  ticker = setInterval(() => renderV3(performance.now()), Math.floor(1000 / fps));
 }
 
 $("applyBtn").onclick = validate;
@@ -584,7 +631,7 @@ $("startBtn").onclick = () => {
   // Timer fallback: browsers throttle rAF (battery saver, unfocused windows) but
   // visible-tab timers less so — the emission keeps beating on whichever fires.
   if (ticker) clearInterval(ticker);
-  ticker = setInterval(() => loop(performance.now()), Math.floor(1000 / profile.frame_rate_hz));
+  ticker = setInterval(() => renderV2(performance.now()), Math.floor(1000 / profile.frame_rate_hz));
 };
 $("stopBtn").onclick = () => { running = false; if (ticker) { clearInterval(ticker); ticker = null; } $("cv").style.display = "none"; $("hud").textContent = "stopped"; };
 $("fsBtn").onclick = () => { $("cv").requestFullscreen && $("cv").requestFullscreen(); };
