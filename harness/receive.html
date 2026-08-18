@@ -390,7 +390,7 @@ async function seekWindow(v, geo, tA, tB, capFps, emitFps, onStep) {
       perIdx[idx] = (perIdx[idx] || 0) + 1;
     }
     if (seeks % 60 === 0) {
-      if (onStep) onStep(t);
+      if (onStep && onStep(t) === false) break; // caller-driven abort (prefetch cancel)
       await new Promise(r => setTimeout(r, 0));
     }
   }
@@ -433,11 +433,28 @@ async function harvestDecode(v, geo, file) {
   // completes before the clip is touched (never pay twice for the same drop).
   const queue = peel.ok ? [] : [[0, bootF]];
   if (peel.ok) $("harvest").innerHTML += "<span class='ok'>carried ledger already peels — the clip is not needed</span><br>";
+  // Tier-1 seek∥decode overlap (parallel-harvest design note): the video
+  // element is idle while the worker decodes, so the PROVISIONAL next window
+  // seeks underneath the current decode. Any unvisited span is safe to decode
+  // (droplets bank by identity, visited marks truthfully) — the plan is
+  // advisory, so a post-absorb divergence just cancels the prefetch with its
+  // seeks counted honestly.
+  let prefetch = null, prefetchCancel = false, everLocked = false, totalAdded = 0;
   while (queue.length) {
     const [wf0, wf1] = queue.shift();
     wrun++;
-    const cap = await seekWindow(v, geo, wf0 / R, wf1 / R, capFps, R,
-      t => setStatus("harvest w" + wrun + ": seeking " + t.toFixed(1) + " s…", "warn"));
+    let cap;
+    if (prefetch && prefetch.wf0 === wf0 && prefetch.wf1 === wf1) {
+      cap = await prefetch.p; prefetch = null;
+    } else {
+      if (prefetch) { // divergent prefetch (growth or plan change) — cancel, count, drop
+        prefetchCancel = true;
+        const cPre = await prefetch.p;
+        seeks += cPre.seeks; prefetch = null; prefetchCancel = false;
+      }
+      cap = await seekWindow(v, geo, wf0 / R, wf1 / R, capFps, R,
+        t => setStatus("harvest w" + wrun + ": seeking " + t.toFixed(1) + " s…", "warn"));
+    }
     seeks += cap.seeks;
     clipLog.windows.push([Math.round(wf0 / R * 10) / 10, Math.round(wf1 / R * 10) / 10]);
     const hints = {};
@@ -445,7 +462,7 @@ async function harvestDecode(v, geo, file) {
     setStatus("harvest w" + wrun + ": decoding " + cap.frames.length + " frames" +
       (getWorker() ? " (off-thread)" : "") + "…", "warn");
     const isV3h = !!(profile.bands && profile.plate);
-    const res = await decodeAsync(cap.frames, profile, {
+    const decodeP = decodeAsync(cap.frames, profile, {
       aligned: false, handheld: $("m_hand").checked,
       loopSeconds: +$("m_loop").value || 60,
       mirror: { receive: false },
@@ -456,11 +473,31 @@ async function harvestDecode(v, geo, file) {
       // showed the cost: k1 SNR +7 dB over the ladder, zero CRC passes
       plateSolve: isV3h && $("m_solve").checked
     });
+    // kick the provisional next window's seeks under the decode
+    if (!queue.length && !prefetch) {
+      const visProv = visited.map(s => s.slice());
+      HV.markVisited(visProv, wf0, wf1);
+      const planProv = HV.planSpans(led, Object.values(locks), 0, durF,
+        { visited: visProv, minFrames: minWinF, joinGap: joinGapF, maxFrames: maxWinF, overlap: overlapF });
+      const nxt = planProv.windows.length ? planProv.windows[0]
+        : HV.nextUnvisited(visProv, 0, durF, chunkF, overlapF);
+      if (nxt && nxt[1] - nxt[0] >= Math.round(2 * R)) {
+        const pw = wrun;
+        prefetch = {
+          wf0: nxt[0], wf1: nxt[1],
+          p: seekWindow(v, geo, nxt[0] / R, nxt[1] / R, capFps, R,
+            t => prefetchCancel ? false
+               : void setStatus("harvest w" + pw + ": decoding ∥ prefetching " + t.toFixed(1) + " s…", "warn"))
+        };
+      }
+    }
+    const res = await decodeP;
     let line = "w" + wrun + " [" + (wf0 / R).toFixed(1) + "–" + (wf1 / R).toFixed(1) + " s] " + cap.seeks + " seeks";
     let lockedAny = false;
     if (res.error) line += " — <span class='bad'>" + res.error + "</span>";
     else {
       const got = HV.absorb(led, res, profile);
+      totalAdded += got.added;
       for (const em of res.emitters) for (const a of (em.annuli || [])) {
         if (a && a.alignLag != null) lockedAny = true;
         // A ring outvoted on lag is quarantined — no droplets banked above,
@@ -470,6 +507,7 @@ async function harvestDecode(v, geo, file) {
         const lk = pa && HV.lockFrom(a, pa, profile, cap.fBase);
         if (lk) locks[a.annulus] = lk;
       }
+      if (lockedAny) everLocked = true;
       peel = HV.tryPeel(led, profile);
       line += " — +" + got.added + " droplets (" + got.dup + " dup" +
         (got.quarantined ? ", <span class='warn'>" + got.quarantined + " quarantined</span>" : "") +
@@ -496,6 +534,14 @@ async function harvestDecode(v, geo, file) {
     $("harvest").innerHTML += line + "<br>";
     ledgerInfo();
     if (peel && peel.ok) break;
+    // Dead-clip guard: bootstrap + its growth + a second stretch all silent
+    // on an empty take = stop burning seeks (the 29-minute exhaustion of a
+    // clip where nothing ever locked). Anything carried in stays banked.
+    if (!everLocked && totalAdded === 0 && wrun >= 4) {
+      $("harvest").innerHTML += "<span class='bad'>nothing locks anywhere after " + wrun +
+        " windows — stopping early. Check the EMIT side first (HUD skip receipt, mode summary green, payload K=… line), then range/zoom.</span><br>";
+      break;
+    }
     if (!queue.length) {
       const plan = HV.planSpans(led, Object.values(locks), 0, durF,
         { visited, minFrames: minWinF, joinGap: joinGapF, maxFrames: maxWinF, overlap: overlapF });
@@ -505,6 +551,11 @@ async function harvestDecode(v, geo, file) {
         if (nx && nx[1] - nx[0] >= Math.round(2 * R)) queue.push(nx);
       }
     }
+  }
+  if (prefetch) { // in-flight prefetch at exit — cancel, count its seeks honestly
+    prefetchCancel = true;
+    const cPre = await prefetch.p;
+    seeks += cPre.seeks; prefetch = null;
   }
   const wall = ((performance.now() - t0Wall) / 1000).toFixed(1);
   const saved = Math.max(0, Math.round(100 * (1 - seeks / baseline)));
