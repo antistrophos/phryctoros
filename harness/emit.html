@@ -121,7 +121,8 @@ let thTab = null;   // theta tables for the live contour math (built at Start)
    coefficients and runs pure multiply-adds — ~54 trig calls per frame
    instead of ~33k (the render-cost half of the reliability fix). */
 function buildThetaTables() {
-  const N = 256;
+  const N = 512; // match the pre-rewrite band resolution — the trig tables make
+                 // the point count cheap, so there's no reason to have halved it
   const ks = new Set([1]);
   for (const a of profile.annuli) for (const k of a.boundary.harmonics) ks.add(k);
   if (profile.beacon) for (const k of profile.beacon.harmonics) ks.add(k);
@@ -136,7 +137,12 @@ function buildThetaTables() {
   thTab = { N, ct, st };
 }
 
-function getCtx() { return $("cv").getContext("2d", { alpha: false, desynchronized: true }); }
+// Plain 2D context. `desynchronized: true` was tried here (6eaf8ce) and is
+// reverted: it desyncs the canvas paint from the display refresh to cut
+// latency, and its documented cost is TEARING — a filmed screen then catches
+// mid-update frames, whole-contour phase becomes fiction, and every ring goes
+// no-lock with healthy contrast (field-clip-2's tear, self-inflicted at emit).
+function getCtx() { return $("cv").getContext("2d"); }
 
 function gray(v) { const g = Math.round(v * 255); return "rgb(" + g + "," + g + "," + g + ")"; }
 
