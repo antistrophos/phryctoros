@@ -217,13 +217,34 @@
      units, measured every frame with nothing to average — no fiducial-width
      anchor, QR-free steady state. Presets (§2): ONE toggle, session-atomic;
      the base edge never upgrades (must-decode tier + the M≤4 carrier gate). */
+  /* preset: undefined | "high-rate" | "classic" | "high-rate-classic"
+     ("inverted" is kept as an alias for the default — it names what the
+     default now IS, and older settings strings still carry it.)
+
+     THE LADDER IS INVERTED BY DEFAULT as of 2026-08-21 (the practitioner's
+     ruling, amending the frozen contract's §1 M-ladder): base innermost,
+     fine constellations outward. Field-decided — the first complete v3
+     carriage (::b) ran inverted, and the mechanism the field showed is
+     radial, not preset-specific: registration error is radius-leveraged, so
+     the outermost edge takes the largest pixel displacement per unit of H
+     error, while base's droplets are the longest CRC exposure on the plate.
+     Both push base inward. It also matches the D-ring's radial semantics
+     (coarse and robust near centre, fine outward) for the v4 plate.
+
+     "classic" keeps the ORIGINAL ladder so pre-flip captures still decode —
+     the profile is the CONTRACT, exactly as profileV1 preserves the v1 layer
+     order. High-rate inverts too (my reading of "the inverted structure",
+     flagged: the radial argument is preset-independent and a split family
+     would leave the two presets with opposite radial semantics; revert by
+     making `inv` false for hi if that reading is wrong). */
   function profileV3(preset, overrides) {
-    var hi = preset === "high-rate";
-    var inv = preset === "inverted";
+    var hi = preset === "high-rate" || preset === "high-rate-classic";
+    var classic = preset === "classic" || preset === "high-rate-classic";
+    var inv = !classic;
     var p = {
-      profile_version: hi ? "v3-hr" : (inv ? "v3-inv" : "v3"),
+      profile_version: hi ? (classic ? "v3-hr-classic" : "v3-hr") : (classic ? "v3-classic" : "v3"),
       units: "flat-circle-3.00",
-      preset: hi ? "high-rate" : (inv ? "resilient-inverted" : "resilient"),
+      preset: hi ? (classic ? "high-rate-classic" : "high-rate") : (classic ? "resilient-classic" : "resilient"),
       frame_rate_hz: 30,            // §7: 30 fps emission @ 60 fps capture baseline
       render: {
         size_px: 1024,
@@ -312,15 +333,13 @@
         { index: 3, role: "enhancement" }    // A-outer (close-range)
       ]
     };
-    // v3.1 TRIAL "inverted" (practitioner's, 2026-08-18, field-motivated: at
-    // range under saddle tracking the innermost edge out-delivered base by
-    // ~9 dB — registration error is radius-leveraged, and base's 12-symbol
-    // droplets die first at marginal SNR): mirror the four edge CONFIGS
-    // across radii — constellation, harmonic set, amplitudes, AND rotation
-    // rate move together; only geometry (r0, crossing, bands) stays put.
-    // Every k·f_rot flicker product is preserved exactly, and base inherits
-    // the deepest branch-guide ladder (k≤13). Base = innermost: layer 0 at
-    // annulus 0, matching the D-ring's coarse-near-center radial semantics.
+    // The inversion itself: mirror the four edge CONFIGS across radii —
+    // constellation, harmonic set, amplitudes, AND rotation rate move
+    // together; only geometry (r0, crossing, bands) stays put. Because the
+    // rates travel with their configs, every k·f_rot product in the flicker
+    // analysis is preserved EXACTLY (a naive M-only swap would have parked
+    // k13 × 1.5 Hz = 19.5 Hz in the photosensitivity peak). Base inherits
+    // the deepest branch-guide ladder (k ≤ 13) at the calmest radius.
     if (inv) {
       var cfgs = p.annuli.map(function (a) { return { rotation: a.rotation, boundary: a.boundary }; });
       for (var iv = 0; iv < p.annuli.length; iv++) {

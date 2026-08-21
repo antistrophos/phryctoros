@@ -99,7 +99,8 @@ async function runClip(name) {
     : pv === "v3" ? OC.profile.profileV3()
     : pv === "v3q" ? OC.profile.profileV3(undefined, { qr_persistent: true }) // finder-first decode for persistent-QR emissions
     : pv === "v3hr" ? OC.profile.profileV3("high-rate")
-    : pv === "v3i" ? OC.profile.profileV3("inverted") // TRIAL: inverted M ladder, base innermost
+    : pv === "v3i" ? OC.profile.profileV3()            // legacy alias — v3 IS the inverted ladder now
+    : pv === "v3c" ? OC.profile.profileV3("classic")   // pre-2026-08-21 captures (base outermost)
     : OC.profile.defaultProfile();
   // quad=1: v3.1 amendment-2 quadrant corners (saddle-first registration +
   // saddle track-solve) — for clips filmed with the quadrant emitter.

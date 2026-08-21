@@ -198,8 +198,11 @@ async function main() {
     if (v3.warnings.length) note("T22 v3 warnings", v3.warnings.join(" | "));
     const p3h = OC.profile.profileV3("high-rate");
     const v3h = OC.profile.validate(p3h);
-    record("T22 v3 high-rate profile validates (M-ladder 32/32/16/4, base stays 4)",
-      v3h.ok && p3h.annuli[0].rotation.M === 32 && p3h.annuli[3].rotation.M === 4 && p3h.carriage.droplet_bits === 48,
+    // Inverted by default since 2026-08-21: high-rate reads 4/16/32/32
+    // inward-to-outward — base (M=4) innermost, the M=32 pair outermost.
+    record("T22 v3 high-rate profile validates (M-ladder 4/16/32/32 inward-out, base stays 4 at the innermost edge)",
+      v3h.ok && p3h.annuli[0].rotation.M === 4 && p3h.annuli[0].layer === 0 &&
+      p3h.annuli[3].rotation.M === 32 && p3h.carriage.droplet_bits === 48,
       (v3h.errors[0] || "0 errors") + " M-ladder " + p3h.annuli.map(a => a.rotation.M).join("/"));
     // Frozen §1 geometry spot-checks: sums 0.090, C-pinch exactly 0.23, approach 0.20.
     const sums = p3.annuli.map(a => OC.profile.sumAmp(a));
@@ -229,11 +232,18 @@ async function main() {
         return { seed: a.rotation.seed, droplets: col.passed.map(d => ({ c: d.c, bytes: d.bytes })) };
       });
       const asm = OC.fountain.assemble(perRing, p3);
-      const D0 = OC.fountain.ringD(p3.annuli[0], enc.geom);
-      const padOk = preset === "high-rate" ? D0 === 10 : D0 === 6; // 48/5 ceils to 10; 24/4 exact
-      record("T22a " + preset + ": self-framed payload round-trips (K=" + enc.K + ", D₀=" + D0 + ")",
+      // Droplet symbol counts are an INVARIANT of (droplet_bits, M), not of
+      // ring position — which the ladder flip makes worth asserting directly.
+      // The M=32 case is the tail-padding one the freeze called out: 48 bits
+      // over 5-bit symbols ceils to 10 (two pad bits); every other M divides.
+      const bitsOf = { 2: 1, 4: 2, 8: 3, 16: 4, 32: 5 };
+      const dAll = p3.annuli.map(a => OC.fountain.ringD(a, enc.geom));
+      const dOk = p3.annuli.every((a, ai) => dAll[ai] === Math.ceil(enc.geom.dropletBits / bitsOf[a.rotation.M]));
+      const m32 = p3.annuli.findIndex(a => a.rotation.M === 32);
+      const padOk = dOk && (preset === "high-rate" ? dAll[m32] === 10 : true);
+      record("T22a " + preset + ": self-framed payload round-trips; per-ring droplet symbols follow ceil(bits/log2 M) — D " + dAll.join("/"),
         asm.ok === true && asm.text === msg && asm.ftype === 0 && padOk,
-        JSON.stringify({ ok: asm.ok, K: asm.K, droplets: asm.droplets, text: asm.text.slice(0, 12) + "…" }));
+        JSON.stringify({ ok: asm.ok, K: asm.K, droplets: asm.droplets, text: asm.text.slice(0, 12) + "…", D: dAll.join("/"), padOk }));
     }
   }
 
@@ -460,13 +470,22 @@ async function main() {
       "preset " + auto.preset + " passes " + auto.passes);
   }
 
-  await tick("T22k: inverted M-ladder trial — mirror integrity + full round-trip…");
+  await tick("T22k: the inverted ladder is the DEFAULT — mirror integrity, classic still intact, full round-trip…");
   {
-    // v3.1 TRIAL preset (practitioner's, field-motivated 2026-08-18): the four
-    // edge configs mirror across radii — base (M=4) innermost with the deepest
-    // harmonic ladder, M=16 outermost. Rates move WITH the configs so every
-    // k·f_rot flicker product is preserved exactly.
-    const pI = OC.profile.profileV3("inverted");
+    // Ruled 2026-08-21 (practitioner), amending the frozen contract's §1
+    // M-ladder after the first complete field carriage (::b) ran inverted:
+    // profileV3() IS base-innermost now. The four edge configs mirror across
+    // radii — base (M=4) innermost with the deepest harmonic ladder, M=16
+    // outermost — and rates move WITH the configs so every k·f_rot flicker
+    // product is preserved exactly. "classic" keeps the original ladder so
+    // pre-flip captures still decode (the profile is the CONTRACT).
+    const pI = OC.profile.profileV3();
+    const pC = OC.profile.profileV3("classic");
+    const classicOk = pC.annuli[0].rotation.M === 16 && pC.annuli[0].layer === 3 &&
+      pC.annuli[0].boundary.harmonics.length === 6 &&
+      pC.annuli[3].rotation.M === 4 && pC.annuli[3].layer === 0 &&
+      pC.annuli[3].boundary.harmonics.length === 3 && OC.profile.validate(pC).ok;
+    const aliasOk = OC.profile.profileV3("inverted").annuli[0].rotation.M === 4;
     const vI = OC.profile.validate(pI);
     const a0i = pI.annuli[0], a3i = pI.annuli[3];
     const sums = pI.annuli.map(a => a.boundary.amplitudes.reduce((s, x) => s + x, 0));
@@ -480,10 +499,10 @@ async function main() {
     seqI = null;
     const emI = rI.error ? null : rI.emitters[0];
     const payI = emI && emI.payload;
-    record("T22k inverted ladder: validates clean, the mirror holds (base innermost at 1.5 Hz with the k≤13 ladder, M=16 outermost at 0.75 Hz), and the payload round-trips on all four rings",
-      !!(vI.ok && mirrorOk && emI && payI && payI.ok === true && payI.text === "V3!" &&
+    record("T22k the default ladder is INVERTED (ruled 2026-08-21): profileV3() validates with base innermost at 1.5 Hz carrying the k≤13 ladder and M=16 outermost at 0.75 Hz, \"classic\" still returns the original ladder for pre-flip clips, and the payload round-trips on all four rings",
+      !!(vI.ok && mirrorOk && classicOk && aliasOk && emI && payI && payI.ok === true && payI.text === "V3!" &&
          emI.annuli.every(a => !a.beacon && a.dropletsPassed > 0)),
-      "valid " + vI.ok + " mirror " + mirrorOk +
+      "valid " + vI.ok + " mirror " + mirrorOk + " classic " + classicOk + " alias " + aliasOk +
       (emI ? " droplets " + emI.annuli.map(a => a.dropletsPassed).join("/") +
              " → " + JSON.stringify(payI && { ok: payI.ok, text: payI.text })
            : " no emitter: " + JSON.stringify(rI).slice(0, 120)));
