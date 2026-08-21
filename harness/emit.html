@@ -604,7 +604,7 @@ function prepareV3() {
   }
   beaconSchedule = OC.emission.buildBeaconSchedule(profile, effLoopFrames, envBytes);
   qrCanvas = buildQrCanvas(envBytes);
-  return { fps, layout, carousels, payloadBytes, envBytes, freezeF, effLoopFrames, schedules, schedulesT, beaconSchedule };
+  return { fps, layout, carousels, payloadBytes, envInfo, envBytes, freezeF, effLoopFrames, schedules, schedulesT, beaconSchedule };
 }
 
 /* Export the emission loop as a VIDEO FILE. Frames come from the ANALYTIC
@@ -641,24 +641,89 @@ async function exportLoopVideo() {
   const qrm = OC.emission.envelopeModules(profile.qr, prep.envBytes);
   const tStart = performance.now();
   $("exportBtn").disabled = true;
-  for (let f = 0; f < loopFramesTotal; f++) {
+
+  // Render fans out across cores (render-worker.js): the analytic renderer is
+  // pure, so frames are independent — only the ENCODER needs order. Workers
+  // rebuild schedules from the profile + payload (deterministic seeds), so
+  // nothing but numbers crosses postMessage and every worker's pixels are the
+  // main thread's pixels. Falls back to in-thread rendering wherever workers
+  // can't load (file:// standalone, blocked scripts).
+  const nCores = Math.max(1, Math.min(6, (navigator.hardwareConcurrency || 4) - 1));
+  let pool = [];
+  try {
+    for (let i = 0; i < nCores; i++) pool.push(new Worker("render-worker.js"));
+    await Promise.all(pool.map(w => new Promise((res, rej) => {
+      w.onerror = () => rej(new Error("worker load"));
+      w.onmessage = () => res();
+      w.postMessage({ cmd: "setup", profile: profile, payloadBytes: prep.payloadBytes ? prep.payloadBytes.slice().buffer : null,
+                      envInfo: prep.envInfo || null, effLoopFrames: prep.effLoopFrames });
+    })));
+  } catch (e) {
+    pool.forEach(w => w.terminate()); pool = [];
+  }
+
+  const renderInThread = (f) => {
     const tl = OC.emission.timeline(profile, f);
     const eff = tl.eff % prep.effLoopFrames;
     const img = OC.emission.renderFrame(profile, eff, {
       schedules: prep.schedules, schedulesT: prep.schedulesT, beaconSchedule: prep.beaconSchedule,
-      envBytes: prep.envBytes, countdown: !!tl.freeze, qrModules: qrm });
+      envBytes: prep.envBytes, countdown: !!tl.freeze, qrModules: qrm, fast: true });
     OC.emission.toImageData(img, imgData);
+    return null; // imgData already holds the frame
+  };
+  const submit = (f, rgbaBuf) => {
+    if (rgbaBuf) imgData.data.set(new Uint8ClampedArray(rgbaBuf));
     octx.putImageData(imgData, 0, 0);
     const vf = new VideoFrame(off, { timestamp: Math.round(f * 1e6 / fps), duration: Math.round(1e6 / fps) });
     enc.encode(vf, { keyFrame: f % 15 === 0 });
     vf.close();
-    if (encErr) break;
-    if (f % 5 === 0) {
+  };
+  const tick = (f) => {
+    if (f % 15 === 0)
       $("hud").textContent = "exporting " + f + "/" + loopFramesTotal + " frames (" +
-        ((performance.now() - tStart) / 1000).toFixed(0) + " s)…";
-      await new Promise(r => setTimeout(r, 0));
-      while (enc.encodeQueueSize > 8) await new Promise(r => setTimeout(r, 5));
+        ((performance.now() - tStart) / 1000).toFixed(0) + " s" + (pool.length ? ", " + pool.length + " cores" : "") + ")…";
+  };
+
+  if (!pool.length) {
+    for (let f = 0; f < loopFramesTotal && !encErr; f++) {
+      renderInThread(f); submit(f, null); tick(f);
+      if (f % 5 === 0) { await new Promise(r => setTimeout(r, 0)); while (enc.encodeQueueSize > 8) await new Promise(r => setTimeout(r, 5)); }
     }
+  } else {
+    // Keep every worker fed; encode strictly in frame order as results land.
+    const done = new Map();
+    let next = 0, issued = 0;
+    const busy = pool.map(() => null);
+    await new Promise((resolve, reject) => {
+      const drain = () => {
+        while (done.has(next)) {
+          submit(next, done.get(next)); done.delete(next); tick(next); next++;
+          if (next >= loopFramesTotal) { resolve(); return; }
+        }
+        if (encErr) { resolve(); return; }
+        pump();
+      };
+      const pump = () => {
+        for (let i = 0; i < pool.length; i++) {
+          // throttle: never run more than ~2 frames per worker ahead of the encoder
+          if (busy[i] === null && issued < loopFramesTotal && issued - next < pool.length * 2 && enc.encodeQueueSize < 12) {
+            busy[i] = issued; pool[i].postMessage({ f: issued }); issued++;
+          }
+        }
+      };
+      pool.forEach((w, i) => {
+        w.onmessage = (ev) => {
+          const m = ev.data;
+          busy[i] = null;
+          if (!m.ok) { encErr = new Error(m.error); resolve(); return; }
+          done.set(m.f, m.rgba);
+          drain();
+        };
+        w.onerror = (ev) => { encErr = new Error("render worker: " + (ev.message || "failed")); resolve(); };
+      });
+      pump();
+    });
+    pool.forEach(w => w.terminate());
   }
   if (!encErr) await enc.flush();
   enc.close();

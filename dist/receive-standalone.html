@@ -1082,6 +1082,66 @@
     return (wIn * (1 - q) + (1 - wIn) * q) * covDisc;
   }
 
+  /* ——— Fast-render tables (opt-in: opts.fast) ———
+     The analytic renderer costs one atan2 plus ~12 cos() per BAND pixel —
+     ~8M transcendental calls per 1024² frame, measured at 85% of video-export
+     wall clock. Two caches remove them:
+       · ANGLE MAP — θ per pixel is a pure function of pixel position (the
+         unit scale cancels inside atan2), so it is built once per canvas size
+         and reused across every frame and every profile.
+       · CONTOUR TABLES — r(θ) = r0 + Σ a·cos(kθ+β) sampled on an NA-point θ
+         grid per frame, each harmonic's phase folded into two coefficients
+         (C·cos kθ + S·sin kθ) against cached cos/sin tables: NA·harmonics
+         multiply-adds per edge instead of cosines per pixel.
+     Per pixel the band test becomes two linear interpolations. This is NOT
+     bit-identical to the exact path — θ interpolates between grid points —
+     but the error is bounded by ⅛·max|r″|·Δθ² ≈ 4e-6 units ≈ 6e-4 px, three
+     orders under the 1.6 px soft edge and ~30× under 8-bit quantisation.
+     T22L asserts it against the exact renderer, pixels and droplets both.
+     1-up only; the tiled renderer keeps the exact path (per-tile centres want
+     per-tile maps — worth doing when 6-up emission becomes a field case). */
+  var FAST_NA = 2048;
+  var _angleCache = null;
+  function angleMap(size) {
+    if (_angleCache && _angleCache.size === size) return _angleCache.map;
+    var m = new Float32Array(size * size), half = size / 2, kf = FAST_NA / TAU;
+    var lim = FAST_NA - 1e-4;
+    for (var py = 0; py < size; py++) {
+      var y = py + 0.5 - half, off = py * size;
+      for (var px = 0; px < size; px++) {
+        var th = Math.atan2(y, px + 0.5 - half);
+        if (th < 0) th += TAU;
+        var t = th * kf;
+        m[off + px] = t >= lim ? lim : t;   // keep j+1 inside the table
+      }
+    }
+    _angleCache = { size: size, map: m };
+    return m;
+  }
+  var _harmCos = {}, _harmSin = {};
+  function harmTable(k) {
+    if (!_harmCos[k]) {
+      var c = new Float64Array(FAST_NA + 1), s = new Float64Array(FAST_NA + 1);
+      for (var j = 0; j <= FAST_NA; j++) {
+        var th = TAU * j / FAST_NA;
+        c[j] = Math.cos(k * th); s[j] = Math.sin(k * th);
+      }
+      _harmCos[k] = c; _harmSin[k] = s;
+    }
+  }
+  function contourTable(r0, betas) {
+    var out = new Float64Array(FAST_NA + 1);
+    out.fill(r0);
+    if (betas) for (var h = 0; h < betas.length; h++) {
+      var b = betas[h];
+      harmTable(b.k);
+      var c = _harmCos[b.k], s = _harmSin[b.k];
+      var C = b.a * Math.cos(b.beta), S = -b.a * Math.sin(b.beta);
+      for (var j = 0; j <= FAST_NA; j++) out[j] += C * c[j] + S * s[j];
+    }
+    return out;
+  }
+
   /* The v3 renderer. f is the EFFECTIVE frame (schedule position — the caller
      maps wall clock through timeline()). opts.countdown renders the freeze
      face: bands frozen at f, corners kept, center = envelope QR (the swap the
@@ -1154,8 +1214,39 @@
       qrModU = profile.qr.width_units / qrN;
     }
 
+    // Opt-in fast tables (see the FAST_NA block above). Built per frame:
+    // one contour per band boundary plus the beacon's radial offset.
+    var fast = !!opts.fast, tMap = null, loT = null, hiT = null, bconT = null;
+    if (fast) {
+      tMap = angleMap(size);
+      loT = bands.map(function (B) { return contourTable(B.lo.r0, B.lo.betas); });
+      hiT = bands.map(function (B) { return contourTable(B.hi.r0, B.hi.betas); });
+      if (beacon) bconT = contourTable(0, beacon.betas);
+    }
+
+    // Loop invariants hoisted out of the ~1M-pixel body: every one of these
+    // was a chained property load per pixel (pl.quiet_r, B.rMin, B.lo.r0 …).
+    // Pure hoisting — no arithmetic is reassociated, so the exact path stays
+    // bit-identical while shedding most of its per-pixel overhead.
+    var quietLim = pl.quiet_r + pad;
+    var centerRout = pl.center.r_out;
+    var brIn = pl.breaker.r_in, brOut = pl.breaker.r_out;
+    var reach = beacon ? beacon.sum : 0;
+    var brLoLim = brIn - reach - pad, brHiLim = brOut + reach + pad;
+    var qrDark = centerQR ? profile.qr.dark : 0;
+    var nb = bands.length;
+    var bRMin = new Float64Array(nb), bRMax = new Float64Array(nb);
+    var bLoR0 = new Float64Array(nb), bHiR0 = new Float64Array(nb);
+    var bLoBet = new Array(nb), bHiBet = new Array(nb);
+    for (var bh = 0; bh < nb; bh++) {
+      bRMin[bh] = bands[bh].rMin; bRMax[bh] = bands[bh].rMax;
+      bLoR0[bh] = bands[bh].lo.r0; bHiR0[bh] = bands[bh].hi.r0;
+      bLoBet[bh] = bands[bh].lo.betas; bHiBet[bh] = bands[bh].hi.betas;
+    }
+
     var cAt = pl.corners.at, cR = pl.corners.r_out;
     var cornerQuad = pl.corner_style === "quadrant";
+    var cLoLim = -cR - pad, cHiLim = cR + pad;
     var half = size / 2, d = img.data;
     for (var py = 0; py < size; py++) {
       var y = (py + 0.5 - half) / scale;
@@ -1164,20 +1255,23 @@
         var x = (px + 0.5 - half) / scale;
         var v = bg;
         var r = Math.sqrt(x * x + y * y);
-        if (r <= pl.quiet_r + pad) {
+        if (r <= quietLim) {
           if (centerQR) {
             var ax = x < 0 ? -x : x, ay = y < 0 ? -y : y;
             if (ax <= qrHalf && ay <= qrHalf) {
               var mx = Math.floor((x + qrHalf) / qrModU); if (mx >= qrN) mx = qrN - 1;
               var my = Math.floor((y + qrHalf) / qrModU); if (my >= qrN) my = qrN - 1;
-              if (qrm[my * qrN + mx]) v = profile.qr.dark;
+              if (qrm[my * qrN + mx]) v = qrDark;
             }
           } else {
-            var cov = bullseyeCov(r, pl.center.r_out, scale, soft);
-            var loB = pl.breaker.r_in, hiBk = pl.breaker.r_out;
-            var reach = beacon ? beacon.sum : 0;
-            if (r >= loB - reach - pad && r <= hiBk + reach + pad) {
-              var dlt = beacon ? evalBetas(beacon.betas, atan2(y, x)) : 0;
+            var cov = bullseyeCov(r, centerRout, scale, soft);
+            var loB = brIn, hiBk = brOut;
+            if (r >= brLoLim && r <= brHiLim) {
+              var dlt;
+              if (fast) {
+                var bt = tMap[rowOff + px], bj = bt | 0, bfr = bt - bj;
+                dlt = bconT ? bconT[bj] + (bconT[bj + 1] - bconT[bj]) * bfr : 0;
+              } else dlt = beacon ? evalBetas(beacon.betas, atan2(y, x)) : 0;
               var covB = clamp01((r - (loB + dlt)) * scale / soft + 0.5) * clamp01(((hiBk + dlt) - r) * scale / soft + 0.5);
               if (covB > cov) cov = covB;
             }
@@ -1185,18 +1279,25 @@
           }
         } else {
           var axc = (x < 0 ? -x : x) - cAt, ayc = (y < 0 ? -y : y) - cAt;
-          if (axc >= -cR - pad && axc <= cR + pad && ayc >= -cR - pad && ayc <= cR + pad) {
+          if (axc >= cLoLim && axc <= cHiLim && ayc >= cLoLim && ayc <= cHiLim) {
             var rc = Math.sqrt(axc * axc + ayc * ayc);
             var covK = cornerQuad ? quadrantCov(axc, ayc, rc, cR, scale, soft)
                                   : bullseyeCov(rc, cR, scale, soft);
             if (covK > 0) v = bg + (shade - bg) * covK;
           } else {
-            for (var bi2 = 0; bi2 < bands.length; bi2++) {
-              var B = bands[bi2];
-              if (r < B.rMin || r > B.rMax) continue;
-              var th = atan2(y, x);
-              var bLo = B.lo.r0 + evalBetas(B.lo.betas, th);
-              var bHi = B.hi.r0 + evalBetas(B.hi.betas, th);
+            for (var bi2 = 0; bi2 < nb; bi2++) {
+              if (r < bRMin[bi2] || r > bRMax[bi2]) continue;
+              var bLo, bHi;
+              if (fast) {
+                var tf = tMap[rowOff + px], tj = tf | 0, tfr = tf - tj;
+                var Lt = loT[bi2], Ht = hiT[bi2];
+                bLo = Lt[tj] + (Lt[tj + 1] - Lt[tj]) * tfr;
+                bHi = Ht[tj] + (Ht[tj + 1] - Ht[tj]) * tfr;
+              } else {
+                var th = atan2(y, x);
+                bLo = bLoR0[bi2] + evalBetas(bLoBet[bi2], th);
+                bHi = bHiR0[bi2] + evalBetas(bHiBet[bi2], th);
+              }
               var cov2 = clamp01((bHi - r) * scale / soft + 0.5) * clamp01((r - bLo) * scale / soft + 0.5);
               if (cov2 > 0) v = bg + (fill - bg) * cov2;
               break; // bands are disjoint by the trough guards

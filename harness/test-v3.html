@@ -489,6 +489,59 @@ async function main() {
            : " no emitter: " + JSON.stringify(rI).slice(0, 120)));
   }
 
+  await tick("T22L: fast renderer ≡ exact renderer (pixels and droplets)…");
+  {
+    // The video export renders through the opt-in FAST path (angle map +
+    // per-frame contour tables): θ interpolates between grid points instead
+    // of an atan2 per pixel, so it is near-identical rather than bit-identical.
+    // This asserts the two things that matter: no pixel differs by as much as
+    // one 8-bit code value (so the encoded video is the exact signal), and a
+    // decode of fast-rendered frames yields the SAME droplets and payload.
+    const pF = OC.profile.profileV3(undefined, { plate: { corner_style: "quadrant" } });
+    const encF = OC.fountain.encodeCarousels(pF, OC.fountain.textToBytes("FAST"));
+    const schedF = OC.emission.buildSchedules(pF, 200, encF.carousels);
+    const envF = OC.emission.envelopeBytes(pF, null);
+    const bconF = OC.emission.buildBeaconSchedule(pF, 200, envF);
+    const qrmF = OC.emission.envelopeModules(pF.qr, envF);
+    const mk = (f, fast, cd) => OC.emission.renderFrameV3(pF, f, {
+      schedules: schedF, beaconSchedule: bconF, envBytes: envF, qrModules: qrmF, countdown: cd, fast: fast });
+    let maxDiff = 0, over8 = 0;
+    for (const [f, cd] of [[40, false], [7, true]]) {
+      const A = mk(f, false, cd), B = mk(f, true, cd);
+      for (let i = 0; i < A.data.length; i++) {
+        const dd = Math.abs(A.data[i] - B.data[i]);
+        if (dd > maxDiff) maxDiff = dd;
+        if (dd > 1 / 255) over8++;
+      }
+    }
+    // decode equivalence at a cheaper scale (same geometry ratios)
+    const pS = OC.profile.profileV3(undefined, {
+      plate: { corner_style: "quadrant" }, render: { size_px: 640, scale_px_per_unit: 100 } });
+    const bytesS = OC.fountain.textToBytes("FAST");
+    const seqE = OC.emission.renderSequence(pS, 120, { payloadBytes: bytesS });
+    const rE = OC.pipeline.decodeSequence(seqE.frames, pS, { payload: true, plateSolve: true });
+    seqE.frames.length = 0;
+    const encS = OC.fountain.encodeCarousels(pS, bytesS);
+    const schedS = OC.emission.buildSchedules(pS, 120, encS.carousels);
+    const envS = OC.emission.envelopeBytes(pS, null);
+    const bconS = OC.emission.buildBeaconSchedule(pS, 120, envS);
+    const framesF = [];
+    for (let f = 0; f < 120; f++)
+      framesF.push({ f: f, img: OC.emission.renderFrameV3(pS, f, {
+        schedules: schedS, beaconSchedule: bconS, envBytes: envS, fast: true }) });
+    const rF = OC.pipeline.decodeSequence(framesF, pS, { payload: true, plateSolve: true });
+    framesF.length = 0;
+    const dropsE = rE.error ? null : rE.emitters[0].annuli.map(a => a.dropletsPassed).join("/");
+    const dropsF = rF.error ? null : rF.emitters[0].annuli.map(a => a.dropletsPassed).join("/");
+    const payE = rE.error ? null : rE.emitters[0].payload, payF = rF.error ? null : rF.emitters[0].payload;
+    record("T22L fast renderer: every pixel agrees with the exact renderer to under one 8-bit code value, and a decode of fast-rendered frames returns identical droplets and payload",
+      !!(over8 === 0 && maxDiff < 1 / 255 && dropsE && dropsE === dropsF &&
+         payE && payF && payE.ok === payF.ok && payE.text === payF.text),
+      "maxDiff " + maxDiff.toExponential(2) + " (1/255 = " + (1 / 255).toExponential(2) + "), pixels over 8-bit: " + over8 +
+      " · droplets exact " + dropsE + " vs fast " + dropsF +
+      " · payload " + JSON.stringify(payE && { ok: payE.ok, text: payE.text }) + " vs " + JSON.stringify(payF && { ok: payF.ok, text: payF.text }));
+  }
+
   // ——— T23: tiling (§7) — the density knob, tile identity, the cross-tile pool ———
   await tick("T23a: 6-up render geometry (designated tile, gutter vertices, per-tile gauge)…");
   {
