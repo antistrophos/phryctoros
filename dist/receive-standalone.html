@@ -4631,9 +4631,78 @@
     return scan(0, maxLag);
   }
 
+  /* GF(2) rank solve — the fallback when greedy peeling stalls.
+
+     Belief-propagation peeling only advances through degree-1 droplets, so it
+     stops the moment no droplet has exactly one unknown left — and the old
+     code then THREW AWAY everything it held. But those droplets are a linear
+     system: N equations over the U still-unknown blocks, and greedy succeeds
+     only where a degree-1 cascade happens to exist, while elimination
+     succeeds whenever the system has full rank — which typically happens
+     well earlier. (Field case: K=72 with 107 droplets banked stalled at
+     66/72, leaving ~41 unused droplets over 6 unknowns.)
+
+     Input is the POST-PEEL reduced state: each surviving droplet's `sub` is
+     its remaining unknowns and `bytes` already has every recovered block
+     XORed out, so the system is pre-reduced for free. Row echelon over a
+     bitset per row (U ≤ K ≤ 255, so ≤ 8 words), payload bytes carried along
+     under the same XORs. Back-substitution runs high column to low and stops
+     at any column without a pivot, so a rank-deficient system still yields
+     whatever suffix IS determined rather than nothing. Decoder-side only —
+     no wire change, and it re-reads existing clips and carried ledgers. */
+  function rankSolve(drops, blocks, K, dataBytes) {
+    var colOf = new Int32Array(K), cols = [], i, c, w;
+    for (i = 0; i < K; i++) { colOf[i] = -1; }
+    for (i = 0; i < K; i++) if (!blocks[i]) { colOf[i] = cols.length; cols.push(i); }
+    var U = cols.length;
+    if (!U) return 0;
+    var W = (U + 31) >> 5;
+    var pivot = new Array(U);
+    for (i = 0; i < U; i++) pivot[i] = null;
+
+    for (var q = 0; q < drops.length; q++) {
+      var dr = drops[q];
+      if (!dr.sub || !dr.sub.length) continue;
+      var bits = new Uint32Array(W), bad = false;
+      for (var s = 0; s < dr.sub.length; s++) {
+        c = colOf[dr.sub[s]];
+        if (c < 0) { bad = true; break; }        // already-known block: can't happen post-peel
+        bits[c >> 5] ^= (1 << (c & 31));
+      }
+      if (bad) continue;
+      var row = { bits: bits, bytes: new Uint8Array(dr.bytes) };
+      for (c = 0; c < U && row; c++) {
+        if (!((row.bits[c >> 5] >>> (c & 31)) & 1)) continue;
+        if (!pivot[c]) { pivot[c] = row; row = null; break; }
+        var pr = pivot[c];
+        for (w = 0; w < W; w++) row.bits[w] ^= pr.bits[w];
+        for (var b = 0; b < dataBytes; b++) row.bytes[b] ^= pr.bytes[b];
+      }
+    }
+
+    // Back-substitute high→low: a pivot row for column c carries bits only at
+    // columns ≥ c, so it resolves once every later column it touches is known.
+    var sol = new Array(U), gained = 0;
+    for (c = U - 1; c >= 0; c--) {
+      var p = pivot[c];
+      if (!p) continue;
+      var val = new Uint8Array(p.bytes), okCol = true;
+      for (var c2 = c + 1; c2 < U; c2++) {
+        if (!((p.bits[c2 >> 5] >>> (c2 & 31)) & 1)) continue;
+        if (!sol[c2]) { okCol = false; break; }
+        for (var b2 = 0; b2 < dataBytes; b2++) val[b2] ^= sol[c2][b2];
+      }
+      if (!okCol) continue;
+      sol[c] = val;
+      blocks[cols[c]] = val;
+      gained++;
+    }
+    return gained;
+  }
+
   /* Pool verified droplets from every ring (and eventually every tile) and
      peel. Header (c=0, MAGIC) supplies K; blocks XOR out one by one. */
-  function assemble(perRing, profile) {
+  function assemble(perRing, profile, opts) {
     var g = geom(profile);
     var header = null;
     var lt = []; // { ringSeed, c, bytes }
@@ -4661,28 +4730,44 @@
     var drops = uniq.map(function (d2) {
       return { sub: subsetFor(d2.ringSeed, d2.c, K).slice(), bytes: new Uint8Array(d2.bytes) };
     });
-    var blocks = new Array(K), recovered = 0, progress = true;
-    while (progress) {
-      progress = false;
-      for (var q = 0; q < drops.length; q++) {
-        var dr = drops[q];
-        if (!dr.sub) continue;
-        var unknown = [];
-        for (var s3 = 0; s3 < dr.sub.length; s3++) {
-          var bi = dr.sub[s3];
-          if (blocks[bi]) { for (var j3 = 0; j3 < g.dataBytes; j3++) dr.bytes[j3] ^= blocks[bi][j3]; }
-          else unknown.push(bi);
+    var blocks = new Array(K);
+    var peelGreedy = function () {
+      var progress = true;
+      while (progress) {
+        progress = false;
+        for (var q = 0; q < drops.length; q++) {
+          var dr = drops[q];
+          if (!dr.sub) continue;
+          var unknown = [];
+          for (var s3 = 0; s3 < dr.sub.length; s3++) {
+            var bi = dr.sub[s3];
+            if (blocks[bi]) { for (var j3 = 0; j3 < g.dataBytes; j3++) dr.bytes[j3] ^= blocks[bi][j3]; }
+            else unknown.push(bi);
+          }
+          dr.sub = unknown;
+          if (unknown.length === 1) {
+            blocks[unknown[0]] = new Uint8Array(dr.bytes);
+            dr.sub = null;
+            progress = true;
+          } else if (unknown.length === 0) dr.sub = null;
         }
-        dr.sub = unknown;
-        if (unknown.length === 1) {
-          blocks[unknown[0]] = new Uint8Array(dr.bytes);
-          recovered++;
-          dr.sub = null;
-          progress = true;
-        } else if (unknown.length === 0) dr.sub = null;
       }
+    };
+    var countBlocks = function () {
+      var n = 0;
+      for (var z = 0; z < K; z++) if (blocks[z]) n++;
+      return n;
+    };
+    peelGreedy();
+    var recovered = countBlocks(), rankGain = 0;
+    // Greedy stalled with droplets still in hand: solve the residual system
+    // instead of discarding it, then let peeling cascade on anything freed.
+    if (recovered < K && (!opts || opts.rankSolve !== false)) {
+      rankGain = rankSolve(drops, blocks, K, g.dataBytes);
+      if (rankGain > 0) { peelGreedy(); recovered = countBlocks(); }
     }
-    if (recovered < K) return { ok: false, reason: "peel incomplete", K: K, recovered: recovered, droplets: uniq.length };
+    if (recovered < K)
+      return { ok: false, reason: "peel incomplete", K: K, recovered: recovered, droplets: uniq.length, rankGain: rankGain };
     var len = header.len !== null ? header.len : K * g.dataBytes;
     var out = new Uint8Array(len);
     for (var b3 = 0; b3 < len; b3++) out[b3] = blocks[Math.floor(b3 / g.dataBytes)][b3 % g.dataBytes];

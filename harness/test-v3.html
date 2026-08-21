@@ -508,6 +508,40 @@ async function main() {
            : " no emitter: " + JSON.stringify(rI).slice(0, 120)));
   }
 
+  await tick("T22N: GF(2) rank solve finishes what greedy peeling cannot…");
+  {
+    // Greedy peeling only advances through degree-1 droplets. Strip every
+    // degree-1 droplet from a real carousel (the forced seeds at c=1..3 plus
+    // any the distribution produced) and the cascade provably cannot start —
+    // but the survivors are still a linear system, and elimination solves it
+    // whenever the rank is there. Same droplets, both paths, one difference.
+    const pR = OC.profile.profileV3();
+    const msgR = "RANK SOLVE RECOVERS WHAT PEELING STRANDS";
+    const encR = OC.fountain.encodeCarousels(pR, OC.fountain.textToBytes(msgR));
+    const aR = pR.annuli[0], DR = OC.fountain.ringD(aR, encR.geom);
+    const symsR = encR.carousels[0];
+    const decR = [];
+    for (let i = 0; i < symsR.length; i++) decR.push({ i, s: symsR[i], resid: 0 });
+    const allR = OC.fountain.collect(decR, pR.preamble_symbols, aR, pR).passed;
+    const K = encR.K;
+    const headers = allR.filter(d => OC.fountain.isHeaderSlot(d.c));
+    const deg1 = allR.filter(d => !OC.fountain.isHeaderSlot(d.c) &&
+      OC.fountain.subsetFor(aR.rotation.seed, d.c, K).length === 1);
+    const noSeeds = allR.filter(d => OC.fountain.isHeaderSlot(d.c) ||
+      OC.fountain.subsetFor(aR.rotation.seed, d.c, K).length > 1);
+    const ringOf = ds => [{ seed: aR.rotation.seed, droplets: ds.map(d => ({ c: d.c, bytes: d.bytes })) }];
+    const greedy = OC.fountain.assemble(ringOf(noSeeds), pR, { rankSolve: false });
+    const ranked = OC.fountain.assemble(ringOf(noSeeds), pR);
+    record("T22N rank solve: with every degree-1 droplet removed the greedy cascade cannot start, and GF(2) elimination on the same droplets recovers the payload byte-exact",
+      !!(K > 4 && deg1.length > 0 && headers.length > 0 &&
+         greedy.ok !== true && greedy.recovered < K &&
+         ranked.ok === true && ranked.text === msgR),
+      "K=" + K + ", " + noSeeds.length + " droplets after removing " + deg1.length +
+      " degree-1 · greedy " + (greedy.recovered || 0) + "/" + K +
+      " → rank " + (ranked.recovered || 0) + "/" + K +
+      " · payload " + JSON.stringify(ranked.ok === true ? ranked.text.slice(0, 18) + "…" : ranked.reason));
+  }
+
   await tick("T22L: fast renderer ≡ exact renderer (pixels and droplets)…");
   {
     // The video export renders through the opt-in FAST path (angle map +
