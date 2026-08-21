@@ -78,34 +78,52 @@
       return { added: 0, dup: 0, conflicts: 0, quarantined: 0, lagConsensus: null };
     for (var e = 0; e < res.emitters.length; e++) {
       var annuli = res.emitters[e].annuli || [];
-      // Lag consensus. Every ring shares the emission clock and the capture
-      // start (all profiles run one frames_per_symbol), so within a window
-      // every locked ring's lag must agree. A lone disagreeing ring is a
-      // chance CRC double-pass wearing a lock — transient before the ledger
-      // (a 1/256 residual per decode), but PERSISTENT now: its droplets
-      // would enter as first-seen poison and block the real bytes forever.
-      // With ≥2 rings in agreement the outlier is quarantined: nothing
-      // banked, no lock taken from it (callers gate on lagConsensus).
-      var lags = [];
+      // Lag consensus, IN FRAMES. Every ring shares the emission clock and the
+      // capture start, so within a window every locked ring must agree about
+      // WHEN the window began — but lag counts that ring's own SYMBOLS, and a
+      // ring's symbol index at emission frame f is floor(f / frames_per_symbol).
+      // So the ring-independent quantity is lag × F (the window's start frame);
+      // comparing raw lags is only valid while every ring runs the same F.
+      // Normalising here is what makes per-ring frames_per_symbol safe to vary.
+      // Tolerance scales with the coarsest ring involved, since a ring with
+      // larger F pins the start frame only to within F frames.
+      // A lone disagreeing ring is a chance CRC double-pass wearing a lock —
+      // transient before the ledger (a 1/256 residual per decode), but
+      // PERSISTENT now: its droplets would enter as first-seen poison and
+      // block the real bytes forever. With ≥2 rings in agreement the outlier
+      // is quarantined: nothing banked, no lock taken (callers gate on
+      // lagConsensus, which is reported in FRAMES).
+      var fpsOf = function (idx) {
+        var pz = annulusByIndex(profile, idx);
+        return (pz && pz.rotation.frames_per_symbol) || 4;
+      };
+      var lagsF = [];
       for (var li = 0; li < annuli.length; li++) {
         var al = annuli[li];
-        if (al && al.alignLag != null && al.droplets && al.droplets.length) lags.push(al.alignLag);
+        if (al && al.alignLag != null && al.droplets && al.droplets.length)
+          lagsF.push({ f: al.alignLag * fpsOf(al.annulus), F: fpsOf(al.annulus) });
       }
-      if (lags.length >= 2) {
+      if (lagsF.length >= 2) {
         var bestN = 0;
-        for (var bi = 0; bi < lags.length; bi++) {
+        for (var bi = 0; bi < lagsF.length; bi++) {
           var n = 0;
-          for (var bj = 0; bj < lags.length; bj++) if (Math.abs(lags[bj] - lags[bi]) <= 1) n++;
-          if (n > bestN || (n === bestN && (consensus === null || lags[bi] < consensus))) { bestN = n; consensus = lags[bi]; }
+          for (var bj = 0; bj < lagsF.length; bj++) {
+            var tol = Math.max(lagsF[bi].F, lagsF[bj].F);
+            if (Math.abs(lagsF[bj].f - lagsF[bi].f) <= tol) n++;
+          }
+          if (n > bestN || (n === bestN && (consensus === null || lagsF[bi].f < consensus))) { bestN = n; consensus = lagsF[bi].f; }
         }
         if (bestN < 2) consensus = null; // no two rings agree — judge nothing
       }
       for (var ai = 0; ai < annuli.length; ai++) {
         var a = annuli[ai];
         if (!a || !a.droplets || !a.droplets.length) continue;
-        if (consensus !== null && a.alignLag != null && Math.abs(a.alignLag - consensus) > 1) {
-          quarantined += a.droplets.length;
-          continue;
+        if (consensus !== null && a.alignLag != null) {
+          var Fa = fpsOf(a.annulus);
+          if (Math.abs(a.alignLag * Fa - consensus) > Fa) {
+            quarantined += a.droplets.length;
+            continue;
+          }
         }
         var pa = annulusByIndex(profile, a.annulus);
         if (!pa) continue;

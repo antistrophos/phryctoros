@@ -938,9 +938,41 @@ async function main() {
       ] }] };
       const gotQ = HV.absorb(ledQ, fakeQ, pTH);
       const cnQ = HV.counts(ledQ);
-      record("TH5b quarantine: the outvoted ring banks nothing; the agreeing rings bank normally",
-        gotQ.added === 2 && gotQ.quarantined === 2 && gotQ.lagConsensus === 34 && cnQ.droplets === 2,
-        JSON.stringify(gotQ) + " droplets " + cnQ.droplets);
+      // lagConsensus is reported in FRAMES (lag × frames_per_symbol) so that
+      // rings running different frames_per_symbol stay comparable — see TH5c.
+      const FQ = pTH.annuli[0].rotation.frames_per_symbol;
+      record("TH5b quarantine: the outvoted ring banks nothing; the agreeing rings bank normally (consensus in frames)",
+        gotQ.added === 2 && gotQ.quarantined === 2 && gotQ.lagConsensus === 34 * FQ && cnQ.droplets === 2,
+        JSON.stringify(gotQ) + " droplets " + cnQ.droplets + " (expected consensus " + (34 * FQ) + " frames)");
+    }
+
+    // TH5c — lag is measured in each ring's OWN symbols, and a ring's symbol
+    // index at emission frame f is floor(f / frames_per_symbol). So the
+    // ring-independent quantity is lag × F, the window's start frame. Raw-lag
+    // comparison is only valid while every ring runs the same F; normalising
+    // to frames is what makes per-ring frames_per_symbol safe to vary. Here
+    // every ring agrees the window began at frame 320 — the F=8 ring says so
+    // with lag 40, the F=4 rings with lag 80 — and none may be quarantined.
+    await tick("TH5c: lag consensus normalised to frames (mixed frames_per_symbol)…");
+    {
+      const pMix = OC.profile.defaultProfile({ carriage: { droplet_bits: 24 } });
+      pMix.annuli[0].rotation.frames_per_symbol = 8;
+      const rowM = (idx, lag) => ({ annulus: idx, alignLag: lag, alignOffset: 0,
+        droplets: [{ c: 5 + idx, hex: "beef0" + idx }, { c: 9 + idx, hex: "cafe0" + idx }] });
+      const nRings = pMix.annuli.length;
+      const agreeRows = [rowM(0, 40)];
+      for (let i = 1; i < nRings; i++) agreeRows.push(rowM(i, 80));
+      const gotA = HV.absorb(HV.createLedger(pMix, "th5c-a"), { emitters: [{ annuli: agreeRows }] }, pMix);
+      // control: the F=8 ring genuinely elsewhere (lag 75 → frame 600) still quarantines
+      const outRows = [rowM(0, 75)];
+      for (let i = 1; i < nRings; i++) outRows.push(rowM(i, 80));
+      const gotO = HV.absorb(HV.createLedger(pMix, "th5c-b"), { emitters: [{ annuli: outRows }] }, pMix);
+      record("TH5c mixed frames_per_symbol: rings agreeing on the START FRAME in different symbol units all bank, while a ring genuinely elsewhere is still quarantined",
+        gotA.quarantined === 0 && gotA.added === nRings * 2 && gotA.lagConsensus === 320 &&
+        gotO.quarantined === 2 && gotO.added === (nRings - 1) * 2,
+        "F " + pMix.annuli.map(a => a.rotation.frames_per_symbol).join("/") +
+        " · agree " + JSON.stringify({ added: gotA.added, quar: gotA.quarantined, cons: gotA.lagConsensus }) +
+        " · outlier " + JSON.stringify({ added: gotO.added, quar: gotO.quarantined }));
     }
   }
 

@@ -362,11 +362,22 @@
           // where every other ring locked 3 of 3).
           if (!align && !a.beacon && opts.payload && consensus) {
             var Fc = a.rotation.frames_per_symbol;
+            // The siblings pinned the window's START FRAME; this ring's lag is
+            // that frame divided by its OWN F. The floor leaves ≤2 candidates
+            // when F differs, still a ~2000× collapse from the full scan.
+            var lagLo = Math.max(0, Math.floor(consensus.lagF / Fc));
+            var lagHi = Math.max(0, Math.floor((consensus.lagF + consensus.F - 1) / Fc));
             var baseOff = (syncBase !== null && syncBase !== undefined) ? syncBase : (track.firstValid || 0);
-            var offC = baseOff + ((((consensus.offMod - baseOff) % Fc) + Fc) % Fc);
+            // Offset is only transferable when the siblings shared this ring's
+            // symbol grid. Otherwise scan this ring's own offsets — which puts
+            // F hypotheses back in play, so hold the 2-pass bar there rather
+            // than relaxing a bar whose safety argument no longer applies.
+            var sameGrid = consensus.sameGrid && consensus.F === Fc;
+            var aOpts = sameGrid
+              ? { minPasses: 1, hintOnly: true, offsets: [baseOff + ((((consensus.offMod - baseOff) % Fc) + Fc) % Fc)] }
+              : { minPasses: 2, hintOnly: true };
             align = dep("fountain").crcAlign(track, a, profile, syncBase, maxLagSym,
-              { min: consensus.lag, max: consensus.lag },
-              { minPasses: 1, hintOnly: true, offsets: [offC] });
+              { min: lagLo, max: lagHi }, aOpts);
             if (align) align.method = "consensus";
           }
           if (T) T.align += tnow() - tA;
@@ -490,18 +501,33 @@
       // get one read at exactly that (lag, offset mod frames_per_symbol).
       var annuli = annuliPairs.map(function (p) { return p.res; });
       if (opts.payload && opts.consensusLock !== false) {
-        var tally = {}, cons = null;
+        // Agreement is about WHEN the window began, so it is compared in
+        // FRAMES: lag counts each ring's own symbols and a ring's symbol index
+        // at emission frame f is floor(f / F), making lag × F the
+        // ring-independent quantity. Raw-lag comparison is only valid while
+        // every ring shares F; normalising here is what makes per-ring
+        // frames_per_symbol safe to vary.
+        var groups2 = [], cons = null;
         for (var cq = 0; cq < annuli.length; cq++) {
           var rq = annuli[cq];
           if (!rq || rq.beacon || rq.error || rq.alignLag == null || rq.alignOffset == null) continue;
           var pa2 = profile.annuli[rq.annulus];
           var Fq = pa2 ? pa2.rotation.frames_per_symbol : 4;
-          var key = rq.alignLag + ":" + ((((rq.alignOffset % Fq) + Fq) % Fq));
-          tally[key] = (tally[key] || 0) + 1;
+          var lagF = rq.alignLag * Fq, offM = (((rq.alignOffset % Fq) + Fq) % Fq);
+          var placed = false;
+          for (var gq = 0; gq < groups2.length; gq++) {
+            var G = groups2[gq];
+            if (Math.abs(G.lagF - lagF) <= Math.max(G.F, Fq)) {
+              G.n++; if (Fq !== G.F) G.mixedF = true;
+              if (G.offMod !== offM) G.mixedOff = true;
+              placed = true; break;
+            }
+          }
+          if (!placed) groups2.push({ lagF: lagF, F: Fq, offMod: offM, n: 1, mixedF: false, mixedOff: false });
         }
-        for (var kq in tally) if (tally[kq] >= 2) {
-          var pp = kq.split(":");
-          cons = { lag: +pp[0], offMod: +pp[1] };
+        for (var gq2 = 0; gq2 < groups2.length; gq2++) if (groups2[gq2].n >= 2) {
+          var G2 = groups2[gq2];
+          cons = { lagF: G2.lagF, offMod: G2.offMod, F: G2.F, sameGrid: !G2.mixedF && !G2.mixedOff };
           break;
         }
         if (cons) {

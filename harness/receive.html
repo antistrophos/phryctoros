@@ -527,8 +527,14 @@ async function harvestDecode(v, geo, file) {
         if (a && a.alignLag != null) lockedAny = true;
         // A ring outvoted on lag is quarantined — no droplets banked above,
         // and no lock taken here (a false lock would poison the plan too).
-        if (got.lagConsensus != null && a.alignLag != null && Math.abs(a.alignLag - got.lagConsensus) > 1) continue;
-        const pa = profile.annuli.find(x => x.index === a.annulus);
+        // Compared in FRAMES (lag × frames_per_symbol): lag counts each ring's
+        // own symbols, so raw lags are only comparable while every ring shares
+        // F. absorb() reports lagConsensus in frames for the same reason.
+        const paF = profile.annuli.find(x => x.index === a.annulus);
+        const Fa = (paF && paF.rotation.frames_per_symbol) || 4;
+        if (got.lagConsensus != null && a.alignLag != null &&
+            Math.abs(a.alignLag * Fa - got.lagConsensus) > Fa) continue;
+        const pa = paF;
         const lk = pa && HV.lockFrom(a, pa, profile, cap.fBase);
         if (lk) locks[a.annulus] = lk;
       }
