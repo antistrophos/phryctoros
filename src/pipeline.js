@@ -7,6 +7,11 @@
 
   function dep(n) { return (typeof module !== "undefined" && module.exports) ? require("./" + n + ".js") : global.OC[n]; }
 
+  /* Target arc pitch for boundary sampling, in image pixels — roughly two rays
+     per PSF width at the blur we measure in the field. See the sampOpts block
+     in decodeSequence for the measurement this came from. */
+  var ARC_PITCH_PX = 2.4;
+
   /* frames: [{ f, img }] — f is the capture/emission frame index.
      opts: { mirror: {receive}, aligned, staticCamera (default true), maxEmitters } */
   function decodeSequence(frames, profile, opts) {
@@ -213,6 +218,35 @@
     var results = emitters.map(function (em, emIdx) {
       var annuli = channels.map(function (a) {
         var kmax = Math.max.apply(null, a.boundary.harmonics) + 4;
+        // ARC-PITCH SAMPLING. The sampler used a fixed 256 rays per ring
+        // regardless of circumference, so an inner edge was sampled ~2× denser
+        // in PIXELS than an outer one — meaning the OUTER rings, which carry
+        // the most droplets, were the under-sampled ones and were throwing
+        // away signal for free. Ray count now comes from a target arc pitch
+        // (~2 rays per PSF width), floored at the old 256 so no ring ever
+        // samples coarser than before. Measured at field scale (70 px/unit,
+        // blur 1.2 px, noise 0.028) against the old fixed-256 baseline:
+        // a1 +1.2 dB, a2 +2.0 dB, a3 +3.0 dB, a0 unchanged (already at pitch),
+        // for ~19% more decode time — the gain tracks radius exactly as
+        // σ ∝ 1/√N predicts, so the rays really are independent at this pitch.
+        // Computed ONCE per annulus from the registration H: N must stay
+        // constant across a ring's series (the DFT and row-time compare
+        // contours frame to frame). opts.arcPitchPx overrides; ≤ 0 restores
+        // the flat 256.
+        // V3 ONLY. v1/v2 are frozen profiles with an archived clip corpus
+        // (field1–44); their sampling stays bit-stable so those captures keep
+        // decoding exactly as recorded — the same contract logic that keeps
+        // profileV1 and profileV3("classic") around. (Enabling it for v2 moved
+        // T12's torn-duplicate stress case across its tolerance bar, which is
+        // the archived-decode drift this rule exists to prevent.)
+        var pitchPx = opts.arcPitchPx != null ? opts.arcPitchPx
+                    : ((profile.bands && profile.plate) ? ARC_PITCH_PX : 0);
+        var sampOpts = null;
+        if (pitchPx > 0) {
+          var scale0 = sample.unitScale(em.H);
+          var nWant = Math.round(2 * Math.PI * a.r0 * scale0 / pitchPx);
+          sampOpts = { N: Math.max(256, Math.min(1024, 2 * Math.round(nWant / 2))) };
+        }
         // Presence is judged over the ACTIVE span (first valid frame onward) — a
         // capture that starts on the countdown freeze has honest dead frames first.
         var series = [], contrastAct = 0, valid = 0, firstValidIdx = -1, tornRejected = 0;
@@ -224,7 +258,7 @@
           var cands = [];
           for (var ci = 0; ci < groups[i].imgs.length; ci++) {
             var tSm = T && tnow();
-            var s = sample.sampleBoundary(groups[i].imgs[ci], tracksH[emIdx].Hs[i], a);
+            var s = sample.sampleBoundary(groups[i].imgs[ci], tracksH[emIdx].Hs[i], a, sampOpts);
             // Pre-fill copy for the F2 row-time scan: gap-filled angles are
             // fabrications the least-squares refit must never see, and each
             // retained radius + H reproduces its own image row on demand.
