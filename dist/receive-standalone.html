@@ -4584,20 +4584,37 @@
      scanned FIRST and the full carousel scan becomes the fallback, not the
      routine — the scan is most of a window's self-alignment cost, and the
      hint deletes it when the lock holds while losing nothing when it
-     doesn't (a stale lock past an emitter loop restart just falls through). */
-  function crcAlign(track, annulus, profile, baseOverride, maxLagSymbols, lagHint) {
+     doesn't (a stale lock past an emitter loop restart just falls through).
+
+     opts: { minPasses, hintOnly, offsets } — the CONSENSUS-ADMISSION path.
+     The ≥2-pass bar exists to stop a wrong (offset, lag) being CHOSEN from
+     this ring's own data: over ~4096 lags × 4 offsets, single chance passes
+     are certain and doubles are order-1. When sibling rings have already
+     agreed a framing, the hypothesis is not being chosen here at all — it is
+     GIVEN — so scanning that one hypothesis and accepting a single CRC pass
+     carries only CRC8's ordinary 1/256 residual, the same standard every
+     banked droplet already meets. Callers must therefore pass a single
+     explicit lag AND offset with hintOnly (never a band: predictLag's ±24
+     symbols is ~196 hypotheses, where a 1-pass bar would be noise). */
+  function crcAlign(track, annulus, profile, baseOverride, maxLagSymbols, lagHint, opts) {
     var demap = (typeof module !== "undefined" && module.exports) ? require("./demap.js") : global.OC.demap;
     var F = annulus.rotation.frames_per_symbol;
     var maxLag = maxLagSymbols || 4096;
     var base = (baseOverride !== undefined && baseOverride !== null) ? baseOverride : (track.firstValid || 0);
+    opts = opts || {};
+    var minPasses = opts.minPasses || 2;
+    var offList = null;
+    if (opts.offsets && opts.offsets.length) offList = opts.offsets;
     function scan(lagLo, lagHi) {
       var best = null;
-      for (var off = base; off < base + F; off++) {
+      var nOff = offList ? offList.length : F;
+      for (var oi = 0; oi < nOff; oi++) {
+        var off = offList ? offList[oi] : base + oi;
         var decoded = demap.decode(track, annulus, profile, off);
         if (!decoded.length) continue;
         for (var lag = lagLo; lag <= lagHi; lag++) {
           var col = collect(decoded, lag, annulus, profile);
-          if (col.passed.length < 2) continue;
+          if (col.passed.length < minPasses) continue;
           if (!best || col.passed.length > best.score ||
               (col.passed.length === best.score && lag < best.lag))
             best = { offset: off, lag: lag, score: col.passed.length, max: col.tried, method: "crc" };
@@ -4608,7 +4625,9 @@
     if (lagHint && lagHint.max >= 0 && lagHint.max >= (lagHint.min | 0)) {
       var hinted = scan(Math.max(0, lagHint.min | 0), Math.min(maxLag, lagHint.max | 0));
       if (hinted) { hinted.hinted = true; return hinted; }
+      if (opts.hintOnly) return null;
     }
+    if (opts.hintOnly) return null;
     return scan(0, maxLag);
   }
 
@@ -5523,7 +5542,7 @@
     var ringsByEmitter = tilesN > 1 && opts.payload ? [] : null;
 
     var results = emitters.map(function (em, emIdx) {
-      var annuli = channels.map(function (a) {
+      var annuliPairs = channels.map(function (a) {
         var kmax = Math.max.apply(null, a.boundary.harmonics) + 4;
         // ARC-PITCH SAMPLING. The sampler used a fixed 256 rays per ring
         // regardless of circumference, so an inner edge was sampled ~2× denser
@@ -5592,14 +5611,14 @@
         var meanContrast = valid ? contrastAct / valid : 0;
         var present = firstValidIdx >= 0 && valid >= activeN * 0.6 && meanContrast > 0.02;
         if (!present)
-          return { annulus: a.index, layer: a.layer, present: false, contrast: round3(meanContrast), validFrames: valid };
+          return { res: { annulus: a.index, layer: a.layer, present: false, contrast: round3(meanContrast), validFrames: valid }, retry: null };
 
         // The downstream (track → onset → carrier gates → align → demap → score)
         // as a function of the series, so the row-time branch can be judged
         // EMPIRICALLY (walk 5: the repair stage rescued 5× enhancement rings,
         // 0.87→0.12, and destroyed lit-1× base tracks, 0.14→0.67 — the same
         // gates cannot serve both; the decoder tries both and keeps the winner).
-        var downstream = function (seriesX, tearX) {
+        var downstream = function (seriesX, tearX, consensus) {
           if (T) T.downstreams++;
           var tT = T && tnow();
           var track = separate.trackPhase(seriesX, a, profile);
@@ -5658,6 +5677,23 @@
               ? dep("fountain").crcAlign(track, a, profile, syncBase, maxLagSym,
                   opts.alignHints && opts.alignHints[a.index])
               : demap.correlateStream(track, a, profile, maxLagSym, syncBase);
+          }
+          // CONSENSUS ADMISSION (second chance): sibling rings already agreed a
+          // framing, so this ring is not choosing one — it is reading at a given
+          // one, and a single CRC pass there is the ordinary 1/256 standard.
+          // Fixes the long-droplet ring's structural disadvantage: base carries
+          // 24 symbols per droplet at high-rate against 10 for M=32, so a short
+          // window offers it ~2 chances to clear a 2-pass bar and one CRC miss
+          // costs it the whole window (measured: base locked 2 of 3 windows
+          // where every other ring locked 3 of 3).
+          if (!align && !a.beacon && opts.payload && consensus) {
+            var Fc = a.rotation.frames_per_symbol;
+            var baseOff = (syncBase !== null && syncBase !== undefined) ? syncBase : (track.firstValid || 0);
+            var offC = baseOff + ((((consensus.offMod - baseOff) % Fc) + Fc) % Fc);
+            align = dep("fountain").crcAlign(track, a, profile, syncBase, maxLagSym,
+              { min: consensus.lag, max: consensus.lag },
+              { minPasses: 1, hintOnly: true, offsets: [offC] });
+            if (align) align.method = "consensus";
           }
           if (T) T.align += tnow() - tA;
           var tDm = T && tnow();
@@ -5738,20 +5774,13 @@
         }
         if (T) T.rowtime += tnow() - tR;
         var mutated = tear && (tear.repaired > 0 || tear.invalidated > 0 || tear.warped > 0);
-        if (!mutated) return downstream(series, tear);
         // Judge the repairs by outcome, not by gate: decode BOTH the repaired
         // series and the untouched originals (spec0, retained for exactly
         // this), and keep the better result. Rank: hard error < decodes;
         // then ok, lower SER, fewer erasures, stronger alignment.
-        var seriesPlain = series.map(function (e) {
+        var seriesPlain = mutated ? series.map(function (e) {
           return e && e.spec0 ? { f: e.f, spec: e.spec0 } : e;
-        });
-        tear.applied = true;
-        var rRep = downstream(series, tear);
-        var tearOff = {};
-        for (var tk in tear) tearOff[tk] = tear[tk];
-        tearOff.applied = false;
-        var rPlain = downstream(seriesPlain, tearOff);
+        }) : null;
         var rank = function (r) {
           return [r.error ? 0 : 1, r.ok ? 1 : 0,
                   r.dropletsPassed != null ? r.dropletsPassed : -1, // payload mode: droplets are the quality
@@ -5759,13 +5788,56 @@
                   r.erasures != null ? -r.erasures : -999,
                   r.alignMatchFrac != null ? r.alignMatchFrac : -1];
         };
-        var ra = rank(rRep), rb = rank(rPlain), pick = rRep;
-        for (var ri = 0; ri < ra.length; ri++) {
-          if (ra[ri] > rb[ri]) { pick = rRep; break; }
-          if (ra[ri] < rb[ri]) { pick = rPlain; break; }
-        }
-        return pick;
+        // Resolve this ring, optionally with a sibling-supplied framing. Kept
+        // as a closure so a ring that fails to lock can be retried against the
+        // consensus WITHOUT re-sampling (the expensive part is already done).
+        var resolve = function (consensus) {
+          if (!mutated) return downstream(series, tear, consensus);
+          tear.applied = true;
+          var rRep = downstream(series, tear, consensus);
+          var tearOff = {};
+          for (var tk in tear) tearOff[tk] = tear[tk];
+          tearOff.applied = false;
+          var rPlain = downstream(seriesPlain, tearOff, consensus);
+          var ra = rank(rRep), rb = rank(rPlain), pick = rRep;
+          for (var ri = 0; ri < ra.length; ri++) {
+            if (ra[ri] > rb[ri]) { pick = rRep; break; }
+            if (ra[ri] < rb[ri]) { pick = rPlain; break; }
+          }
+          return pick;
+        };
+        var first = resolve(null);
+        return { res: first, retry: (first && first.error && !a.beacon) ? resolve : null };
       });
+
+      // ——— consensus admission across this emitter's rings ———
+      // A framing agreed by ≥2 rings is evidence independent of any one ring's
+      // droplet supply; rings that could not clear the 2-pass bar on their own
+      // get one read at exactly that (lag, offset mod frames_per_symbol).
+      var annuli = annuliPairs.map(function (p) { return p.res; });
+      if (opts.payload && opts.consensusLock !== false) {
+        var tally = {}, cons = null;
+        for (var cq = 0; cq < annuli.length; cq++) {
+          var rq = annuli[cq];
+          if (!rq || rq.beacon || rq.error || rq.alignLag == null || rq.alignOffset == null) continue;
+          var pa2 = profile.annuli[rq.annulus];
+          var Fq = pa2 ? pa2.rotation.frames_per_symbol : 4;
+          var key = rq.alignLag + ":" + ((((rq.alignOffset % Fq) + Fq) % Fq));
+          tally[key] = (tally[key] || 0) + 1;
+        }
+        for (var kq in tally) if (tally[kq] >= 2) {
+          var pp = kq.split(":");
+          cons = { lag: +pp[0], offMod: +pp[1] };
+          break;
+        }
+        if (cons) {
+          for (var cr = 0; cr < annuli.length; cr++) {
+            if (!annuliPairs[cr].retry) continue;
+            var r2 = annuliPairs[cr].retry(cons);
+            if (r2 && !r2.error) annuli[cr] = r2;
+          }
+        }
+      }
       // Payload mode: pool every ring's verified droplets into one peel.
       var payload;
       if (opts.payload) {
@@ -6212,8 +6284,19 @@ async function harvestDecode(v, geo, file) {
   }
   const durS = v.duration, durF = Math.floor((durS - 0.06) * R);
   const baseline = Math.ceil(durS * capFps);
-  const minWinF = Math.round((+$("m_minwin").value || 8) * R), joinGapF = Math.round(1.5 * R);
-  const maxWinF = Math.round(Math.max(+$("m_maxwin").value || 12, (+$("m_minwin").value || 8) + 2) * R);
+  // Window floor scales with the SLOWEST ring's droplet span. crcAlign needs
+  // ≥2 CRC passes to lock, so a window has to offer the longest-droplet ring
+  // several chances or one CRC miss costs it the whole window — measured: at
+  // high-rate, base carries 24 symbols per droplet (M=4) against 10 for the
+  // M=32 rings, i.e. ~2.5 droplets in an 8 s window, and it locked 2 of 3
+  // windows where every other ring locked 3 of 3. Ask for 4 fresh droplets on
+  // that ring, on top of the overlap back-pad (which re-covers old ground).
+  const dropletF = HV.maxDropletFrames(profile);   // == overlapF below, by construction
+  const supplyMinF = 5 * dropletF;                 // 4 fresh droplets + the overlap back-pad
+  const userMinF = Math.round((+$("m_minwin").value || 8) * R);
+  const minWinF = Math.max(userMinF, supplyMinF), joinGapF = Math.round(1.5 * R);
+  const maxWinF = Math.max(Math.round(Math.max(+$("m_maxwin").value || 12, (+$("m_minwin").value || 8) + 2) * R),
+                           minWinF + Math.round(2 * R));
   const chunkF = Math.round(10 * R);
   // One max-droplet span: the overlap unit (run-1's edge-truncation lesson) —
   // every follow-on window starts this early so no slot straddles uncovered.
@@ -6224,7 +6307,10 @@ async function harvestDecode(v, geo, file) {
   let seeks = 0, wrun = 0, peel = HV.tryPeel(led, profile);
   const clipLog = { name: file.name, windows: [] };
   led.clips.push(clipLog);
-  $("harvest").innerHTML = "<b>harvest: " + file.name + "</b> — " + durS.toFixed(1) + " s, baseline " + baseline + " seeks, overlap " + (overlapF / R).toFixed(1) + " s<br>";
+  $("harvest").innerHTML = "<b>harvest: " + file.name + "</b> — " + durS.toFixed(1) + " s, baseline " + baseline +
+    " seeks, overlap " + (overlapF / R).toFixed(1) + " s, window floor " + (minWinF / R).toFixed(1) + " s" +
+    (minWinF > userMinF ? " <span class='warn'>(raised from " + (userMinF / R).toFixed(1) +
+      " s — the slowest ring needs " + (dropletF / R).toFixed(1) + " s per droplet)</span>" : "") + "<br>";
   // Already in hand? Then nothing is seeked at all — the carried ledger
   // completes before the clip is touched (never pay twice for the same drop).
   const queue = peel.ok ? [] : [[0, bootF]];

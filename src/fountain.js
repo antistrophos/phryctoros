@@ -263,20 +263,37 @@
      scanned FIRST and the full carousel scan becomes the fallback, not the
      routine — the scan is most of a window's self-alignment cost, and the
      hint deletes it when the lock holds while losing nothing when it
-     doesn't (a stale lock past an emitter loop restart just falls through). */
-  function crcAlign(track, annulus, profile, baseOverride, maxLagSymbols, lagHint) {
+     doesn't (a stale lock past an emitter loop restart just falls through).
+
+     opts: { minPasses, hintOnly, offsets } — the CONSENSUS-ADMISSION path.
+     The ≥2-pass bar exists to stop a wrong (offset, lag) being CHOSEN from
+     this ring's own data: over ~4096 lags × 4 offsets, single chance passes
+     are certain and doubles are order-1. When sibling rings have already
+     agreed a framing, the hypothesis is not being chosen here at all — it is
+     GIVEN — so scanning that one hypothesis and accepting a single CRC pass
+     carries only CRC8's ordinary 1/256 residual, the same standard every
+     banked droplet already meets. Callers must therefore pass a single
+     explicit lag AND offset with hintOnly (never a band: predictLag's ±24
+     symbols is ~196 hypotheses, where a 1-pass bar would be noise). */
+  function crcAlign(track, annulus, profile, baseOverride, maxLagSymbols, lagHint, opts) {
     var demap = (typeof module !== "undefined" && module.exports) ? require("./demap.js") : global.OC.demap;
     var F = annulus.rotation.frames_per_symbol;
     var maxLag = maxLagSymbols || 4096;
     var base = (baseOverride !== undefined && baseOverride !== null) ? baseOverride : (track.firstValid || 0);
+    opts = opts || {};
+    var minPasses = opts.minPasses || 2;
+    var offList = null;
+    if (opts.offsets && opts.offsets.length) offList = opts.offsets;
     function scan(lagLo, lagHi) {
       var best = null;
-      for (var off = base; off < base + F; off++) {
+      var nOff = offList ? offList.length : F;
+      for (var oi = 0; oi < nOff; oi++) {
+        var off = offList ? offList[oi] : base + oi;
         var decoded = demap.decode(track, annulus, profile, off);
         if (!decoded.length) continue;
         for (var lag = lagLo; lag <= lagHi; lag++) {
           var col = collect(decoded, lag, annulus, profile);
-          if (col.passed.length < 2) continue;
+          if (col.passed.length < minPasses) continue;
           if (!best || col.passed.length > best.score ||
               (col.passed.length === best.score && lag < best.lag))
             best = { offset: off, lag: lag, score: col.passed.length, max: col.tried, method: "crc" };
@@ -287,7 +304,9 @@
     if (lagHint && lagHint.max >= 0 && lagHint.max >= (lagHint.min | 0)) {
       var hinted = scan(Math.max(0, lagHint.min | 0), Math.min(maxLag, lagHint.max | 0));
       if (hinted) { hinted.hinted = true; return hinted; }
+      if (opts.hintOnly) return null;
     }
+    if (opts.hintOnly) return null;
     return scan(0, maxLag);
   }
 

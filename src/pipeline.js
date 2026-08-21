@@ -216,7 +216,7 @@
     var ringsByEmitter = tilesN > 1 && opts.payload ? [] : null;
 
     var results = emitters.map(function (em, emIdx) {
-      var annuli = channels.map(function (a) {
+      var annuliPairs = channels.map(function (a) {
         var kmax = Math.max.apply(null, a.boundary.harmonics) + 4;
         // ARC-PITCH SAMPLING. The sampler used a fixed 256 rays per ring
         // regardless of circumference, so an inner edge was sampled ~2× denser
@@ -285,14 +285,14 @@
         var meanContrast = valid ? contrastAct / valid : 0;
         var present = firstValidIdx >= 0 && valid >= activeN * 0.6 && meanContrast > 0.02;
         if (!present)
-          return { annulus: a.index, layer: a.layer, present: false, contrast: round3(meanContrast), validFrames: valid };
+          return { res: { annulus: a.index, layer: a.layer, present: false, contrast: round3(meanContrast), validFrames: valid }, retry: null };
 
         // The downstream (track → onset → carrier gates → align → demap → score)
         // as a function of the series, so the row-time branch can be judged
         // EMPIRICALLY (walk 5: the repair stage rescued 5× enhancement rings,
         // 0.87→0.12, and destroyed lit-1× base tracks, 0.14→0.67 — the same
         // gates cannot serve both; the decoder tries both and keeps the winner).
-        var downstream = function (seriesX, tearX) {
+        var downstream = function (seriesX, tearX, consensus) {
           if (T) T.downstreams++;
           var tT = T && tnow();
           var track = separate.trackPhase(seriesX, a, profile);
@@ -351,6 +351,23 @@
               ? dep("fountain").crcAlign(track, a, profile, syncBase, maxLagSym,
                   opts.alignHints && opts.alignHints[a.index])
               : demap.correlateStream(track, a, profile, maxLagSym, syncBase);
+          }
+          // CONSENSUS ADMISSION (second chance): sibling rings already agreed a
+          // framing, so this ring is not choosing one — it is reading at a given
+          // one, and a single CRC pass there is the ordinary 1/256 standard.
+          // Fixes the long-droplet ring's structural disadvantage: base carries
+          // 24 symbols per droplet at high-rate against 10 for M=32, so a short
+          // window offers it ~2 chances to clear a 2-pass bar and one CRC miss
+          // costs it the whole window (measured: base locked 2 of 3 windows
+          // where every other ring locked 3 of 3).
+          if (!align && !a.beacon && opts.payload && consensus) {
+            var Fc = a.rotation.frames_per_symbol;
+            var baseOff = (syncBase !== null && syncBase !== undefined) ? syncBase : (track.firstValid || 0);
+            var offC = baseOff + ((((consensus.offMod - baseOff) % Fc) + Fc) % Fc);
+            align = dep("fountain").crcAlign(track, a, profile, syncBase, maxLagSym,
+              { min: consensus.lag, max: consensus.lag },
+              { minPasses: 1, hintOnly: true, offsets: [offC] });
+            if (align) align.method = "consensus";
           }
           if (T) T.align += tnow() - tA;
           var tDm = T && tnow();
@@ -431,20 +448,13 @@
         }
         if (T) T.rowtime += tnow() - tR;
         var mutated = tear && (tear.repaired > 0 || tear.invalidated > 0 || tear.warped > 0);
-        if (!mutated) return downstream(series, tear);
         // Judge the repairs by outcome, not by gate: decode BOTH the repaired
         // series and the untouched originals (spec0, retained for exactly
         // this), and keep the better result. Rank: hard error < decodes;
         // then ok, lower SER, fewer erasures, stronger alignment.
-        var seriesPlain = series.map(function (e) {
+        var seriesPlain = mutated ? series.map(function (e) {
           return e && e.spec0 ? { f: e.f, spec: e.spec0 } : e;
-        });
-        tear.applied = true;
-        var rRep = downstream(series, tear);
-        var tearOff = {};
-        for (var tk in tear) tearOff[tk] = tear[tk];
-        tearOff.applied = false;
-        var rPlain = downstream(seriesPlain, tearOff);
+        }) : null;
         var rank = function (r) {
           return [r.error ? 0 : 1, r.ok ? 1 : 0,
                   r.dropletsPassed != null ? r.dropletsPassed : -1, // payload mode: droplets are the quality
@@ -452,13 +462,56 @@
                   r.erasures != null ? -r.erasures : -999,
                   r.alignMatchFrac != null ? r.alignMatchFrac : -1];
         };
-        var ra = rank(rRep), rb = rank(rPlain), pick = rRep;
-        for (var ri = 0; ri < ra.length; ri++) {
-          if (ra[ri] > rb[ri]) { pick = rRep; break; }
-          if (ra[ri] < rb[ri]) { pick = rPlain; break; }
-        }
-        return pick;
+        // Resolve this ring, optionally with a sibling-supplied framing. Kept
+        // as a closure so a ring that fails to lock can be retried against the
+        // consensus WITHOUT re-sampling (the expensive part is already done).
+        var resolve = function (consensus) {
+          if (!mutated) return downstream(series, tear, consensus);
+          tear.applied = true;
+          var rRep = downstream(series, tear, consensus);
+          var tearOff = {};
+          for (var tk in tear) tearOff[tk] = tear[tk];
+          tearOff.applied = false;
+          var rPlain = downstream(seriesPlain, tearOff, consensus);
+          var ra = rank(rRep), rb = rank(rPlain), pick = rRep;
+          for (var ri = 0; ri < ra.length; ri++) {
+            if (ra[ri] > rb[ri]) { pick = rRep; break; }
+            if (ra[ri] < rb[ri]) { pick = rPlain; break; }
+          }
+          return pick;
+        };
+        var first = resolve(null);
+        return { res: first, retry: (first && first.error && !a.beacon) ? resolve : null };
       });
+
+      // ——— consensus admission across this emitter's rings ———
+      // A framing agreed by ≥2 rings is evidence independent of any one ring's
+      // droplet supply; rings that could not clear the 2-pass bar on their own
+      // get one read at exactly that (lag, offset mod frames_per_symbol).
+      var annuli = annuliPairs.map(function (p) { return p.res; });
+      if (opts.payload && opts.consensusLock !== false) {
+        var tally = {}, cons = null;
+        for (var cq = 0; cq < annuli.length; cq++) {
+          var rq = annuli[cq];
+          if (!rq || rq.beacon || rq.error || rq.alignLag == null || rq.alignOffset == null) continue;
+          var pa2 = profile.annuli[rq.annulus];
+          var Fq = pa2 ? pa2.rotation.frames_per_symbol : 4;
+          var key = rq.alignLag + ":" + ((((rq.alignOffset % Fq) + Fq) % Fq));
+          tally[key] = (tally[key] || 0) + 1;
+        }
+        for (var kq in tally) if (tally[kq] >= 2) {
+          var pp = kq.split(":");
+          cons = { lag: +pp[0], offMod: +pp[1] };
+          break;
+        }
+        if (cons) {
+          for (var cr = 0; cr < annuli.length; cr++) {
+            if (!annuliPairs[cr].retry) continue;
+            var r2 = annuliPairs[cr].retry(cons);
+            if (r2 && !r2.error) annuli[cr] = r2;
+          }
+        }
+      }
       // Payload mode: pool every ring's verified droplets into one peel.
       var payload;
       if (opts.payload) {

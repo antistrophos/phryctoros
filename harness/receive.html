@@ -427,8 +427,19 @@ async function harvestDecode(v, geo, file) {
   }
   const durS = v.duration, durF = Math.floor((durS - 0.06) * R);
   const baseline = Math.ceil(durS * capFps);
-  const minWinF = Math.round((+$("m_minwin").value || 8) * R), joinGapF = Math.round(1.5 * R);
-  const maxWinF = Math.round(Math.max(+$("m_maxwin").value || 12, (+$("m_minwin").value || 8) + 2) * R);
+  // Window floor scales with the SLOWEST ring's droplet span. crcAlign needs
+  // ≥2 CRC passes to lock, so a window has to offer the longest-droplet ring
+  // several chances or one CRC miss costs it the whole window — measured: at
+  // high-rate, base carries 24 symbols per droplet (M=4) against 10 for the
+  // M=32 rings, i.e. ~2.5 droplets in an 8 s window, and it locked 2 of 3
+  // windows where every other ring locked 3 of 3. Ask for 4 fresh droplets on
+  // that ring, on top of the overlap back-pad (which re-covers old ground).
+  const dropletF = HV.maxDropletFrames(profile);   // == overlapF below, by construction
+  const supplyMinF = 5 * dropletF;                 // 4 fresh droplets + the overlap back-pad
+  const userMinF = Math.round((+$("m_minwin").value || 8) * R);
+  const minWinF = Math.max(userMinF, supplyMinF), joinGapF = Math.round(1.5 * R);
+  const maxWinF = Math.max(Math.round(Math.max(+$("m_maxwin").value || 12, (+$("m_minwin").value || 8) + 2) * R),
+                           minWinF + Math.round(2 * R));
   const chunkF = Math.round(10 * R);
   // One max-droplet span: the overlap unit (run-1's edge-truncation lesson) —
   // every follow-on window starts this early so no slot straddles uncovered.
@@ -439,7 +450,10 @@ async function harvestDecode(v, geo, file) {
   let seeks = 0, wrun = 0, peel = HV.tryPeel(led, profile);
   const clipLog = { name: file.name, windows: [] };
   led.clips.push(clipLog);
-  $("harvest").innerHTML = "<b>harvest: " + file.name + "</b> — " + durS.toFixed(1) + " s, baseline " + baseline + " seeks, overlap " + (overlapF / R).toFixed(1) + " s<br>";
+  $("harvest").innerHTML = "<b>harvest: " + file.name + "</b> — " + durS.toFixed(1) + " s, baseline " + baseline +
+    " seeks, overlap " + (overlapF / R).toFixed(1) + " s, window floor " + (minWinF / R).toFixed(1) + " s" +
+    (minWinF > userMinF ? " <span class='warn'>(raised from " + (userMinF / R).toFixed(1) +
+      " s — the slowest ring needs " + (dropletF / R).toFixed(1) + " s per droplet)</span>" : "") + "<br>";
   // Already in hand? Then nothing is seeked at all — the carried ledger
   // completes before the clip is touched (never pay twice for the same drop).
   const queue = peel.ok ? [] : [[0, bootF]];

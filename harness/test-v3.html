@@ -561,6 +561,54 @@ async function main() {
       " · payload " + JSON.stringify(payE && { ok: payE.ok, text: payE.text }) + " vs " + JSON.stringify(payF && { ok: payF.ok, text: payF.text }));
   }
 
+  await tick("T22M: consensus-admitted lock rescues the starved long-droplet ring…");
+  {
+    // High-rate base carries 24 symbols per droplet (M=4, 2 bits/symbol)
+    // against 10 for the M=32 rings, so a short window offers it ~2 chances
+    // to clear crcAlign's ≥2-pass bar and one CRC miss costs it the window.
+    // When siblings have agreed a framing the hypothesis is GIVEN, not chosen,
+    // so a single CRC pass at that exact (lag, offset) is the ordinary 1/256
+    // standard. Same window decoded both ways: the ring must gain its lock
+    // from consensus, and the lock must agree with the siblings' lag.
+    const pM = OC.profile.profileV3("high-rate", { plate: { corner_style: "quadrant" },
+      render: { size_px: 448, scale_px_per_unit: 70 } });
+    const gM = OC.fountain.geom(pM);
+    const dM = pM.annuli.map(a => OC.fountain.ringD(a, gM));
+    // Starve base DETERMINISTICALLY rather than hoping noise does it: size the
+    // window to hold exactly ONE base droplet (24 symbols) after the preamble,
+    // while the shorter-droplet rings still fit two. Base then cannot reach a
+    // 2-pass bar however clean the capture is — the failure is pure supply.
+    // MID-LOOP, like every harvest hop window: a window containing the stream
+    // head would lock on the preamble and never reach crcAlign at all.
+    // 44 symbols is the sweet spot — base (24/droplet) gets ONE, so it cannot
+    // reach a 2-pass bar however clean the capture, while the shorter-droplet
+    // rings get three each and lock on their own.
+    const winF = 44 * pM.annuli[0].rotation.frames_per_symbol;
+    const skipF = 160;
+    const seqM = OC.emission.renderSequence(pM, skipF + winF, { payloadBytes: OC.fountain.textToBytes("CONSENSUS ADMISSION") });
+    const clean0 = seqM.frames[0].img;
+    const w = seqM.frames.slice(skipF).map((fr, i) => ({ f: i, img: fr.img }));
+    const dec = (extra) => OC.pipeline.decodeSequence(w, pM, Object.assign(
+      { payload: true, registerOn: clean0, loopSeconds: 60 }, extra));
+    const rOff = dec({ consensusLock: false });
+    const rOn = dec({});
+    const rowsOff = rOff.error ? [] : rOff.emitters[0].annuli.filter(a => !a.beacon);
+    const rowsOn = rOn.error ? [] : rOn.emitters[0].annuli.filter(a => !a.beacon);
+    const lockedOff = rowsOff.filter(r => r.alignLag != null).length;
+    const lockedOn = rowsOn.filter(r => r.alignLag != null).length;
+    const gained = rowsOn.filter((r, i) => r.alignLag != null && rowsOff[i] && rowsOff[i].alignLag == null);
+    const sibLags = rowsOn.filter(r => r.alignMethod !== "consensus" && r.alignLag != null).map(r => r.alignLag);
+    const agree = gained.every(r => sibLags.indexOf(r.alignLag) >= 0);
+    const viaConsensus = gained.filter(r => r.alignMethod === "consensus").length;
+    record("T22M consensus admission: a ring starved of droplets by its own symbol length gains a lock from the siblings' agreed framing, at their lag, and only rings that failed on their own are admitted",
+      lockedOn > lockedOff && viaConsensus === gained.length && agree &&
+      rowsOn.every(r => r.alignMethod !== "consensus" || r.dropletsPassed > 0),
+      "D " + dM.join("/") + " symbols, window " + winF + " frames, base tried " +
+      (rowsOff[0] ? rowsOff[0].dropletsTried : "?") + " droplet(s) · locks " + lockedOff + " → " + lockedOn +
+      " · admitted " + gained.map(r => "a" + r.annulus + "@" + r.alignLag + "(" + r.dropletsPassed + "d)").join(",") +
+      " · sibling lags " + sibLags.join(","));
+  }
+
   // ——— T23: tiling (§7) — the density knob, tile identity, the cross-tile pool ———
   await tick("T23a: 6-up render geometry (designated tile, gutter vertices, per-tile gauge)…");
   {
