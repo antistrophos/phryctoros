@@ -57,7 +57,14 @@
       for (var z = 0; z <= regFrame && z < groups.length; z++) hs[z] = em.H;
       return { Hs: hs };
     });
-    if (opts.handheld) {
+    // v3.1 quadrant + per-frame solve: the saddle TRACKER owns the handheld
+    // path (chained solve-as-tracker in the solve loop below). Blind per-frame
+    // re-registration is both ~8× slower and ROLL-AMBIGUOUS across frames — a
+    // mod-180 flip between frames scrambles every odd-harmonic phase. The
+    // export loopback proved it: handheld per-frame registration zeroed the
+    // decode; static + tracking rained 29 droplets in 18 s on the same file.
+    var saddleTracked = !!(opts.plateSolve && profile.plate && profile.plate.corner_style === "quadrant");
+    if (opts.handheld && !saddleTracked) {
       var prev = emitters.map(function (em) { return geom.applyH(em.H, 0, 0); });
       for (var fi = regFrame + 1; fi < groups.length; fi++) {
         var reg2 = register.registerAll(groups[fi].imgs[0], regOpts);
@@ -124,9 +131,18 @@
         // H-derived center anchor when a corner is missing (the A/B fix).
         var solveOpts = { hCenter: !!profile.qr_persistent };
         for (var pf = 0; pf < groups.length; pf++) {
-          var sol = saddleM ? saddleM.trackSolve(groups[pf].imgs[0], HsP[pf], profile, solveOpts)
+          // handheld + saddles: CHAIN from the previous frame's solved H (the
+          // tracker follows the hand); static: every frame starts from the
+          // registration/conic H. Re-register only on track loss.
+          var seedH = (saddleM && opts.handheld && pf > 0 && HsP[pf - 1]) ? HsP[pf - 1] : HsP[pf];
+          var sol = saddleM ? saddleM.trackSolve(groups[pf].imgs[0], seedH, profile, solveOpts)
                             : plateM.plateSolve(groups[pf].imgs[0], HsP[pf], profile, solveOpts);
           if (sol) { HsP[pf] = sol.H; solved++; residSum += sol.residPx; if (sol.used < usedMin) usedMin = sol.used; }
+          else if (saddleM && opts.handheld) {
+            var rr = register.registerAll(groups[pf].imgs[0], regOpts);
+            if (rr.emitters.length) HsP[pf] = rr.emitters[0].H;
+            else if (pf > 0) HsP[pf] = HsP[pf - 1];
+          }
         }
         return { solved: solved, frames: groups.length, usedMin: solved ? usedMin : null,
                  meanResidPx: solved ? Math.round(residSum / solved * 100) / 100 : null };

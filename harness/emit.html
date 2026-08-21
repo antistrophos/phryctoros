@@ -41,6 +41,7 @@
   <button id="startBtn" disabled>Start emission</button>
   <button id="stopBtn" disabled>Stop</button>
   <button id="fsBtn" disabled>Fullscreen</button>
+  <button id="exportBtn" disabled title="render the whole loop through the analytic renderer and save it as a .webm — any screen that plays video becomes an emitter">Export loop video</button>
   loop <input id="loopSecs" type="number" value="60" min="10" style="width:4rem"> s
   <label style="margin-left:.8rem"><input id="freezeChk" type="checkbox" checked> freeze between loops,
     <input id="cdSecs" type="number" value="3" min="1" max="10" style="width:3rem"> s countdown</label>
@@ -95,6 +96,7 @@
 <script src="../src/profile.js"></script>
 <script src="../src/emission.js"></script>
 <script src="../src/fountain.js"></script>
+<script src="webm-mux.js"></script>
 <script>
 "use strict";
 const OC = window.OC;
@@ -163,6 +165,7 @@ function validate() {
   t += "</table><p>contrast " + f.contrast + " — " + f.advice.join(" ") + "</p>";
   $("flickOut").innerHTML = t;
   $("startBtn").disabled = !v.ok;
+  $("exportBtn").disabled = !v.ok || !OC.profile.isV3(profile);
   return v.ok;
 }
 
@@ -561,7 +564,11 @@ function loop(now) {
    contract-mandatory for v3 — the checkbox is a v2 control), session32 is
    stamped fresh per emission, and the envelope QR carries payload identity
    when a payload rides. */
-function startV3() {
+/* Everything an emission needs from the UI, computed once: profile knobs,
+   session stamp, payload carousels, envelope, schedules, beacon, QR. Shared by
+   the live canvas path (startV3) and the video export — so the exported file
+   is, by construction, the same emission the live page would show. */
+function prepareV3() {
   const fps = profile.frame_rate_hz;
   profile.countdown.loop_s = Math.max(10, +$("loopSecs").value || 60);
   profile.countdown.freeze_s = Math.max(1, Math.min(+$("cdSecs").value || 3, profile.countdown.loop_s - 1));
@@ -581,7 +588,7 @@ function startV3() {
       $("payloadInfo").textContent = "K=" + enc.K + " blocks (self-framed), carousel " + enc.L +
         " droplets" + (layout.n > 1 ? " × " + layout.n + " tile-seeded carousels" : "") +
         " — receiver must use v3 payload mode";
-    } catch (e) { $("payloadInfo").textContent = String(e.message); return; }
+    } catch (e) { $("payloadInfo").textContent = String(e.message); return null; }
   } else $("payloadInfo").textContent = "";
   const envBytes = OC.emission.envelopeBytes(profile, envInfo);
   const freezeF = Math.round(profile.countdown.freeze_s * fps);
@@ -597,6 +604,82 @@ function startV3() {
   }
   beaconSchedule = OC.emission.buildBeaconSchedule(profile, effLoopFrames, envBytes);
   qrCanvas = buildQrCanvas(envBytes);
+  return { fps, layout, carousels, payloadBytes, envBytes, freezeF, effLoopFrames, schedules, schedulesT, beaconSchedule };
+}
+
+/* Export the emission loop as a VIDEO FILE. Frames come from the ANALYTIC
+   renderer (emission.js — the exact pixels the suite decodes, not the live
+   canvas approximation) → WebCodecs VP9 at a transparent bitrate → a
+   dependency-free WebM (webm-mux.js). The emitter becomes a media file: any
+   screen that plays video emits, and the media player's vsync-locked output
+   carries the timing instead of rAF/canvas. Feeding the exported file back
+   into receive.html is the software loopback. The countdown face is exported
+   without the human-facing digit (cosmetic only). */
+async function exportLoopVideo() {
+  if (!validate()) return null;
+  if (!OC.profile.isV3(profile)) { $("hud").textContent = "export: v3-family profiles only (v3 / v3hr / v3i)"; return null; }
+  if (typeof VideoEncoder === "undefined") { $("hud").textContent = "export: WebCodecs VideoEncoder unavailable in this browser"; return null; }
+  const prep = prepareV3();
+  if (!prep) return null;
+  const fps = prep.fps;
+  const loopFramesTotal = Math.round(profile.countdown.loop_s * fps);
+  const geom3 = v3TileCenters();
+  const W = geom3.w, H = geom3.h;
+  const cfg = { codec: "vp09.00.10.08", width: W, height: H, bitrate: 16_000_000, framerate: fps, latencyMode: "quality" };
+  const sup = await VideoEncoder.isConfigSupported(cfg);
+  if (!sup.supported) { $("hud").textContent = "export: VP9 encode not supported for " + W + "×" + H; return null; }
+  const off = document.createElement("canvas"); off.width = W; off.height = H;
+  const octx = off.getContext("2d");
+  const imgData = octx.createImageData(W, H);
+  const mux = new WebmMuxer({ width: W, height: H, codec: "V_VP9", fps });
+  let encErr = null;
+  const enc = new VideoEncoder({
+    output: (chunk) => { const buf = new Uint8Array(chunk.byteLength); chunk.copyTo(buf); mux.addFrame(buf, chunk.timestamp, chunk.type === "key"); },
+    error: (e) => { encErr = e; }
+  });
+  enc.configure(cfg);
+  const qrm = OC.emission.envelopeModules(profile.qr, prep.envBytes);
+  const tStart = performance.now();
+  $("exportBtn").disabled = true;
+  for (let f = 0; f < loopFramesTotal; f++) {
+    const tl = OC.emission.timeline(profile, f);
+    const eff = tl.eff % prep.effLoopFrames;
+    const img = OC.emission.renderFrame(profile, eff, {
+      schedules: prep.schedules, schedulesT: prep.schedulesT, beaconSchedule: prep.beaconSchedule,
+      envBytes: prep.envBytes, countdown: !!tl.freeze, qrModules: qrm });
+    OC.emission.toImageData(img, imgData);
+    octx.putImageData(imgData, 0, 0);
+    const vf = new VideoFrame(off, { timestamp: Math.round(f * 1e6 / fps), duration: Math.round(1e6 / fps) });
+    enc.encode(vf, { keyFrame: f % 15 === 0 });
+    vf.close();
+    if (encErr) break;
+    if (f % 5 === 0) {
+      $("hud").textContent = "exporting " + f + "/" + loopFramesTotal + " frames (" +
+        ((performance.now() - tStart) / 1000).toFixed(0) + " s)…";
+      await new Promise(r => setTimeout(r, 0));
+      while (enc.encodeQueueSize > 8) await new Promise(r => setTimeout(r, 5));
+    }
+  }
+  if (!encErr) await enc.flush();
+  enc.close();
+  $("exportBtn").disabled = false;
+  if (encErr) { $("hud").textContent = "export encoder error: " + encErr.message; return null; }
+  const blob = mux.finish();
+  window.lastExport = blob; // in-page verification hook
+  const name = "phryctoros-" + $("rateSel").value + (profile.plate.corner_style === "quadrant" ? "-quad" : "") +
+    ($("payloadChk").checked ? "-payload" : "-reference") + "-loop" + Math.round(profile.countdown.loop_s) + "s.webm";
+  $("hud").textContent = "export done: " + name + " — " + (blob.size / 1048576).toFixed(1) + " MB, " +
+    loopFramesTotal + " frames @ " + fps + " fps — receiver settings: " + ocSettingsString().replace(/capfps=\d+/, "capfps=30") +
+    " (capture fps 30 when decoding the FILE itself; 60 when filming it off a screen)";
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  return blob;
+}
+
+function startV3() {
+  const fps = profile.frame_rate_hz;
+  const prep = prepareV3();
+  if (!prep) return;
   const cv = $("cv");
   const geom3 = v3TileCenters();
   cv.width = geom3.w; cv.height = geom3.h;
@@ -611,6 +694,7 @@ function startV3() {
 }
 
 $("applyBtn").onclick = validate;
+$("exportBtn").onclick = () => { exportLoopVideo(); };
 $("startBtn").onclick = () => {
   if (!validate()) return;
   if (OC.profile.isV3(profile)) { startV3(); return; }

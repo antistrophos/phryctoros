@@ -234,6 +234,19 @@ async function main() {
       em ? "solved " + sv.solved + "/" + sv.frames + " resid " + sv.meanResidPx + "px droplets " +
            em.annuli.map(a => a.dropletsPassed).join("/") + " → " + JSON.stringify(pay && { ok: pay.ok, text: pay.text })
          : "no emitter: " + JSON.stringify(res).slice(0, 140));
+    // T24g — the handheld flag routes through the CHAINED saddle tracker, not
+    // blind per-frame re-registration (the export-loopback finding: per-frame
+    // constellation solving is roll-ambiguous across frames and zeroed the
+    // decode; the same file decoded static). Same drifting frames, handheld on.
+    await tick("T24g: handheld + quadrant — the chained tracker owns the moving-camera path…");
+    const resH = OC.pipeline.decodeSequence(warped, pQ, { payload: true, plateSolve: true, handheld: true });
+    const emH = resH.error ? null : resH.emitters[0];
+    const payH = emH && emH.payload, svH = emH && emH.plateSolve;
+    record("T24g handheld + quadrant: the chained saddle tracker owns the moving-camera path — the same drifting sequence decodes with handheld:true",
+      !!(emH && svH && svH.solved >= 0.95 * svH.frames && payH && payH.ok === true && payH.text === msg),
+      emH ? "solved " + svH.solved + "/" + svH.frames + " resid " + svH.meanResidPx + "px droplets " +
+            emH.annuli.map(a => a.dropletsPassed).join("/") + " → " + JSON.stringify(payH && { ok: payH.ok, text: payH.text })
+          : "no emitter: " + JSON.stringify(resH).slice(0, 140));
   }
 
   await tick("T24f: decoy safety — no constellation off QR faces, bullseye plates, or noise…");

@@ -379,11 +379,20 @@ async function seekWindow(v, geo, tA, tB, capFps, emitFps, onStep) {
   const fBase = Math.round(tA * emitFps);
   const frames = []; const perIdx = {}; let seeks = 0;
   const tEnd = Math.min(tB, v.duration - 0.05);
+  // Seek to the MIDDLE of each capture frame's interval, never its boundary:
+  // container timestamps are microsecond-rounded (frame 2 of a 30 fps file
+  // sits at 66667 µs while 2/30 s is a hair EARLIER), so boundary seeks hand
+  // back the previous frame for one third of all frames — a symbol stream
+  // one-third replaced by its predecessor: skewed carriers, zero locks,
+  // healthy contrast. Two-looks-per-frame phone captures mostly hid it
+  // (duplicate selection discards the bad look); a native-rate file has no
+  // rescue — the export loopback caught it. Mid-frame + floor keeps the
+  // 60→30 pairing exact: floor((i+0.5)/2) = (0,1),(2,3),…
   for (let i = Math.ceil(tA * capFps); ; i++) {
-    const t = i / capFps;
+    const t = (i + 0.5) / capFps;
     if (t >= tEnd) break;
     await seek(t); seeks++;
-    const idx = Math.round(t * emitFps) - fBase;
+    const idx = Math.floor(t * emitFps) - fBase;
     if ((perIdx[idx] || 0) < 2) {
       geo.ctx.drawImage(v, geo.sx, geo.sy, geo.sw, geo.sh, 0, 0, geo.W, geo.H);
       frames.push({ f: idx, img: toLumFromCanvas(geo.ctx, geo.W, geo.H) });

@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- single-file build 2026-08-17 — regenerate with build_standalone.py -->
+<!-- single-file build 2026-08-21 — regenerate with build_standalone.py -->
 
 <html lang="en">
 <head>
@@ -5222,7 +5222,14 @@
       for (var z = 0; z <= regFrame && z < groups.length; z++) hs[z] = em.H;
       return { Hs: hs };
     });
-    if (opts.handheld) {
+    // v3.1 quadrant + per-frame solve: the saddle TRACKER owns the handheld
+    // path (chained solve-as-tracker in the solve loop below). Blind per-frame
+    // re-registration is both ~8× slower and ROLL-AMBIGUOUS across frames — a
+    // mod-180 flip between frames scrambles every odd-harmonic phase. The
+    // export loopback proved it: handheld per-frame registration zeroed the
+    // decode; static + tracking rained 29 droplets in 18 s on the same file.
+    var saddleTracked = !!(opts.plateSolve && profile.plate && profile.plate.corner_style === "quadrant");
+    if (opts.handheld && !saddleTracked) {
       var prev = emitters.map(function (em) { return geom.applyH(em.H, 0, 0); });
       for (var fi = regFrame + 1; fi < groups.length; fi++) {
         var reg2 = register.registerAll(groups[fi].imgs[0], regOpts);
@@ -5289,9 +5296,18 @@
         // H-derived center anchor when a corner is missing (the A/B fix).
         var solveOpts = { hCenter: !!profile.qr_persistent };
         for (var pf = 0; pf < groups.length; pf++) {
-          var sol = saddleM ? saddleM.trackSolve(groups[pf].imgs[0], HsP[pf], profile, solveOpts)
+          // handheld + saddles: CHAIN from the previous frame's solved H (the
+          // tracker follows the hand); static: every frame starts from the
+          // registration/conic H. Re-register only on track loss.
+          var seedH = (saddleM && opts.handheld && pf > 0 && HsP[pf - 1]) ? HsP[pf - 1] : HsP[pf];
+          var sol = saddleM ? saddleM.trackSolve(groups[pf].imgs[0], seedH, profile, solveOpts)
                             : plateM.plateSolve(groups[pf].imgs[0], HsP[pf], profile, solveOpts);
           if (sol) { HsP[pf] = sol.H; solved++; residSum += sol.residPx; if (sol.used < usedMin) usedMin = sol.used; }
+          else if (saddleM && opts.handheld) {
+            var rr = register.registerAll(groups[pf].imgs[0], regOpts);
+            if (rr.emitters.length) HsP[pf] = rr.emitters[0].H;
+            else if (pf > 0) HsP[pf] = HsP[pf - 1];
+          }
         }
         return { solved: solved, frames: groups.length, usedMin: solved ? usedMin : null,
                  meanResidPx: solved ? Math.round(residSum / solved * 100) / 100 : null };
@@ -5935,11 +5951,20 @@ async function seekWindow(v, geo, tA, tB, capFps, emitFps, onStep) {
   const fBase = Math.round(tA * emitFps);
   const frames = []; const perIdx = {}; let seeks = 0;
   const tEnd = Math.min(tB, v.duration - 0.05);
+  // Seek to the MIDDLE of each capture frame's interval, never its boundary:
+  // container timestamps are microsecond-rounded (frame 2 of a 30 fps file
+  // sits at 66667 µs while 2/30 s is a hair EARLIER), so boundary seeks hand
+  // back the previous frame for one third of all frames — a symbol stream
+  // one-third replaced by its predecessor: skewed carriers, zero locks,
+  // healthy contrast. Two-looks-per-frame phone captures mostly hid it
+  // (duplicate selection discards the bad look); a native-rate file has no
+  // rescue — the export loopback caught it. Mid-frame + floor keeps the
+  // 60→30 pairing exact: floor((i+0.5)/2) = (0,1),(2,3),…
   for (let i = Math.ceil(tA * capFps); ; i++) {
-    const t = i / capFps;
+    const t = (i + 0.5) / capFps;
     if (t >= tEnd) break;
     await seek(t); seeks++;
-    const idx = Math.round(t * emitFps) - fBase;
+    const idx = Math.floor(t * emitFps) - fBase;
     if ((perIdx[idx] || 0) < 2) {
       geo.ctx.drawImage(v, geo.sx, geo.sy, geo.sw, geo.sh, 0, 0, geo.W, geo.H);
       frames.push({ f: idx, img: toLumFromCanvas(geo.ctx, geo.W, geo.H) });
