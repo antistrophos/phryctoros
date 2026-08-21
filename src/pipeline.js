@@ -14,6 +14,10 @@
     var register = dep("register"), sample = dep("sample"), transform = dep("transform"),
         separate = dep("separate"), demap = dep("demap"), serM = dep("ser"), degrade = dep("degrade");
 
+    // opts.timing: per-stage wall-clock accumulators (ms) returned as
+    // result.timings — the CPU map (where a phone's decode time goes).
+    var T = opts.timing ? { register: 0, conic: 0, solve: 0, sample: 0, dft: 0, rowtime: 0, track: 0, align: 0, demod: 0, samples: 0, downstreams: 0 } : null;
+    var tnow = (typeof performance !== "undefined" && performance.now) ? function () { return performance.now(); } : function () { return Date.now(); };
     var work = frames;
     if (opts.mirror && opts.mirror.receive)
       work = frames.map(function (fr) { return { f: fr.f, img: degrade.flipH(fr.img) }; });
@@ -36,6 +40,7 @@
     // harness-only isolation of annulus degradation from registration death.
     var regOpts = { profile: profile, maxEmitters: opts.maxEmitters };
     var reg = null, regFrame = 0;
+    var tReg = T && tnow();
     if (opts.registerOn) {
       reg = register.registerAll(opts.registerOn, regOpts);
     } else {
@@ -46,6 +51,7 @@
     }
     if (!reg || !reg.emitters.length)
       return { error: "no emitter found in any frame", frames: work.length, emitters: [] };
+    if (T) T.register += tnow() - tReg;
     var emitters = reg.emitters.slice(0, opts.maxEmitters || 4);
 
     // Per-frame homographies: static camera reuses H; handheld re-registers every
@@ -94,11 +100,20 @@
     // samples through applyH and inherits the fix. Self-gated: below the
     // fit's own noise floor A stays the exact identity and this block
     // changes nothing (no branch doubling — the criterion-hunt lesson).
+    // Skip the static conic when the saddle tracker owns geometry: trackSolve
+    // re-fits a full per-frame projective H from the corner constellation and
+    // OVERWRITES this composition on every frame it solves, so the frame-
+    // averaged k≤2 estimate is wasted work (~11% of decode) except on the
+    // frames trackSolve misses — and those keep their registration H, which
+    // the tracker seeds from anyway. Bullseye plateSolve still gets the conic
+    // (its circle-fit benefits from the seed).
     var conicBriefs = null;
-    if (opts.conic !== false) {
+    if (opts.conic !== false && !saddleTracked) {
       var conicM = dep("conic");
       conicBriefs = emitters.map(function (_, ce) {
+        var tC = T && tnow();
         var est = conicM.estimateStatic(groups, tracksH[ce].Hs, profile, opts.conicOpts);
+        if (T) T.conic += tnow() - tC;
         if (est.applied) {
           var HsC = tracksH[ce].Hs;
           for (var ch = 0; ch < HsC.length; ch++) HsC[ch] = conicM.compose(HsC[ch], est.A);
@@ -130,20 +145,27 @@
         // qr_persistent: the center is a QR, not a bullseye — allow the
         // H-derived center anchor when a corner is missing (the A/B fix).
         var solveOpts = { hCenter: !!profile.qr_persistent };
+        var tS = T && tnow();
         for (var pf = 0; pf < groups.length; pf++) {
-          // handheld + saddles: CHAIN from the previous frame's solved H (the
-          // tracker follows the hand); static: every frame starts from the
-          // registration/conic H. Re-register only on track loss.
-          var seedH = (saddleM && opts.handheld && pf > 0 && HsP[pf - 1]) ? HsP[pf - 1] : HsP[pf];
+          // The saddle tracker ALWAYS chains from the previous frame's best H:
+          // for a static camera the prior H equals the registration H (no
+          // cost), for any drift (handheld OR the slow fatigue wander of a
+          // "static" hold) the prior H is the nearest pose and the only seed
+          // trackSolve's local Förstner can reach the drifted corners from.
+          // This is what lets the tracker stand in for the static conic
+          // (which we now skip). On loss: re-register if handheld, else keep
+          // the last good H. Bullseye plateSolve keeps the frame-static seed.
+          var seedH = (saddleM && pf > 0 && HsP[pf - 1]) ? HsP[pf - 1] : HsP[pf];
           var sol = saddleM ? saddleM.trackSolve(groups[pf].imgs[0], seedH, profile, solveOpts)
                             : plateM.plateSolve(groups[pf].imgs[0], HsP[pf], profile, solveOpts);
           if (sol) { HsP[pf] = sol.H; solved++; residSum += sol.residPx; if (sol.used < usedMin) usedMin = sol.used; }
-          else if (saddleM && opts.handheld) {
-            var rr = register.registerAll(groups[pf].imgs[0], regOpts);
-            if (rr.emitters.length) HsP[pf] = rr.emitters[0].H;
-            else if (pf > 0) HsP[pf] = HsP[pf - 1];
+          else if (saddleM) {
+            var rr = opts.handheld ? register.registerAll(groups[pf].imgs[0], regOpts) : null;
+            if (rr && rr.emitters.length) HsP[pf] = rr.emitters[0].H;
+            else if (pf > 0 && HsP[pf - 1]) HsP[pf] = HsP[pf - 1]; // keep the last good pose
           }
         }
+        if (T) T.solve += tnow() - tS;
         return { solved: solved, frames: groups.length, usedMin: solved ? usedMin : null,
                  meanResidPx: solved ? Math.round(residSum / solved * 100) / 100 : null };
       });
@@ -201,15 +223,19 @@
           // r(θ) step splashes broadband energy the clean duplicate doesn't have.
           var cands = [];
           for (var ci = 0; ci < groups[i].imgs.length; ci++) {
+            var tSm = T && tnow();
             var s = sample.sampleBoundary(groups[i].imgs[ci], tracksH[emIdx].Hs[i], a);
             // Pre-fill copy for the F2 row-time scan: gap-filled angles are
             // fabrications the least-squares refit must never see, and each
             // retained radius + H reproduces its own image row on demand.
             var rRaw = new Float64Array(s.r);
             var gapFrac = sample.fillGaps(s.r);
+            if (T) { T.sample += tnow() - tSm; T.samples++; }
             if (gapFrac < 0 || s.found < s.N * 0.7) continue;
+            var tDf = T && tnow();
             var spec2 = transform.dft(s.r, kmax);
             cands.push({ spec: spec2, sigma: transform.noiseSigma(spec2, a.boundary.harmonics, kmax), contrast: s.contrast, rRaw: rRaw });
+            if (T) T.dft += tnow() - tDf;
           }
           candsPerGroup[i] = cands;
           if (!cands.length) { series.push(null); continue; }
@@ -233,6 +259,8 @@
         // 0.87→0.12, and destroyed lit-1× base tracks, 0.14→0.67 — the same
         // gates cannot serve both; the decoder tries both and keeps the winner).
         var downstream = function (seriesX, tearX) {
+          if (T) T.downstreams++;
+          var tT = T && tnow();
           var track = separate.trackPhase(seriesX, a, profile);
           // Motion onset: the emitter freezes frame 0 through the countdown, so a
           // capture may begin with valid-but-static samples. Sync bases at onset;
@@ -270,6 +298,8 @@
                      carrierRatio: carrierRatio,
                      error: "CLOCK MISMATCH — rotation at " + carrierRatio + "× expected. Emitter stalling intermittently, or capture fps ≠ profile fps." };
 
+          if (T) T.track += tnow() - tT;
+          var tA = T && tnow();
           var syncBase = onset !== null ? onset : null;
           var maxLagSym = Math.ceil(((opts.loopSeconds || 60) * profile.frame_rate_hz) / a.rotation.frames_per_symbol) + profile.preamble_symbols;
           var align = opts.aligned ? { offset: 0, lag: 0, score: null, method: "aligned" } : demap.findAlignment(track, a, profile, syncBase);
@@ -288,6 +318,8 @@
                   opts.alignHints && opts.alignHints[a.index])
               : demap.correlateStream(track, a, profile, maxLagSym, syncBase);
           }
+          if (T) T.align += tnow() - tA;
+          var tDm = T && tnow();
           if (!align)
             return { annulus: a.index, layer: a.layer, present: true, contrast: round3(meanContrast), validFrames: valid,
                      carrierRatio: carrierRatio, tear: tearBrief(tearX),
@@ -315,6 +347,7 @@
 
           if (opts.payload) {
             var col = dep("fountain").collect(decoded, align.lag, a, profile);
+            if (T) T.demod += tnow() - tDm;
             return {
               annulus: a.index, layer: a.layer, present: true,
               contrast: round3(meanContrast), validFrames: valid, firstValidFrame: firstValidIdx >= 0 ? groups[firstValidIdx].f : null,
@@ -329,6 +362,7 @@
           }
 
           var score = serM.evaluate(decoded, a, profile, align.lag);
+          if (T) T.demod += tnow() - tDm;
           return {
             annulus: a.index, layer: a.layer, present: true,
             contrast: round3(meanContrast), validFrames: valid, firstValidFrame: firstValidIdx >= 0 ? groups[firstValidIdx].f : null,
@@ -348,6 +382,7 @@
         // at symbol kinks the midpoint is itself a temporal blend.)
         var rowtime = opts.rowTime !== false ? dep("rowtime") : null;
         var tear = null;
+        var tR = T && tnow();
         if (rowtime) {
           var track0 = separate.trackPhase(series, a, profile);
           tear = rowtime.repairSeries(series, track0, a, profile, opts.rowTimeOpts);
@@ -360,6 +395,7 @@
             tear.slipSuspect = tear2.slipSuspect; tear.cuts = tear2.cuts;
           }
         }
+        if (T) T.rowtime += tnow() - tR;
         var mutated = tear && (tear.repaired > 0 || tear.invalidated > 0 || tear.warped > 0);
         if (!mutated) return downstream(series, tear);
         // Judge the repairs by outcome, not by gate: decode BOTH the repaired
@@ -428,7 +464,8 @@
     }
 
     return { emitters: results, emitterCount: emitters.length, regFrame: regFrame,
-             designatedTile: designatedIdx >= 0 ? designatedIdx : undefined, pooled: pooled };
+             designatedTile: designatedIdx >= 0 ? designatedIdx : undefined, pooled: pooled,
+             timings: T || undefined };
   }
 
   /* v3 preset auto-detect (§2, as ruled: binary, dual-geometry, ≥2 agreeing

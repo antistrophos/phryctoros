@@ -21,6 +21,18 @@
 
   /* Sample one annulus's outer boundary at N angles.
      Returns { r: Float64Array(N) (NaN where no edge), found, contrast, rowMin, rowMax }. */
+  // Cached cos/sin for the angular grid — identical across every ring and
+  // frame (N is fixed), so the ~256 trig pairs are computed once, not per call.
+  var _trigN = 0, _cosT = null, _sinT = null;
+  function trigTable(N) {
+    if (N !== _trigN) {
+      _cosT = new Float64Array(N); _sinT = new Float64Array(N);
+      for (var i = 0; i < N; i++) { var th = TAU * i / N; _cosT[i] = Math.cos(th); _sinT[i] = Math.sin(th); }
+      _trigN = N;
+    }
+    return { cos: _cosT, sin: _sinT };
+  }
+
   function sampleBoundary(img, H, annulus, opts) {
     opts = opts || {};
     var g = G();
@@ -34,17 +46,27 @@
     var found = 0, contrastSum = 0, rowMin = Infinity, rowMax = -Infinity;
     var prof = new Float64Array(S);
     var valScale = img.norm || 1; // Uint8 camera frames carry norm:255; synthetic Float32 default 1
+    var bilinear = g.bilinear;
+    // Along a fixed-angle ray the homography is linear-over-linear in the
+    // radius, so applyH(H, r·cx, r·sy) factors into per-angle constants and
+    // the inner loop steps by pure addition — no matrix multiply, no [x,y]
+    // allocation per sample (this call ran ~58M times per decode). The sample
+    // POINTS are identical to the old applyH path; only the arithmetic moved.
+    var H0 = H[0], H1 = H[1], H2 = H[2], H3 = H[3], H4 = H[4], H5 = H[5], H6 = H[6], H7 = H[7], H8 = H[8];
+    var trig = trigTable(N), cosT = trig.cos, sinT = trig.sin;
 
     for (var i = 0; i < N; i++) {
-      var th = TAU * i / N;
-      var cx = Math.cos(th), sy = Math.sin(th);
+      var cx = cosT[i], sy = sinT[i];
+      var ax = H0 * cx + H1 * sy, ay = H3 * cx + H4 * sy, aw = H6 * cx + H7 * sy;
+      var nx = win.lo * ax + H2, ny = win.lo * ay + H5, w = win.lo * aw + H8;
+      var dnx = ax * drUnits, dny = ay * drUnits, dw = aw * drUnits;
       var lo = Infinity, hi = -Infinity;
       for (var s = 0; s < S; s++) {
-        var rr = win.lo + s * drUnits;
-        var pt = g.applyH(H, rr * cx, rr * sy);
-        var v = g.bilinear(img, pt[0], pt[1]);
+        var iw = 1 / w;
+        var v = bilinear(img, nx * iw, ny * iw);
         prof[s] = v;
         if (v < lo) lo = v; if (v > hi) hi = v;
+        nx += dnx; ny += dny; w += dw;
       }
       var contrast = (hi - lo) / valScale;
       contrastSum += contrast;
