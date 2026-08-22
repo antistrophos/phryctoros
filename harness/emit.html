@@ -46,6 +46,7 @@
   <label style="margin-left:.8rem"><input id="freezeChk" type="checkbox" checked> freeze between loops,
     <input id="cdSecs" type="number" value="3" min="1" max="10" style="width:3rem"> s countdown</label>
 </p>
+<div id="carouselInfo"></div>
 <fieldset id="modePanel">
   <legend>Emission settings — the receiver must match these</legend>
   <div id="modeSummary"></div>
@@ -166,6 +167,10 @@ function validate() {
   $("flickOut").innerHTML = t;
   $("startBtn").disabled = !v.ok;
   $("exportBtn").disabled = !v.ok || !OC.profile.isV3(profile);
+  // The textarea is editable — hand-edited F or M must move the coverage. Guarded
+  // because ocCarouselInfo lives in the NEXT script block: function declarations
+  // do not hoist across <script> boundaries, and validate() also runs at load.
+  if (typeof ocCarouselInfo === "function") ocCarouselInfo();
   return v.ok;
 }
 
@@ -809,6 +814,63 @@ function ocSettingsString() {
     "freeze=" + (+$("cdSecs").value || 3),
     "capfps=" + ((rate === "15" || rate === "20") ? 30 : 60)].join(" ");
 }
+/* CAROUSEL COVERAGE — the readout that makes loop length legible.
+   The loop's real limit is not filming time: each ring's carousel is L = 2K+12
+   droplets of D symbols at F frames each, so it takes (preamble + L·D)·F frames
+   to come around once. A loop SHORTER than that period means the ring's tail
+   droplets are never emitted at all — no amount of filming recovers them,
+   because every loop replays the identical schedule from index 0. A loop LONGER
+   means the ring re-sends droplets the ledger already holds (still useful as
+   retries, but no new information). D varies with M, so the rings have
+   DIFFERENT periods and the slowest one sets the honest floor. */
+function ocCarouselInfo() {
+  const el = $("carouselInfo");
+  if (!el) return;
+  const on = $("payloadChk").checked && OC.profile.isV3(profile) && profile.annuli;
+  if (!on) { el.innerHTML = ""; return; }
+  let g, K, L;
+  try {
+    g = OC.fountain.geom(profile);
+    let bytes = OC.fountain.textToBytes($("payloadTxt").value || " ");
+    if (profile.carriage && profile.carriage.self_framing) bytes = OC.fountain.selfFrame(bytes);
+    K = Math.max(1, Math.ceil(bytes.length / g.dataBytes));
+    L = OC.fountain.carouselLen(K);
+  } catch (e) { el.innerHTML = "<span class='dim'>carousel: " + e.message + "</span>"; return; }
+
+  const fps = profile.frame_rate_hz;
+  const loopS = Math.max(10, +$("loopSecs").value || 60);
+  const freezeS = $("freezeChk").checked ? Math.max(1, Math.min(+$("cdSecs").value || 3, loopS - 1)) : 0;
+  // Mirrors prepareV3 exactly: data frames are the loop MINUS the freeze.
+  const framesData = Math.max(1, Math.round(loopS * fps) - Math.round(freezeS * fps));
+  const Pn = profile.preamble_symbols;
+
+  let worstNeed = 0, anyShort = false;
+  let rows = "";
+  profile.annuli.forEach((a) => {
+    const D = OC.fountain.ringD(a, g), F = a.rotation.frames_per_symbol;
+    const symTotal = Math.ceil(framesData / F) + 1;        // = buildSchedule's nSym
+    const emitted = Math.floor(Math.max(0, symTotal - Pn) / D);  // whole droplets only
+    const distinct = Math.min(emitted, L), repeats = Math.max(0, emitted - L);
+    const periodS = (Pn + L * D) * F / fps;                // motion time for one full carousel
+    const needLoop = freezeS + periodS;                    // the loop_s that would complete it
+    if (distinct < L) { anyShort = true; if (needLoop > worstNeed) worstNeed = needLoop; }
+    rows += "<tr><td>a" + a.index + "</td><td>M=" + a.rotation.M + "</td><td>" + D + "</td><td>" + F +
+            "</td><td>" + periodS.toFixed(1) + " s</td>" +
+            "<td class='" + (distinct < L ? "err" : "ok") + "'>" + distinct + " / " + L +
+            (distinct < L ? "  (" + (L - distinct) + " never sent)" : repeats ? "  (+" + repeats + " repeats)" : "") +
+            "</td></tr>";
+  });
+
+  el.innerHTML =
+    "<table><tr><th>ring</th><th>M</th><th>D sym</th><th>F</th><th>carousel period</th>" +
+    "<th>droplets emitted per loop</th></tr>" + rows + "</table>" +
+    "<p class='" + (anyShort ? "err" : "ok") + "'>K=" + K + " blocks · carousel L=" + L + " droplets · " +
+    framesData + " data frames (" + (framesData / fps).toFixed(1) + " s of the " + loopS + " s loop)" +
+    (anyShort
+      ? " — SHORT: raise loop to " + Math.ceil(worstNeed) + " s so every ring completes its carousel, or accept that the marked rings never emit their tail."
+      : " — every ring completes at least one full carousel.") + "</p>";
+}
+
 function ocRefreshMode() {
   const rate = $("rateSel").value, pay = $("payloadChk").checked;
   const names = { "15": "v2 @15 fps", "20": "v2r20", "30": "v2r30", "v3": "V3 resilient (base innermost)",
@@ -824,9 +886,12 @@ function ocRefreshMode() {
     (pay ? "" : "  —  receivers can measure this emission but NOTHING DECODES from it");
   el.className = pay ? "modeOk" : "modeWarn";
   $("settingsStr").value = ocSettingsString();
+  ocCarouselInfo();
 }
-for (const id of ["payloadChk", "rateSel", "tileSel", "quadChk", "qrPersChk", "loopSecs", "cdSecs"])
+for (const id of ["payloadChk", "rateSel", "tileSel", "quadChk", "qrPersChk", "loopSecs", "cdSecs", "freezeChk"])
   $(id).addEventListener("change", ocRefreshMode);
+// K tracks the message length, so the coverage moves as you type.
+$("payloadTxt").addEventListener("input", ocCarouselInfo);
 /* v3's ruled purpose is carriage — selecting it turns the payload on
    (uncheck deliberately for a reference/diagnostic emission). */
 $("rateSel").addEventListener("change", () => {
