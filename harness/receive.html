@@ -649,8 +649,28 @@ $("fileIn").onchange = async () => {
     // MULTI-SCALE (first-walk lesson): a distant/zoomed emitter that is invisible
     // at the 800 px downscale can be perfectly registrable at native resolution —
     // escalate the pre-scan scale until something registers.
+    //
+    // WIDENED 2026-08-22, on measurement. Registration has a working SCALE BAND
+    // that depends on screen angle, and the bands do not nest — measured on the
+    // 20/30/45 degree ladder, deterministic across every timestamp:
+    //
+    //   30 deg  1280 .. 1920   (fails at 1024 — plate too small)
+    //   45 deg  1024 .. 1600   (fails at 1792+ — plate too LARGE, which is
+    //                           backwards from every resolution intuition; the
+    //                           rejection is an R-ratio gate in scoreHypothesis,
+    //                           upstream of phiTol/bandContrastMin, and 45's phi
+    //                           error is 0.295 against a 0.7 tolerance — the
+    //                           swap-target's tilt-immunity is NOT the problem)
+    //
+    // Overlap: 1280-1600. The old ladder was [800, 1600, native] and broke on
+    // first success, so it landed on 1600 — inside the overlap BY COINCIDENCE.
+    // That accident is the only reason the 45 degree field clip decoded at all;
+    // [800, 1920] would have failed it outright. 1280 is now an explicit rung so
+    // the overlap is covered on purpose rather than by luck, and a second rung in
+    // the band means one arbitrary constant no longer carries the angled case.
+    // 800 stays first: it is the fast path and near head-on plates register there.
     let hits = [];
-    for (const PWs of [800, 1600, Math.min(2200, v.videoWidth)]) {
+    for (const PWs of [800, 1280, 1600, Math.min(2200, v.videoWidth)]) {
       const PHs = Math.round(PWs * v.videoHeight / v.videoWidth);
       pc.width = PWs; pc.height = PHs;
       for (const t of [0.5, v.duration * 0.3, v.duration * 0.6, Math.max(0.5, v.duration - 1)]) {
