@@ -33,6 +33,12 @@
   function G() { return (typeof module !== "undefined" && module.exports) ? require("./geom.js") : global.OC.geom; }
 
   var NS = 16, RESP_RHO = 5;
+  // Förstner refinement window cap. The window is meant to sit INSIDE the swap
+  // circle (0.9·rFlip), but the cap stops it scaling once the mark is large —
+  // so at big mark sizes the window covers a shrinking fraction of the target.
+  // Overridable per call (opts.forstnerRadMax) so the cap can be measured
+  // rather than assumed; 14 is the shipped default.
+  var FORSTNER_RAD_MAX = 14;
   var COS = [], SIN = [], C1R = [], C1I = [], C2R = [], C2I = [], C3R = [], C3I = [];
   (function () {
     for (var k = 0; k < NS; k++) {
@@ -308,7 +314,7 @@
     phi2 = Math.atan2(Math.sin(phi2), Math.cos(phi2));
 
     // cross-selective Förstner, window inside the swap circle
-    var rad = Math.max(4, Math.min(14, 0.9 * rFlip));
+    var rad = Math.max(4, Math.min(opts.forstnerRadMax || FORSTNER_RAD_MAX, 0.9 * rFlip));
     var f1 = forstner(img, cx, cy, rad, true);
     if (!f1) return null;
     var f2 = forstner(img, f1.x, f1.y, rad, true) || f1;
@@ -462,7 +468,14 @@
     var inMean = ringMeanH(img, H, flatR * 0.95, g);
     var outMean = ringMeanH(img, H, flatR + 0.06, g);
     if (inMean === null || outMean === null) return null;
-    var bandContrast = outMean - inMean;
+    // NORMALIZE BY img.norm — the convention this codebase already holds
+    // (sample.js: "Uint8 camera frames carry norm:255; synthetic Float32
+    // default 1"; plate.js and register.js both divide before thresholding).
+    // saddle.js did not, so this gate compared a 0-255 quantity against a 0-1
+    // threshold: ACTIVE on synthetic frames (where T24f exercises it) and
+    // INERT on every camera frame. Measured on field footage: raw ~70, i.e.
+    // 0.275 normalized — the right value, against a threshold 4.5x below it.
+    var bandContrast = (outMean - inMean) / (img.norm || 1);
     if (bandContrast < (opts.bandContrastMin !== undefined ? opts.bandContrastMin : 0.06)) return null;
     var total = bandContrast + 0.3 * (0.7 - phiErr);
     return { total: total, H: H, phiErr: phiErr, bandContrast: bandContrast };
@@ -527,7 +540,7 @@
       var J = jacobianAt(Hprev, model[c][0], model[c][1]);
       if (J.det <= 0) return null;
       var rFlipPx = 0.5 * cR * Math.sqrt(J.det);
-      var rad = Math.max(4, Math.min(14, 0.9 * rFlipPx));
+      var rad = Math.max(4, Math.min(opts.forstnerRadMax || FORSTNER_RAD_MAX, 0.9 * rFlipPx));
       var f1 = forstner(img, p[0], p[1], rad, true);
       if (!f1) return null;
       var f2 = forstner(img, f1.x, f1.y, rad, true) || f1;
