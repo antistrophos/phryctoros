@@ -689,6 +689,41 @@ $("fileIn").onchange = async () => {
       }
       if (hits.length) break;
     }
+    // DENSER SWEEP ON FAILURE (2026-08-22). Four probe instants is thin: the
+    // realistic remaining cause of a whole-clip pre-scan miss is not
+    // detectability — the scale ladder and the saddle rung between them cover
+    // that — but four unlucky instants (motion blur, an occluding hand, the rig
+    // being adjusted). Losing the crop is expensive in a way that CANNOT be
+    // recovered downstream: seekWindow stores every captured frame's luma at the
+    // capture size, so the 1024-wide cap is load-bearing for memory (~590 KB per
+    // frame, ~700 MB for a 20 s window already) and the uncropped path therefore
+    // has to downscale the WHOLE frame — shrinking the emitter precisely when it
+    // was already too hard to find. Cheaper to spend a few more seeks here than
+    // to hand the harvest a capture the emitter cannot survive.
+    // Only runs when everything above missed, so the common case pays nothing.
+    if (!hits.length) {
+      setStatus("pre-scan: nothing yet — sweeping more instants…", "warn");
+      const dense = [];
+      for (let i = 1; i <= 12; i++) dense.push(v.duration * i / 13);
+      for (const PWs of [1280, Math.min(2200, v.videoWidth)]) {
+        const PHs = Math.round(PWs * v.videoHeight / v.videoWidth);
+        pc.width = PWs; pc.height = PHs;
+        for (const t of dense) {
+          await seek(Math.min(Math.max(0.1, t), v.duration - 0.1));
+          pctx.drawImage(v, 0, 0, PWs, PHs);
+          const reg = OC.register.registerAll(toLumFromCanvas(pctx, PWs, PHs), { profile: currentProfile() });
+          if (reg.emitters.length) {
+            const em = reg.emitters[0], sc = v.videoWidth / PWs;
+            hits.push({
+              cx: ((em.corners.TL.x + em.corners.TR.x + em.corners.BL.x) / 3 + em.fiducialWidthPx * 0.14) * sc,
+              cy: ((em.corners.TL.y + em.corners.TR.y + em.corners.BL.y) / 3 + em.fiducialWidthPx * 0.14) * sc,
+              fid: em.fiducialWidthPx * sc
+            });
+          }
+        }
+        if (hits.length) break;
+      }
+    }
     let box = null;
     if (hits.length) {
       const fidMax = Math.max(...hits.map(h => h.fid));
@@ -696,13 +731,43 @@ $("fileIn").onchange = async () => {
       const x0 = Math.min(...hits.map(h => h.cx)) - half, x1 = Math.max(...hits.map(h => h.cx)) + half;
       const y0 = Math.min(...hits.map(h => h.cy)) - half, y1 = Math.max(...hits.map(h => h.cy)) + half;
       const sx = Math.max(0, Math.round(x0)), sy = Math.max(0, Math.round(y0));
-      box = { sx, sy, sw: Math.min(v.videoWidth - sx, Math.round(x1 - x0)), sh: Math.min(v.videoHeight - sy, Math.round(y1 - y0)) };
+      box = { sx, sy, sw: Math.min(v.videoWidth - sx, Math.round(x1 - x0)), sh: Math.min(v.videoHeight - sy, Math.round(y1 - y0)), fid: fidMax };
     }
     const c = document.createElement("canvas");
     const ctx = c.getContext("2d", { willReadFrequently: true });
     let sx = 0, sy = 0, sw = v.videoWidth, sh = v.videoHeight;
     if (box) ({ sx, sy, sw, sh } = box);
-    const W = Math.min(1024, sw), H = Math.round(sh * W / sw);
+    // SCALE-FIX (2026-08-22): normalize the capture to a target FIDUCIAL size,
+    // not a target crop width.
+    //
+    // The old rule was W = min(1024, sw). Because the crop is 8.4 x fid, the fid
+    // CANCELS: eff_fid = fid * 1024 / (8.4 * fid) = 122, every time. Measured on
+    // four clips: native fid 200 / 210 / 178 all arrived at the decoder as 122.
+    // So the decoder was already being scale-normalized -- by accident, keyed to
+    // the wrong quantity, and only while the margin happens to be 4.2 fid. Move
+    // the camera closer and every extra pixel was discarded.
+    //
+    // Keying to the fiducial makes it deliberate and decouples it from the
+    // margin -- which matters, because tightening the margin ALONE would raise
+    // eff_fid (a 2 x fid half-margin puts the box under 1024, so no downscale at
+    // all) and 45 degrees fails above ~167-187 fid. The margin can now change
+    // without moving what the decoder sees.
+    //
+    // Downscaling is free: the scale already happens inside the same drawImage,
+    // and getImageData, the luma loop, the stored bytes and the arc-pitch ray
+    // count all shrink with it (same 2.4 px arc pitch, fewer rays -- the design
+    // intent preserved). It also box-filters, trading surplus resolution for SNR.
+    // Never UPSCALES: below the target the plate is simply smaller, down to the
+    // ~75 px detection floor.
+    //
+    // 122 is the value the system has been running at, measured to work, and it
+    // sits mid-bracket between that ~75 floor and 45's ~167 ceiling. Kept exactly
+    // so this change moves the KEY, not the behaviour.
+    const TARGET_FID_PX = 122;
+    let W = Math.min(1024, sw);
+    if (box && box.fid > 0)
+      W = Math.max(64, Math.min(sw, 1024, Math.round(sw * TARGET_FID_PX / box.fid)));
+    const H = Math.round(sh * W / sw);
     c.width = W; c.height = H;
     const geo = { ctx, sx, sy, sw, sh, W, H };
     const capFps = captureFps();
