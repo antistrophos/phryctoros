@@ -82,6 +82,34 @@
              re2: a2r * s, im2: a2i * s, phi2: Math.atan2(a2i, a2r) };
   }
 
+  /* Bilinear ×2, the pyramid's missing direction. downsample2 only ever makes
+     marks SMALLER, so the scan's finest probe is RESP_RHO at level 0 and any
+     swap-target under ~5 px radius in native pixels matches nothing at any
+     level — however sharp and well exposed it is. Upsampling is the only way to
+     hand the scan a smaller EFFECTIVE probe. Half-pixel centres (the -0.5/+0.5
+     convention) so an upsampled coordinate divided by 2 lands back on the
+     original sample grid. */
+  function upsample2(img) {
+    var w = img.w, h = img.h, d = img.data;
+    if (w < 2 || h < 2) return { w: w, h: h, data: new Float32Array(d) };
+    var w2 = w * 2, h2 = h * 2;
+    var out = { w: w2, h: h2, data: new Float32Array(w2 * h2) };
+    for (var y = 0; y < h2; y++) {
+      var sy = (y + 0.5) * 0.5 - 0.5, y0 = Math.floor(sy), fy = sy - y0;
+      if (y0 < 0) { y0 = 0; fy = 0; }
+      if (y0 > h - 2) { y0 = h - 2; fy = 1; }
+      var r0 = y0 * w, r1 = r0 + w, oo = y * w2;
+      for (var x = 0; x < w2; x++) {
+        var sx = (x + 0.5) * 0.5 - 0.5, x0 = Math.floor(sx), fx = sx - x0;
+        if (x0 < 0) { x0 = 0; fx = 0; }
+        if (x0 > w - 2) { x0 = w - 2; fx = 1; }
+        var a = d[r0 + x0], b = d[r0 + x0 + 1], c = d[r1 + x0], e = d[r1 + x0 + 1];
+        out.data[oo + x] = (a + (b - a) * fx) * (1 - fy) + (c + (e - c) * fx) * fy;
+      }
+    }
+    return out;
+  }
+
   function downsample2(img) {
     var w2 = img.w >> 1, h2 = img.h >> 1, d = img.data;
     var out = { w: w2, h: h2, data: new Float32Array(w2 * h2) };
@@ -290,8 +318,9 @@
 
   /* Pyramid detect: scan every level, map hits to full-res, verify + refine
      each at full res, dedupe. Strongest first. */
-  function detect(img, opts) {
-    opts = opts || {};
+  /* Candidate search over one image, coarsening pyramid only. detect() wraps
+     this with the finer rung — see there. */
+  function detectIn(img, opts) {
     var pyr = [img], maxLevels = opts.maxLevels || 4;
     while (pyr.length < maxLevels) {
       var top = pyr[pyr.length - 1];
@@ -329,6 +358,52 @@
     }
     out.sort(function (a, b) { return b.strength - a.strength; });
     return out;
+  }
+
+  /* THE FINER RUNG (2026-08-22, found by the range ladder).
+
+     The pyramid only coarsens, and RESP_RHO is a fixed 5 px, so the scan probes
+     effective swap radii of 5/10/20/40 px and CANNOT go below 5 px in native
+     pixels. Measured on the 1–5 ft ladder (high-rate paced, indoor-dim,
+     0.30 m emitter): 4-of-4 corners at 1 ft and 2 ft (fiducial 360.6 and
+     179.4 px), then 0, 1, 1 at 3, 4 and 5 ft — while the plate stayed sharp,
+     well exposed, and obviously legible by eye. The cliff was ours, not the
+     optics'. Re-running the same frames upsampled recovers every range:
+
+       range   1x   1.5x   2x   3x
+       2 ft     4     4     4    4
+       3 ft     0     4     4    4
+       4 ft     1     1     4    4
+       5 ft     1     2     4    4
+
+     So: scan normally, and only if the search comes up short, scan again on a
+     2x upsample and keep it if it does better. Same escalate-on-failure shape
+     the pre-scan already uses (800 -> 1600 -> native), and the near case — where
+     the normal pyramid already finds its corners — pays nothing at all.
+
+     NOT a contrast problem: floors of 0.015 / 0.008 / 0.004 returned identical
+     candidates and identical strengths to four decimals. The candidates were
+     never generated, so no threshold could have admitted them.
+
+     opts.wantCandidates (default 4 — a constellation needs four corners) sets
+     the bar; opts.upscale:false disables. Coordinates and radii come back in
+     ORIGINAL pixels, so callers are unaffected. */
+  function detect(img, opts) {
+    opts = opts || {};
+    var out = detectIn(img, opts);
+    var want = opts.wantCandidates || 4;
+    if (out.length >= want || opts.upscale === false) return out;
+    // Guard: transient, but 4x the pixels — decline absurd frames rather than
+    // thrash. The decode path runs on the pre-scan's crop, so this is small there.
+    if (4 * img.w * img.h > (opts.maxUpscalePx || 40e6)) return out;
+    var up = detectIn(upsample2(img), opts);
+    if (up.length <= out.length) return out;
+    for (var i = 0; i < up.length; i++) {
+      up[i].x *= 0.5; up[i].y *= 0.5;          // back to original pixels
+      up[i].rFlip *= 0.5; up[i].R *= 0.5;      // radii scale with them
+      up[i].upscaled = true;                   // phi2 is an angle; strength/rms/cond are responses
+    }
+    return up;
   }
 
   function jacobianAt(H, x, y) {
