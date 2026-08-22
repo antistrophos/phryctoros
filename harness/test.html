@@ -560,148 +560,15 @@ async function main() {
       r18c.error ? r18c.error : JSON.stringify(payC && { ok: payC.ok, rec: payC.recovered, droplets: payC.droplets, text: payC.text }));
   }
 
-  // T19 — the 20 fps rate variant (v2r20): +33% symbol rate against the SAME
-  // 30 fps capture. At 20/30 each emission frame gets 1.5 looks, and a worst-
-  // phase camera leaves EVERY OTHER frame with only a TORN look — duplicate
-  // selection has nothing to select, so the variant stands entirely on F2
-  // row-time repair. Rotation is Hz-denominated so the flicker report is
-  // identical to v2's; 20 divides the 60 Hz refresh (3 vsyncs/frame).
-  await tick("T19: 20 fps variant — rendering v2r20 stream…");
-  {
-    const p20 = OC.profile.profileV2r20({
-      render: { size_px: 768, scale_px_per_unit: 124 },
-      preamble_symbols: 4
-    });
-    const v20 = OC.profile.validate(p20);
-    record("T19 v2r20 profile validates (slip margin improves, flicker unchanged)", v20.ok,
-      v20.errors.join("; ") || (v20.warnings.length + " warnings"));
-    const seq20 = OC.emission.renderSequence(p20, 76, {});
-    const c20 = seq20.frames;
-
-    await tick("T19a: v2r20 clean round trip…");
-    const r19a = OC.pipeline.decodeSequence(c20.slice(0, 72).map((fr, i) => ({ f: i, img: fr.img })), p20, { aligned: true });
-    let okA = true;
-    const detA = [0, 1, 2].map(L => {
-      const A = layerResult(r19a, 0, L);
-      if (!(A.present && A.ser === 0)) okA = false;
-      return "L" + L + ":" + fmt(A);
-    }).join("  ");
-    record("T19a v2r20 clean round trip: SER==0 on all three annuli at 20 fps", okA, detA);
-
-    await tick("T19b: 20@30 worst-phase capture — alternate frames torn-only…");
-    const rng19 = OC.prng.mulberry32(20301);
-    const caps = [];
-    for (let i = 0; i < 72; i++) {
-      if (i % 2 === 0) caps.push({ f: i, img: c20[i].img });
-      else {
-        const row = Math.floor(c20[i].img.h * (0.2 + 0.6 * rng19()));
-        caps.push({ f: i, img: OC.degrade.tearComposite(c20[i].img, c20[i + 1].img, row) });
-      }
-    }
-    const r19b = OC.pipeline.decodeSequence(caps, p20, { aligned: true });
-    let okB = true, tornB = 0, repB = 0, invB = 0;
-    const detB = [0, 1, 2].map(L => {
-      const A = layerResult(r19b, 0, L);
-      tornB += (A.tear && A.tear.torn) || 0;
-      repB += (A.tear && A.tear.repaired) || 0;
-      invB += (A.tear && A.tear.invalidated) || 0;
-      // Same posture as T13: honest erasures allowed, confident wrong symbols
-      // are the failure. 36 of 72 frames torn with NO duplicate to fall back
-      // on — the worst-phase corner. The proven criterion adjudicates the
-      // deviation-free fraction and honestly erases the rest (a criterion
-      // that repaired more here regressed the field controls — reverted;
-      // see the T13 note). SER==0 everywhere is the invariant; the erasure
-      // bars record the honest worst-corner capacity, and the erasure-
-      // tolerant fountain is the layer designed to ride it.
-      const barE = L === 1 ? 4 : 8;
-      if (!(A.present && A.ser === 0 && A.erasures <= barE)) okB = false;
-      return "L" + L + ":" + fmt(A) + (A.tear ? " tear " + A.tear.repaired + "/" + A.tear.torn + (A.tear.invalidated ? "+inv" + A.tear.invalidated : "") : "");
-    }).join("  ");
-    record("T19b 20@30 worst phase: every other frame torn-only — SER==0 all layers (erasures ≤8, mid ≤4), the deviation-free fraction repairs, the rest honestly erase (torn ≥30, repaired ≥15, adjudicated ≥50)",
-      okB && tornB >= 30 && repB >= 15 && repB + invB >= 50,
-      detB + "  (torn " + tornB + ", repaired " + repB + ", invalidated " + invB + ")");
-
-    await tick("T19c: payload carriage at 20 fps…");
-    const p20p = OC.profile.profileV2r20({
-      render: { size_px: 768, scale_px_per_unit: 124 },
-      preamble_symbols: 4,
-      carriage: { droplet_bits: 24 }
-    });
-    const text19 = "PHAROS!";
-    const enc19 = OC.fountain.encodeCarousels(p20p, OC.fountain.textToBytes(text19));
-    const seq19p = OC.emission.renderSequence(p20p, 300, { carousels: enc19.carousels });
-    const r19c = OC.pipeline.decodeSequence(seq19p.frames.map((fr, i) => ({ f: i, img: fr.img })), p20p, { aligned: true, payload: true });
-    const pay19 = r19c.error ? null : r19c.emitters[0].payload;
-    record("T19c payload at 20 fps: pooled peel recovers \"" + text19 + "\" (300 frames = 15 s at the new rate)",
-      !!(pay19 && pay19.ok && pay19.text === text19),
-      r19c.error ? r19c.error : JSON.stringify(pay19 && { ok: pay19.ok, rec: pay19.recovered, text: pay19.text }));
-  }
-
-  // T20 — the 30 fps rate variant (v2r30, +100% symbol rate): REQUIRES 60 fps
-  // capture, which restores the exact 2-looks-per-frame geometry the proven
-  // 15@30 tear defense was designed around — duplicate SELECTION carries the
-  // tears again (rowtime stays backstop). 30 divides the 60 Hz refresh
-  // (2 vsyncs/frame); flicker is unchanged (rotation is Hz-denominated).
-  await tick("T20: 30 fps variant — rendering v2r30 stream…");
-  {
-    const p30 = OC.profile.profileV2r30({
-      render: { size_px: 768, scale_px_per_unit: 124 },
-      preamble_symbols: 4
-    });
-    const v30 = OC.profile.validate(p30);
-    record("T20 v2r30 profile validates (slip margin improves again, flicker unchanged)", v30.ok,
-      v30.errors.join("; ") || (v30.warnings.length + " warnings"));
-    const seq30 = OC.emission.renderSequence(p30, 76, {});
-    const c30 = seq30.frames;
-
-    await tick("T20a: v2r30 clean round trip…");
-    const r20a = OC.pipeline.decodeSequence(c30.slice(0, 72).map((fr, i) => ({ f: i, img: fr.img })), p30, { aligned: true });
-    let okA30 = true;
-    const detA30 = [0, 1, 2].map(L => {
-      const A = layerResult(r20a, 0, L);
-      if (!(A.present && A.ser === 0)) okA30 = false;
-      return "L" + L + ":" + fmt(A);
-    }).join("  ");
-    record("T20a v2r30 clean round trip: SER==0 on all three annuli at 30 fps", okA30, detA30);
-
-    await tick("T20b: 30@60 capture — 100% torn-duplicate pollution…");
-    // The T12 geometry at the doubled rate: every emission frame arrives as a
-    // clean look + a torn composite (rolling shutter straddling the update),
-    // in random order. Selection must keep the clean one, per ring, per frame.
-    const rng30 = OC.prng.mulberry32(303060);
-    const dup30 = [];
-    for (let f = 0; f < 72; f++) {
-      const clean = { f, img: c30[f].img };
-      const row = Math.floor(c30[f].img.h * (0.2 + 0.6 * rng30()));
-      const torn = { f, img: OC.degrade.tearComposite(c30[f].img, c30[f + 1].img, row) };
-      if (rng30() < 0.5) { dup30.push(torn); dup30.push(clean); } else { dup30.push(clean); dup30.push(torn); }
-    }
-    const r20b = OC.pipeline.decodeSequence(dup30, p30, { aligned: true });
-    const bars30 = [{ ser: 0, eras: 1 }, { ser: 0.08, eras: 2 }, { ser: 0.17, eras: 4 }];
-    let okB30 = true;
-    const detB30 = [0, 1, 2].map(L => {
-      const A = layerResult(r20b, 0, L);
-      if (!(A.present && A.ser <= bars30[L].ser && A.erasures <= bars30[L].eras)) okB30 = false;
-      return "L" + L + ":" + fmt(A);
-    }).join("  ");
-    record("T20b 30@60 tear defense: 100% torn-duplicate pollution — layer0 clean, enhancement layers within T12's layer-scaled bars",
-      okB30, detB30);
-
-    await tick("T20c: payload carriage at 30 fps…");
-    const p30p = OC.profile.profileV2r30({
-      render: { size_px: 768, scale_px_per_unit: 124 },
-      preamble_symbols: 4,
-      carriage: { droplet_bits: 24 }
-    });
-    const text20 = "PHAROS!";
-    const enc20 = OC.fountain.encodeCarousels(p30p, OC.fountain.textToBytes(text20));
-    const seq20p = OC.emission.renderSequence(p30p, 300, { carousels: enc20.carousels });
-    const r20c = OC.pipeline.decodeSequence(seq20p.frames.map((fr, i) => ({ f: i, img: fr.img })), p30p, { aligned: true, payload: true });
-    const pay20 = r20c.error ? null : r20c.emitters[0].payload;
-    record("T20c payload at 30 fps: pooled peel recovers \"" + text20 + "\" (300 frames = 10 s at the new rate)",
-      !!(pay20 && pay20.ok && pay20.text === text20),
-      r20c.error ? r20c.error : JSON.stringify(pay20 && { ok: pay20.ok, rec: pay20.recovered, text: pay20.text }));
-  }
+  // T19/T20 PRUNED 2026-08-21 with the v2 rate variants (see profile.js). The
+  // numbering deliberately jumps: T19 covered v2r20 and T20 v2r30. Most of what
+  // they asserted — profile validation, clean round trip, payload carriage — is
+  // covered equivalently at v3. ONE GAP LEFT WITH THEM, recorded rather than
+  // transplanted: T19b drove the 20@30 worst phase, alternate frames torn with
+  // NO clean duplicate to select, which was the hardest exercise of the rowtime
+  // repair path. Dropped frames can still produce that regime in the field at
+  // any rate, so it wants a test authored on its own terms at v3 — not T19b
+  // re-pointed at another profile with its bars re-tuned until green.
 
   // TH — the HARVEST decoder (practitioner's design, 2026-08-15: droplet-aware
   // bootstrap-then-hop — skip the seeks for what you hold, stop when the peel

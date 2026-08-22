@@ -12,8 +12,9 @@
       // table put layer 0 OUTERMOST; the §7.1 diagram says the opposite and v1
       // faithfully implemented the diagram. Field physics endorsed the rule:
       // phase noise scales as blur-px/radius-px, so the base layer belongs on
-      // the biggest ring. v1 clips decode only under profileV1() — the profile
-      // is the CONTRACT, and this swap is an emission version, not a patch.
+      // the biggest ring. The swap is an emission version, not a patch — the
+      // profile is the CONTRACT. (v1's builder was pruned 2026-08-21; v1 clips
+      // now need it revived from git.)
       profile_version: "phase0-v2",
       units: "fiducial-width",
       // 15 fps emission against 30 fps capture: every emission frame persists two
@@ -149,62 +150,25 @@
     return { ok: errors.length === 0, errors: errors, warnings: warnings, flicker: flicker };
   }
 
-  /* The v1 emission contract, frozen: layer 0 innermost (the §7.1-diagram
-     ordering v1 shipped with). Clips filmed under v1 decode ONLY under this. */
-  function profileV1(overrides) {
-    var p = defaultProfile();
-    p.profile_version = "phase0-v1";
-    p.annuli = [
-      { index: 0, layer: 0, r_inner: 1.05, r0: 1.45,
-        rotation: { nominal_hz: 1.5, rate_tier_fps: 30, constellation: "dqpsk", M: 4, gray: true, frames_per_symbol: 4, seed: 101 },
-        boundary: { harmonics: [1, 2, 3], amplitudes: [0.030, 0.050, 0.050], phases_deg: [0, 40, 80] } },
-      { index: 1, layer: 1, r_inner: 1.75, r0: 2.15,
-        rotation: { nominal_hz: 1.0, rate_tier_fps: 30, constellation: "d8psk", M: 8, gray: true, frames_per_symbol: 4, seed: 202 },
-        boundary: { harmonics: [1, 2, 3, 5, 8], amplitudes: [0.020, 0.030, 0.030, 0.030, 0.030], phases_deg: [0, 30, 60, 90, 120] } },
-      { index: 2, layer: 2, r_inner: 2.45, r0: 2.85,
-        rotation: { nominal_hz: 0.75, rate_tier_fps: 30, constellation: "d16psk", M: 16, gray: true, frames_per_symbol: 4, seed: 303 },
-        boundary: { harmonics: [1, 2, 3, 5, 8, 13, 20], amplitudes: [0.014, 0.018, 0.018, 0.018, 0.018, 0.018, 0.018], phases_deg: [0, 25, 50, 75, 100, 125, 150] } }
-    ];
-    if (overrides) deepMerge(p, overrides);
-    return p;
-  }
+  /* PRUNED 2026-08-21 (practitioner's ruling): profileV1, profileV2r20 and
+     profileV2r30 are gone. Every selectable standard is a mode-mismatch
+     surface, and mismatch — not optics — has cost three field trials; these
+     three bought nothing against that. Their clips are no longer decodable
+     without reviving the builders from git, which is the accepted price.
 
-  /* The 20 fps rate variant of v2 (walk-6 follow-on). Same geometry, same
-     rotation nominal_hz — the F1 flicker report is seconds-denominated, so it
-     is IDENTICAL to v2's — and the same frames_per_symbol, so the symbol rate
-     rises 3.75 → 5 sym/s (+33%) on every ring. 20 divides the 60 Hz refresh
-     (each frame holds exactly 3 vsyncs; 24 does not divide 60, which is why
-     20 goes first). Against 30 fps capture each emission frame gets 1.5 looks:
-     worst-phase cameras leave alternate frames with only a TORN look, so this
-     variant stands on F2 row-time repair where v2 stood on duplicate
-     selection. Slip margin improves (per-frame nominal advance shrinks 15/20). */
-  function profileV2r20(overrides) {
-    var p = defaultProfile();
-    p.profile_version = "phase0-v2r20";
-    p.frame_rate_hz = 20;
-    for (var i = 0; i < p.annuli.length; i++) p.annuli[i].rotation.rate_tier_fps = 20;
-    if (overrides) deepMerge(p, overrides);
-    return p;
-  }
+     defaultProfile (v2 @15) STAYS: it is not legacy but the TEST SUBSTRATE,
+     exercising sample/register/demap/rowtime/harvest through a simpler profile
+     on all three suite pages, with T2b's acuity regimes calibrated against its
+     numbers.
 
-  /* The 30 fps rate variant — REQUIRES 60 fps capture (the 24 fps design
-     note's condition, satisfied the clean way): 60/30 = the exact 2-looks-
-     per-frame geometry the proven 15@30 tear defense was designed around,
-     with duplicate SELECTION carrying tears again (rowtime stays backstop).
-     Same nominal_hz (flicker identical), same frames_per_symbol → symbol
-     rate 3.75 → 7.5 sym/s (+100% on every ring, droplet rate included);
-     slip margin improves further (L0 per-frame advance 81° → 63°). 30
-     divides the 60 Hz refresh (2 vsyncs/frame). Costs are capture-side and
-     physical: 1/60 s exposure halves per-frame light, 60 fps halves
-     per-frame codec bitrate — film LIT and well-framed. */
-  function profileV2r30(overrides) {
-    var p = defaultProfile();
-    p.profile_version = "phase0-v2r30";
-    p.frame_rate_hz = 30;
-    for (var i = 0; i < p.annuli.length; i++) p.annuli[i].rotation.rate_tier_fps = 30;
-    if (overrides) deepMerge(p, overrides);
-    return p;
-  }
+     Coverage that left with them, recorded rather than quietly transplanted:
+     T19b's 20@30 worst phase — alternate frames torn with NO clean duplicate to
+     select — was the hardest exercise of the rowtime repair path, and that
+     regime can still arise in the field through dropped frames at any rate. It
+     wants a test authored on its own terms at v3, not a re-tuned transplant.
+
+     harness/pool36.html carried a frozen literal instead (preservation
+     artifact: the mined droplets outlive the builder that framed them). */
 
   /* THE V3 CONTRACT (frozen 2026-08-16, corpus technical/phryctoros-v3-contract.md):
      trough-packed tiles on a self-anchoring calibration plate. Four boundary-CPM
@@ -217,7 +181,7 @@
      units, measured every frame with nothing to average — no fiducial-width
      anchor, QR-free steady state. Presets (§2): ONE toggle, session-atomic;
      the base edge never upgrades (must-decode tier + the M≤4 carrier gate). */
-  /* preset: undefined | "high-rate" | "classic" | "high-rate-classic"
+  /* preset: undefined | "high-rate" | "classic" | "paced" | "high-rate-paced"
      ("inverted" is kept as an alias for the default — it names what the
      default now IS, and older settings strings still carry it.)
 
@@ -232,19 +196,29 @@
      (coarse and robust near centre, fine outward) for the v4 plate.
 
      "classic" keeps the ORIGINAL ladder so pre-flip captures still decode —
-     the profile is the CONTRACT, exactly as profileV1 preserves the v1 layer
-     order. High-rate inverts too (my reading of "the inverted structure",
+     the profile is the CONTRACT. It is the one legacy preset kept through the
+     2026-08-21 prune, because field37–44 are the pre-saddle angle ladder and
+     that autopsy is still queued. High-rate inverts too (my reading of "the inverted structure",
      flagged: the radial argument is preset-independent and a split family
      would leave the two presets with opposite radial semantics; revert by
      making `inv` false for hi if that reading is wrong). */
   function profileV3(preset, overrides) {
-    var hi = preset === "high-rate" || preset === "high-rate-classic";
-    var classic = preset === "classic" || preset === "high-rate-classic";
+    // "paced" composes with the other presets ("paced", "high-rate-paced"): it
+    // is a frames_per_symbol policy, orthogonal to the M ladder and the rate.
+    var ps = String(preset == null ? "" : preset);
+    var paced = ps.indexOf("paced") >= 0;
+    var base = ps.replace(/-?paced/, "").replace(/^-+|-+$/g, "");
+    // "high-rate-classic" was pruned 2026-08-21: a combination that existed only
+    // because two flags composed, never filmed, and it broke the envelope's
+    // high-rate toggle (envelopeBytes b[2] compares preset exactly).
+    var hi = base === "high-rate";
+    var classic = base === "classic";
     var inv = !classic;
     var p = {
-      profile_version: hi ? (classic ? "v3-hr-classic" : "v3-hr") : (classic ? "v3-classic" : "v3"),
+      // hi and classic are mutually exclusive since the high-rate-classic prune.
+      profile_version: hi ? "v3-hr" : (classic ? "v3-classic" : "v3"),
       units: "flat-circle-3.00",
-      preset: hi ? (classic ? "high-rate-classic" : "high-rate") : (classic ? "resilient-classic" : "resilient"),
+      preset: hi ? "high-rate" : (classic ? "resilient-classic" : "resilient"),
       frame_rate_hz: 30,            // §7: 30 fps emission @ 60 fps capture baseline
       render: {
         size_px: 1024,
@@ -357,6 +331,38 @@
         p.annuli[iv].boundary = srcC.boundary;
         p.annuli[iv].layer = iv;
       }
+    }
+    // PACED RINGS — the practitioner's ruling that the inner data ring's
+    // frames_per_symbol shackles come off, the coming dedicated signal ring
+    // taking over the low-rate robust duty.
+    //
+    // A droplet occupies D·F frames, D = ceil(droplet_bits / log2 M). Under a
+    // FLAT F the base ring's droplets are the longest — lowest M means the most
+    // symbols per droplet — so the base is simultaneously the slowest to deliver
+    // a carousel AND the one starved inside a harvest window. That starvation is
+    // measured, not assumed: ~2.5 droplets per 8 s window against crcAlign's
+    // ≥2-pass bar was the diagnosed cause of a0's lock fragility, and finer
+    // sampling did not move it.
+    //
+    // Pacing sets each ring's F to equalise droplet DURATION at the FASTEST
+    // ring's, so nothing slows down and the slow rings speed up. F is already
+    // per-annulus everywhere in emission and demod, it is FLICKER-NEUTRAL (it
+    // changes how often a data step lands, never nominal_hz, so the
+    // photosensitivity table is untouched), and lag normalisation made mixed-F
+    // decoding safe. The cost is real and bounded: fewer frames in demap's
+    // least-squares slope fit, Var(Δθ) = 12F·σ²/((F+1)(F+2)), so F 4→2 is ~0.97
+    // dB worse per symbol — spent on the ring with the WIDEST decision threshold
+    // (M=4 ⟹ π/4, against π/16 outward) and the highest per-harmonic SNR.
+    if (paced) {
+      var dbits = p.carriage.droplet_bits;
+      var Dof = function (a) { return Math.ceil(dbits / Math.round(Math.log(a.rotation.M) / Math.LN2)); };
+      var target = Infinity;
+      p.annuli.forEach(function (a) { target = Math.min(target, Dof(a) * a.rotation.frames_per_symbol); });
+      p.annuli.forEach(function (a) { a.rotation.frames_per_symbol = Math.max(1, Math.round(target / Dof(a))); });
+      // Marker, not a preset rename: profile.preset is read as an envelope
+      // toggle (emission.envelopeBytes b[2]) and must keep its exact spelling.
+      p.carriage.paced = true;
+      p.profile_version += "-paced";
     }
     if (overrides) deepMerge(p, overrides);
     return p;
@@ -502,7 +508,7 @@
     return { ok: errors.length === 0, errors: errors, warnings: warnings, flicker: flicker };
   }
 
-  var API = { defaultProfile: defaultProfile, profileV1: profileV1, profileV2r20: profileV2r20, profileV2r30: profileV2r30, profileV3: profileV3, isV3: isV3, bandBoundary: bandBoundary, validate: validate, sumAmp: sumAmp, sampleWindow: sampleWindow, deepMerge: deepMerge };
+  var API = { defaultProfile: defaultProfile, profileV3: profileV3, isV3: isV3, bandBoundary: bandBoundary, validate: validate, sumAmp: sumAmp, sampleWindow: sampleWindow, deepMerge: deepMerge };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   global.OC = global.OC || {}; global.OC.profile = API;
 })(typeof window !== "undefined" ? window : globalThis);

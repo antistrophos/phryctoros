@@ -543,6 +543,57 @@ async function main() {
       " · payload " + JSON.stringify(ranked.ok === true ? ranked.text.slice(0, 18) + "…" : ranked.reason));
   }
 
+  await tick("T22Q: paced rings — per-ring frames_per_symbol, mixed-F decode…");
+  {
+    // The practitioner's ruling that the inner data ring's F shackles come off.
+    // A droplet occupies D·F frames and D = ceil(droplet_bits / log2 M), so a
+    // flat F leaves the BASE ring with the longest droplets — slowest to deliver
+    // a carousel and starved inside a harvest window. Pacing equalises droplet
+    // DURATION at the fastest ring's, so nothing slows and the slow rings speed
+    // up. This asserts the arithmetic, the compatibility, and — the part that
+    // had never been exercised — that a genuinely MIXED-F emission decodes.
+    const pFlat = OC.profile.profileV3();
+    const pPace = OC.profile.profileV3("paced");
+    const gF = OC.fountain.geom(pFlat), gP = OC.fountain.geom(pPace);
+    const durF = pFlat.annuli.map(a => OC.fountain.ringD(a, gF) * a.rotation.frames_per_symbol);
+    const durP = pPace.annuli.map(a => OC.fountain.ringD(a, gP) * a.rotation.frames_per_symbol);
+    const vP = OC.profile.validate(pPace);
+    // Pacing must never SLOW a ring, and must land every ring on the fastest
+    // flat duration. Geometry, M ladder and rates are untouched.
+    const tgt = Math.min.apply(null, durF);
+    const paceOk = durP.every((d, i) => d <= durF[i] && d === tgt) &&
+                   pPace.annuli.every((a, i) => a.rotation.M === pFlat.annuli[i].rotation.M &&
+                                                a.rotation.nominal_hz === pFlat.annuli[i].rotation.nominal_hz &&
+                                                a.r0 === pFlat.annuli[i].r0);
+    // profile.preset is read as an envelope toggle (envelopeBytes b[2]) and must
+    // keep its exact spelling; the marker rides carriage.paced instead.
+    const presetOk = pPace.preset === pFlat.preset && pPace.carriage.paced === true &&
+                     !pFlat.carriage.paced && pPace.profile_version === "v3-paced";
+    // Mixed-F round trip at a cheap scale, flat as the control.
+    const msgQ = "PACED";
+    const rt = (p) => {
+      const sq = OC.emission.renderSequence(p, 160, { payloadBytes: OC.fountain.textToBytes(msgQ) });
+      const r = OC.pipeline.decodeSequence(sq.frames, p, { payload: true });
+      sq.frames = null;
+      const em = r.error ? null : r.emitters[0];
+      return { pay: em && em.payload, drops: em ? em.annuli.map(a => a.dropletsPassed) : [] };
+    };
+    const small = (p) => OC.profile.profileV3(p, { render: { size_px: 640, scale_px_per_unit: 100 } });
+    const rF = rt(small(undefined)), rP = rt(small("paced"));
+    record("T22Q paced rings: per-ring frames_per_symbol equalises droplet duration at the fastest ring's without slowing any ring or touching M / rates / geometry, the profile still validates (the base ring's per-frame advance is a warning, not an error), preset spelling is preserved for the envelope toggle, and a MIXED-F emission decodes byte-exact with the base ring delivering strictly more droplets",
+      !!(paceOk && presetOk && vP.ok === true &&
+         vP.warnings.some(w => /advance/.test(w)) &&
+         rF.pay && rF.pay.ok === true && rF.pay.text === msgQ &&
+         rP.pay && rP.pay.ok === true && rP.pay.text === msgQ &&
+         rP.drops[0] > rF.drops[0]),
+      "F " + pFlat.annuli.map(a => a.rotation.frames_per_symbol).join("/") +
+      " → " + pPace.annuli.map(a => a.rotation.frames_per_symbol).join("/") +
+      " · droplet frames [" + durF.join(",") + "] → [" + durP.join(",") + "]" +
+      " · validate ok=" + vP.ok + " warnings=" + vP.warnings.length +
+      " · droplets " + rF.drops.join("/") + " → " + rP.drops.join("/") +
+      " · payload " + JSON.stringify(rP.pay && rP.pay.text));
+  }
+
   await tick("T22P: carousel_version 2 fills the loop with DISTINCT droplets…");
   {
     // A ring's carousel period is (preamble + L·D)·F frames, and D varies with

@@ -58,10 +58,10 @@
   <p style="margin:.3rem 0">
     <label>rate <select id="rateSel">
       <option value="15">15 fps — v2 (the banker; film at 30 fps)</option>
-      <option value="20">20 fps — v2r20 (+33%; film at 30 fps, leans on tear repair)</option>
-      <option value="30">30 fps — v2r30 (+100%; MUST film at 60 fps — 2 looks/frame)</option>
       <option value="v3">30 fps — V3 resilient (base innermost, M 4/8/16/16 outward; film at 60 fps)</option>
       <option value="v3hr">30 fps — V3 high-rate (M=32 close-range preset, 48-bit droplets; film at 60 fps)</option>
+      <option value="v3p">30 fps — V3 PACED (trial: per-ring F 2/3/4/4 — base droplets 1.6s→0.8s, 2× base supply)</option>
+      <option value="v3hrp">30 fps — V3 high-rate PACED (trial: base 3.2s→1.6s droplets)</option>
       <option value="v3c">30 fps — V3 CLASSIC ladder (legacy: base outermost — for re-emitting pre-2026-08-21 scenes)</option>
     </select></label>
     <label style="margin-left:.8rem">tiling <select id="tileSel">
@@ -108,9 +108,10 @@ $("rateSel").onchange = () => {
   const v = $("rateSel").value;
   profile = (v === "v3" || v === "v3i") ? OC.profile.profileV3()   // v3i = legacy alias, same ladder
     : v === "v3hr" ? OC.profile.profileV3("high-rate")
+    : v === "v3p" ? OC.profile.profileV3("paced")
+    : v === "v3hrp" ? OC.profile.profileV3("high-rate-paced")
     : v === "v3c" ? OC.profile.profileV3("classic")
-    : v === "30" ? OC.profile.profileV2r30()
-    : v === "20" ? OC.profile.profileV2r20() : OC.profile.defaultProfile();
+    : OC.profile.defaultProfile();   // "15" — the v2 rate variants were pruned 2026-08-21
   $("profileTxt").value = JSON.stringify(profile, null, 2);
 };
 let running = false, schedules = null, loopFrames = 0, t0 = 0, lastF = -1, fidCanvas = null;
@@ -812,7 +813,7 @@ function ocSettingsString() {
     "qrp=" + ($("qrPersChk").checked ? 1 : 0),
     "loop=" + (+$("loopSecs").value || 60),
     "freeze=" + (+$("cdSecs").value || 3),
-    "capfps=" + ((rate === "15" || rate === "20") ? 30 : 60)].join(" ");
+    "capfps=" + (rate === "15" ? 30 : 60)].join(" ");
 }
 /* CAROUSEL COVERAGE — the readout that makes loop length legible.
    The loop's real limit is not filming time: each ring's carousel is L = 2K+12
@@ -885,14 +886,15 @@ function ocCarouselInfo() {
 
 function ocRefreshMode() {
   const rate = $("rateSel").value, pay = $("payloadChk").checked;
-  const names = { "15": "v2 @15 fps", "20": "v2r20", "30": "v2r30", "v3": "V3 resilient (base innermost)",
-                  "v3hr": "V3 high-rate", "v3i": "V3 resilient (base innermost)", "v3c": "V3 CLASSIC ladder (legacy)" };
+  const names = { "15": "v2 @15 fps", "v3": "V3 resilient (base innermost)",
+                  "v3hr": "V3 high-rate", "v3i": "V3 resilient (base innermost)", "v3c": "V3 CLASSIC ladder (legacy)",
+                  "v3p": "V3 PACED (F 2/3/4/4 — trial)", "v3hrp": "V3 high-rate PACED (trial)" };
   const bits = [names[rate] || rate,
     pay ? "PAYLOAD" : "REFERENCE (no content!)",
     $("tileSel").value + "-up"];
   if ($("quadChk").checked) bits.push("quadrant corners");
   if ($("qrPersChk").checked) bits.push("persistent QR");
-  bits.push("film at " + ((rate === "15" || rate === "20") ? "30" : "60") + " fps");
+  bits.push("film at " + (rate === "15" ? "30" : "60") + " fps");
   const el = $("modeSummary");
   el.textContent = bits.join("  ·  ") +
     (pay ? "" : "  —  receivers can measure this emission but NOTHING DECODES from it");
@@ -908,7 +910,7 @@ $("payloadTxt").addEventListener("input", ocCarouselInfo);
    (uncheck deliberately for a reference/diagnostic emission). */
 $("rateSel").addEventListener("change", () => {
   const r = $("rateSel").value;
-  if ((r === "v3" || r === "v3hr" || r === "v3i" || r === "v3c") && !$("payloadChk").checked) {
+  if (/^v3/.test(r) && !$("payloadChk").checked) {   // every v3 variant, present and future
     $("payloadChk").checked = true;
     ocRefreshMode();
   }

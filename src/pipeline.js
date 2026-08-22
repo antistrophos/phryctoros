@@ -233,10 +233,10 @@
         // constant across a ring's series (the DFT and row-time compare
         // contours frame to frame). opts.arcPitchPx overrides; ≤ 0 restores
         // the flat 256.
-        // V3 ONLY. v1/v2 are frozen profiles with an archived clip corpus
-        // (field1–44); their sampling stays bit-stable so those captures keep
-        // decoding exactly as recorded — the same contract logic that keeps
-        // profileV1 and profileV3("classic") around. (Enabling it for v2 moved
+        // V3 ONLY. v2 (defaultProfile) is a frozen profile with an archived clip
+        // corpus; its sampling stays bit-stable so those captures keep decoding
+        // exactly as recorded — the same contract logic that keeps
+        // profileV3("classic") around for field37–44. (Enabling it for v2 moved
         // T12's torn-duplicate stress case across its tolerance bar, which is
         // the archived-decode drift this rule exists to prevent.)
         var pitchPx = opts.arcPitchPx != null ? opts.arcPitchPx

@@ -50,7 +50,25 @@ function unhex(h) {
   for (let i = 0; i < u.length; i++) u[i] = parseInt(h.substr(2 * i, 2), 16);
   return u;
 }
-const P = OC.profile.profileV2r30();
+// The v2r30 profile as a FROZEN LITERAL. profileV2r30() was pruned with the v2
+// rate variants (2026-08-21) but this page is a preservation artifact, not a
+// decode harness — the droplets above were mined once and outlive the builder
+// that framed them. Only what assemble() reads is kept: ring seeds + M (via
+// ringD) and the carriage geometry. carriage is stated EXPLICITLY rather than
+// left to geom()'s fallback, so a future change to those defaults cannot
+// silently re-peel this evidence differently. Verified byte-identical output:
+// POOLED 33+13+18, ok true, K 25, recovered 25.
+const P = {
+  profile_version: "phase0-v2r30 (frozen literal)",
+  frame_rate_hz: 30,
+  preamble_symbols: 8,
+  carriage: { droplet_bits: 48, self_framing: false, subset_version: 1, carousel_version: 1 },
+  annuli: [
+    { index: 0, rotation: { M: 16, seed: 101, frames_per_symbol: 4 } },
+    { index: 1, rotation: { M: 8, seed: 202, frames_per_symbol: 4 } },
+    { index: 2, rotation: { M: 4, seed: 303, frames_per_symbol: 4 } }
+  ]
+};
 const rings = [0, 1, 2].map(i => ({
   seed: P.annuli[i].rotation.seed,
   droplets: SEG1[i].droplets.concat(SEG2[i].droplets).map(d => ({ c: d.c, bytes: unhex(d.hex) }))
