@@ -676,20 +676,47 @@ $("fileIn").onchange = async () => {
     // the plate's own outer reach (corner marks at 2.65 + r_out 0.40) is
     // pose-correct by construction, and at tilt the box hugs the ellipse.
     const PLATE_REACH_U = 3.05;
+    // TILING: the decoder maps over ALL emitters and identifies the designated
+    // tile by its breaker ring, so every tile must be inside the capture. A box
+    // hugging ONE plate would take one tile and silently drop the rest. We do
+    // not know WHICH tile a given detection is, so reach far enough that any
+    // tile's box covers the whole lattice: (cols-1)*pitch on x, (rows-1)*pitch
+    // on y. (The old flat 4.2*fid = 12.6 u covered 6-up only by accident, and
+    // not reliably — a corner tile needs 3.05 + 2*7.2 = 17.45 u on x.)
+    const tileLay = (OC.emission && OC.emission.tileLayout)
+      ? OC.emission.tileLayout(currentProfile()) : { cols: 1, rows: 1, pitch: 0 };
+    const REACH_X = PLATE_REACH_U + (tileLay.cols - 1) * (tileLay.pitch || 0);
+    const REACH_Y = PLATE_REACH_U + (tileLay.rows - 1) * (tileLay.pitch || 0);
+    // Rectangle perimeter, not a circle: with tiling the covered region is a
+    // grid, and under a homography a straight edge stays straight, so sampling
+    // the perimeter bounds the image exactly.
     const plateBBox = (em, sc) => {
       const Hm = em.H || (em.plate && em.plate.H);
       if (!Hm || !OC.geom || !OC.geom.applyH) return null;
       let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-      for (let a = 0; a < 24; a++) {
-        const th = 2 * Math.PI * a / 24;
-        const q = OC.geom.applyH(Hm, PLATE_REACH_U * Math.cos(th), PLATE_REACH_U * Math.sin(th));
+      const edge = (ux, uy) => {
+        const q = OC.geom.applyH(Hm, ux, uy);
         const X = q[0] * sc, Y = q[1] * sc;
-        if (!isFinite(X) || !isFinite(Y)) return null;
+        if (!isFinite(X) || !isFinite(Y)) return false;
         if (X < x0) x0 = X; if (X > x1) x1 = X;
         if (Y < y0) y0 = Y; if (Y > y1) y1 = Y;
+        return true;
+      };
+      for (let i = 0; i <= 8; i++) {
+        const t = -1 + 2 * i / 8;
+        if (!edge(t * REACH_X, -REACH_Y) || !edge(t * REACH_X, REACH_Y) ||
+            !edge(-REACH_X, t * REACH_Y) || !edge(REACH_X, t * REACH_Y)) return null;
       }
       return { x0, y0, x1, y1 };
     };
+    // One shape for both probe passes — the sweep below used to build its hits
+    // separately and so missed the bbox, silently falling back to the fid rule.
+    const hitOf = (em, sc) => ({
+      cx: ((em.corners.TL.x + em.corners.TR.x + em.corners.BL.x) / 3 + em.fiducialWidthPx * 0.14) * sc,
+      cy: ((em.corners.TL.y + em.corners.TR.y + em.corners.BL.y) / 3 + em.fiducialWidthPx * 0.14) * sc,
+      fid: em.fiducialWidthPx * sc,
+      bb: plateBBox(em, sc)
+    });
     let hits = [];
     for (const PWs of [800, 1280, 1600, Math.min(2200, v.videoWidth)]) {
       const PHs = Math.round(PWs * v.videoHeight / v.videoWidth);
@@ -698,15 +725,11 @@ $("fileIn").onchange = async () => {
         await seek(Math.min(t, v.duration - 0.1));
         pctx.drawImage(v, 0, 0, PWs, PHs);
         const reg = OC.register.registerAll(toLumFromCanvas(pctx, PWs, PHs), { profile: currentProfile() });
+        // EVERY emitter, not just the first: a tiled emission registers one per
+        // tile and the decoder maps over all of them.
         if (reg.emitters.length) {
-          const em = reg.emitters[0];
           const sc = v.videoWidth / PWs;
-          hits.push({
-            cx: ((em.corners.TL.x + em.corners.TR.x + em.corners.BL.x) / 3 + em.fiducialWidthPx * 0.14) * sc,
-            cy: ((em.corners.TL.y + em.corners.TR.y + em.corners.BL.y) / 3 + em.fiducialWidthPx * 0.14) * sc,
-            fid: em.fiducialWidthPx * sc,
-            bb: plateBBox(em, sc)
-          });
+          for (const em of reg.emitters) hits.push(hitOf(em, sc));
         }
       }
       if (hits.length) break;
@@ -735,12 +758,8 @@ $("fileIn").onchange = async () => {
           pctx.drawImage(v, 0, 0, PWs, PHs);
           const reg = OC.register.registerAll(toLumFromCanvas(pctx, PWs, PHs), { profile: currentProfile() });
           if (reg.emitters.length) {
-            const em = reg.emitters[0], sc = v.videoWidth / PWs;
-            hits.push({
-              cx: ((em.corners.TL.x + em.corners.TR.x + em.corners.BL.x) / 3 + em.fiducialWidthPx * 0.14) * sc,
-              cy: ((em.corners.TL.y + em.corners.TR.y + em.corners.BL.y) / 3 + em.fiducialWidthPx * 0.14) * sc,
-              fid: em.fiducialWidthPx * sc
-            });
+            const sc = v.videoWidth / PWs;
+            for (const em of reg.emitters) hits.push(hitOf(em, sc));
           }
         }
         if (hits.length) break;
