@@ -669,6 +669,27 @@ $("fileIn").onchange = async () => {
     // the overlap is covered on purpose rather than by luck, and a second rung in
     // the band means one arbitrary constant no longer carries the angled case.
     // 800 stays first: it is the fast path and near head-on plates register there.
+    // The plate's ACTUAL projected extent, in native pixels, from the registered
+    // homography — not a proxy. fiducialWidthPx is ~3.0 units head-on but only
+    // ~2.69 at 45 degrees, so a margin scaled in fiducial widths silently
+    // shrinks relative to the plate exactly when tilt is steepest. Projecting
+    // the plate's own outer reach (corner marks at 2.65 + r_out 0.40) is
+    // pose-correct by construction, and at tilt the box hugs the ellipse.
+    const PLATE_REACH_U = 3.05;
+    const plateBBox = (em, sc) => {
+      const Hm = em.H || (em.plate && em.plate.H);
+      if (!Hm || !OC.geom || !OC.geom.applyH) return null;
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      for (let a = 0; a < 24; a++) {
+        const th = 2 * Math.PI * a / 24;
+        const q = OC.geom.applyH(Hm, PLATE_REACH_U * Math.cos(th), PLATE_REACH_U * Math.sin(th));
+        const X = q[0] * sc, Y = q[1] * sc;
+        if (!isFinite(X) || !isFinite(Y)) return null;
+        if (X < x0) x0 = X; if (X > x1) x1 = X;
+        if (Y < y0) y0 = Y; if (Y > y1) y1 = Y;
+      }
+      return { x0, y0, x1, y1 };
+    };
     let hits = [];
     for (const PWs of [800, 1280, 1600, Math.min(2200, v.videoWidth)]) {
       const PHs = Math.round(PWs * v.videoHeight / v.videoWidth);
@@ -683,7 +704,8 @@ $("fileIn").onchange = async () => {
           hits.push({
             cx: ((em.corners.TL.x + em.corners.TR.x + em.corners.BL.x) / 3 + em.fiducialWidthPx * 0.14) * sc,
             cy: ((em.corners.TL.y + em.corners.TR.y + em.corners.BL.y) / 3 + em.fiducialWidthPx * 0.14) * sc,
-            fid: em.fiducialWidthPx * sc
+            fid: em.fiducialWidthPx * sc,
+            bb: plateBBox(em, sc)
           });
         }
       }
@@ -727,9 +749,36 @@ $("fileIn").onchange = async () => {
     let box = null;
     if (hits.length) {
       const fidMax = Math.max(...hits.map(h => h.fid));
-      const half = fidMax * 4.2;
-      const x0 = Math.min(...hits.map(h => h.cx)) - half, x1 = Math.max(...hits.map(h => h.cx)) + half;
-      const y0 = Math.min(...hits.map(h => h.cy)) - half, y1 = Math.max(...hits.map(h => h.cy)) + half;
+      // ADAPTIVE MARGIN (2026-08-22). The old rule was a flat 4.2 x fid half-
+      // width around the union of hit CENTRES. Measured: fiducialWidthPx is
+      // ~3.0 units, i.e. roughly the plate's RADIUS, so 4.2 x fid = 12.6 units
+      // against a plate reach of 3.05 — a box ~4.1x the plate in each direction,
+      // ~17x its area. It made the capture 78-92% of the whole frame on near
+      // clips, which the 1024 cap then converted straight into lost resolution.
+      //
+      // The union already absorbs sway: x0/x1 span min..max over hits, and the
+      // margin sits ON TOP of that. So the margin never needed to carry sway —
+      // only the plate itself, registration error, and motion BETWEEN the probe
+      // instants (4, or 12 on the retry), which is the one thing the union
+      // cannot see. Hence: union the plate's projected extents, then add slack
+      // that scales with OBSERVED sway. Hold the emitter still and the box
+      // collapses to the plate; hand it high-sway footage and the box grows to
+      // keep everything, paying in capture area rather than in lost droplets.
+      //
+      // Falls back to the old fid rule if no hit yielded a homography, so a
+      // registration path that reports corners but no H is not left worse off.
+      const withBB = hits.filter(h => h.bb);
+      const swayX = Math.max(...hits.map(h => h.cx)) - Math.min(...hits.map(h => h.cx));
+      const swayY = Math.max(...hits.map(h => h.cy)) - Math.min(...hits.map(h => h.cy));
+      const slack = 0.30 * fidMax + 0.50 * Math.max(swayX, swayY);
+      const x0 = withBB.length ? Math.min(...withBB.map(h => h.bb.x0)) - slack
+                               : Math.min(...hits.map(h => h.cx)) - fidMax * 4.2;
+      const x1 = withBB.length ? Math.max(...withBB.map(h => h.bb.x1)) + slack
+                               : Math.max(...hits.map(h => h.cx)) + fidMax * 4.2;
+      const y0 = withBB.length ? Math.min(...withBB.map(h => h.bb.y0)) - slack
+                               : Math.min(...hits.map(h => h.cy)) - fidMax * 4.2;
+      const y1 = withBB.length ? Math.max(...withBB.map(h => h.bb.y1)) + slack
+                               : Math.max(...hits.map(h => h.cy)) + fidMax * 4.2;
       const sx = Math.max(0, Math.round(x0)), sy = Math.max(0, Math.round(y0));
       box = { sx, sy, sw: Math.min(v.videoWidth - sx, Math.round(x1 - x0)), sh: Math.min(v.videoHeight - sy, Math.round(y1 - y0)), fid: fidMax };
     }
