@@ -631,7 +631,12 @@
         edge_soft_px: 1.6
       },
       preamble_symbols: 8,          // §1: preamble as v2
-      carriage: { droplet_bits: hi ? 48 : 24, self_framing: true },  // §2/§3
+      // §2/§3. subset_version 2 = ring-dependent forced seeds + K-scaled max
+      // degree (see fountain.subsetFor); "classic" keeps v1 alongside the
+      // original ladder, since a clip filmed then used both. Decoders fall
+      // back automatically on a validated mismatch, so pre-flip captures need
+      // no setting — the version is a default, not a requirement.
+      carriage: { droplet_bits: hi ? 48 : 24, self_framing: true, subset_version: classic ? 1 : 2 },
       countdown: { freeze_s: 3, loop_s: 60 },  // §6: defaults 3/60, floor freeze ≥ 1
       // §6 envelope QR (recurring, internal format, dark-on-gray). Width chosen so
       // the quiet-inclusive half-DIAGONAL stays inside the 0.90 donut budget.
@@ -4373,7 +4378,11 @@
      Production default 48 (40 data + 8 CRC); tests may shrink to 24. */
   function geom(profile) {
     var db = (profile.carriage && profile.carriage.droplet_bits) || 48;
-    return { dropletBits: db, dataBits: db - 8, dataBytes: (db - 8) / 8 };
+    // subset_version selects the droplet-subset rule (see subsetFor). 1 is the
+    // original and stays the DEFAULT for any profile that does not declare
+    // one, so every archived clip and every legacy profile decodes unchanged.
+    var sv = (profile.carriage && profile.carriage.subset_version) || 1;
+    return { dropletBits: db, dataBits: db - 8, dataBytes: (db - 8) / 8, subsetVersion: sv };
   }
   // D = symbols per droplet. Ceil: droplet_bits divisible by 12 covers the
   // 2/3/4-bit constellations exactly; M=32 (5 bits, the v3 high-rate preset)
@@ -4391,15 +4400,32 @@
   /* Degree + subset for LT droplet c (c ≥ 1), deterministic from ring seed.
      Droplets c = 1..min(3,K) are forced degree-1 singles of blocks 0..2 —
      guaranteed peel seeds for tiny K. */
-  function subsetFor(ringSeed, c, K) {
-    if (c >= 1 && c <= Math.min(3, K)) return [c - 1];
+  function subsetFor(ringSeed, c, K, ver) {
+    var S = Math.min(3, K);
+    if (c >= 1 && c <= S) {
+      // v1 returned blocks 0,1,2 for EVERY ring at every K — it ignores
+      // ringSeed entirely — so four rings' twelve forced seeds covered three
+      // distinct blocks total: 25% of the payload seeded at K=12, but 4% at
+      // K=72. v2 makes the seed ring-dependent and spreads a ring's three
+      // across the block space, so four rings seed up to twelve distinct
+      // blocks and the peel has somewhere to start at large K.
+      if (ver !== 2) return [c - 1];
+      var h = ((ringSeed * 2654435761) >>> 0) % K;
+      var stride = Math.max(1, Math.floor(K / S));
+      return [(h + (c - 1) * stride) % K];
+    }
     var rng = P().mulberry32(((ringSeed * 2654435761) ^ (c * 40503)) >>> 0);
     var r = rng(), d;
     if (r < 0.12) d = 1;
     else if (r < 0.55) d = 2;
     else if (r < 0.80) d = 3;
     else if (r < 0.93) d = 4;
-    else d = Math.min(8, K);
+    // The top bucket is the coverage tail. v1 capped it at 8 regardless of K,
+    // which left ~1 block of 73 untouched by ANY droplet even at 120 droplets
+    // (measured) — a coverage ceiling the rank solve cannot lift, since it
+    // cannot invent information. v2 scales the cap with K; for K ≤ 32 the two
+    // are IDENTICAL, so small payloads are bit-for-bit unchanged.
+    else d = ver === 2 ? Math.max(8, Math.round(K / 4)) : 8;
     if (d > K) d = K;
     var pool = [];
     for (var i = 0; i < K; i++) pool.push(i);
@@ -4458,7 +4484,7 @@
     if (isHeaderSlot(c)) data = headerBytes(K, payloadBytes, g);
     else {
       data = new Uint8Array(g.dataBytes);
-      var sub = subsetFor(ringSeed, c, K);
+      var sub = subsetFor(ringSeed, c, K, g.subsetVersion);
       for (var s = 0; s < sub.length; s++)
         for (var j = 0; j < g.dataBytes; j++) data[j] ^= blocks[sub[s]][j];
     }
@@ -4497,10 +4523,19 @@
     out.set(payloadBytes, 4);
     return out;
   }
+  /* Self-framing parse. This is the ONLY payload-level integrity check in
+     24-bit mode — dataBytes is 2 there, so the header holds [magic, K] and
+     carries no CRC — which makes its strictness load-bearing: it is what
+     rejects a peel that completed over the wrong block assignment. len ≥ 1
+     and the reserved byte are both free to demand (selfFrame always writes
+     them) and together take a random block 0 from ~1-in-3000 to ~1-in-800000.
+     Caught in testing: without them, decoding a v1-subset clip under v2 rules
+     returned ok:true with an EMPTY payload rather than failing over to v1. */
   function unframe(bytes) {
     if (bytes.length < 4) return null;
     var len = (bytes[0] << 8) | bytes[1];
-    if (len > bytes.length - 4) return null;
+    if (len < 1 || len > bytes.length - 4) return null;
+    if (bytes[3] !== 0) return null;              // reserved byte, always 0
     return { len: len, type: bytes[2], bytes: bytes.subarray(4, 4 + len) };
   }
 
@@ -4702,7 +4737,42 @@
 
   /* Pool verified droplets from every ring (and eventually every tile) and
      peel. Header (c=0, MAGIC) supplies K; blocks XOR out one by one. */
+  /* Version fallback. A wrong subset_version still PEELS — the cascade is
+     purely structural and never checks itself — so it completes and hands
+     back garbage, which the payload CRC16 (48-bit mode) and the self-framing
+     parse then reject. That "completed but did not validate" signature is
+     exactly the wrong-version fingerprint, and it is the only case worth
+     paying a second assemble for: while the peel is merely INCOMPLETE we are
+     short of droplets, not on the wrong rule, so accumulation costs nothing
+     extra. This is what lets a profile default to v2 while every clip already
+     filmed under v1 — including the ::b carriage and the loopback specimens —
+     keeps decoding with no setting to remember. */
   function assemble(perRing, profile, opts) {
+    var declared = geom(profile).subsetVersion;
+    var res = assembleWith(perRing, profile, opts, declared);
+    if (res.ok === true || (opts && opts.noVersionFallback)) return res;
+    // Only "completed but did not validate" is the mis-version fingerprint.
+    // No header yet, or a peel still short, means we are accumulating — both
+    // return before paying for a second assemble.
+    if (res.recovered == null || res.recovered !== res.K) return res;
+    var alt = declared === 2 ? 1 : 2;
+    var res2 = assembleWith(perRing, profile, opts, alt);
+    // Rank: validated > honestly incomplete > completed-but-invalid. The last
+    // is EVIDENCE the rule is wrong — a correct rule with enough droplets
+    // validates, and a correct rule without them reports incomplete — so a
+    // short clip read under the wrong version (which peels to completion over
+    // the wrong blocks and fails the framing check) must not be preferred over
+    // the honest partial the right version gives. Ties go to the declared one.
+    var rank = function (r) { return r.ok === true ? 2 : (r.recovered !== r.K ? 1 : 0); };
+    if (rank(res2) > rank(res)) {
+      res2.subsetVersion = alt;
+      res2.versionFallback = true;
+      return res2;
+    }
+    return res;
+  }
+
+  function assembleWith(perRing, profile, opts, ver) {
     var g = geom(profile);
     var header = null;
     var lt = []; // { ringSeed, c, bytes }
@@ -4728,7 +4798,7 @@
     }
     // peel
     var drops = uniq.map(function (d2) {
-      return { sub: subsetFor(d2.ringSeed, d2.c, K).slice(), bytes: new Uint8Array(d2.bytes) };
+      return { sub: subsetFor(d2.ringSeed, d2.c, K, ver).slice(), bytes: new Uint8Array(d2.bytes) };
     });
     var blocks = new Array(K);
     var peelGreedy = function () {

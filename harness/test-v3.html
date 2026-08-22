@@ -525,10 +525,11 @@ async function main() {
     const allR = OC.fountain.collect(decR, pR.preamble_symbols, aR, pR).passed;
     const K = encR.K;
     const headers = allR.filter(d => OC.fountain.isHeaderSlot(d.c));
+    const svR = OC.fountain.geom(pR).subsetVersion;
     const deg1 = allR.filter(d => !OC.fountain.isHeaderSlot(d.c) &&
-      OC.fountain.subsetFor(aR.rotation.seed, d.c, K).length === 1);
+      OC.fountain.subsetFor(aR.rotation.seed, d.c, K, svR).length === 1);
     const noSeeds = allR.filter(d => OC.fountain.isHeaderSlot(d.c) ||
-      OC.fountain.subsetFor(aR.rotation.seed, d.c, K).length > 1);
+      OC.fountain.subsetFor(aR.rotation.seed, d.c, K, svR).length > 1);
     const ringOf = ds => [{ seed: aR.rotation.seed, droplets: ds.map(d => ({ c: d.c, bytes: d.bytes })) }];
     const greedy = OC.fountain.assemble(ringOf(noSeeds), pR, { rankSolve: false });
     const ranked = OC.fountain.assemble(ringOf(noSeeds), pR);

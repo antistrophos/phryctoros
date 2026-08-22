@@ -254,7 +254,12 @@
         edge_soft_px: 1.6
       },
       preamble_symbols: 8,          // §1: preamble as v2
-      carriage: { droplet_bits: hi ? 48 : 24, self_framing: true },  // §2/§3
+      // §2/§3. subset_version 2 = ring-dependent forced seeds + K-scaled max
+      // degree (see fountain.subsetFor); "classic" keeps v1 alongside the
+      // original ladder, since a clip filmed then used both. Decoders fall
+      // back automatically on a validated mismatch, so pre-flip captures need
+      // no setting — the version is a default, not a requirement.
+      carriage: { droplet_bits: hi ? 48 : 24, self_framing: true, subset_version: classic ? 1 : 2 },
       countdown: { freeze_s: 3, loop_s: 60 },  // §6: defaults 3/60, floor freeze ≥ 1
       // §6 envelope QR (recurring, internal format, dark-on-gray). Width chosen so
       // the quiet-inclusive half-DIAGONAL stays inside the 0.90 donut budget.
