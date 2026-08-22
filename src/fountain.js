@@ -56,7 +56,11 @@
     // original and stays the DEFAULT for any profile that does not declare
     // one, so every archived clip and every legacy profile decodes unchanged.
     var sv = (profile.carriage && profile.carriage.subset_version) || 1;
-    return { dropletBits: db, dataBits: db - 8, dataBytes: (db - 8) / 8, subsetVersion: sv };
+    // carousel_version selects how long each ring's carousel is (see
+    // ringCarouselLen). 1 is the original fixed 2K+12 and stays the DEFAULT for
+    // any profile that does not declare one.
+    var cv = (profile.carriage && profile.carriage.carousel_version) || 1;
+    return { dropletBits: db, dataBits: db - 8, dataBytes: (db - 8) / 8, subsetVersion: sv, carouselVersion: cv };
   }
   // D = symbols per droplet. Ceil: droplet_bits divisible by 12 covers the
   // 2/3/4-bit constellations exactly; M=32 (5 bits, the v3 high-rate preset)
@@ -70,6 +74,48 @@
   var HEADER_EVERY = 8;
   function isHeaderSlot(c) { return c % HEADER_EVERY === 0; }
   function carouselLen(K) { return 2 * K + 12; }
+
+  /* PER-RING carousel length (carousel_version 2).
+
+     v1 gave every ring the same 2K+12 droplets. But D varies with M, so a ring's
+     carousel period — (preamble + L·D)·F frames — varies too, and the fast rings
+     come around long before the loop ends: measured at the shipped defaults
+     (v3 resilient, 60 s loop, K=16), the M=16 rings finish their 44 droplets at
+     36 s and spend the remaining 21 s re-sending, while the base ring never
+     reaches its own 44 at all.
+
+     v2 extends each ring's carousel to cover the loop, so that surplus buys
+     DISTINCT droplets instead of repeats — strictly more information into the
+     peel at identical rate, amplitude and symbol count. It never SHORTENS a
+     carousel (max with the 2K+12 floor), so a ring too slow to finish is left
+     exactly as it was.
+
+     The decoder needs no version switch and no knowledge of L: it derives c from
+     the symbol position alone, and collect() checksums [c, ...bytes] — the
+     droplet INDEX is bound into the CRC. That binding is what keeps v1 SAFE
+     rather than merely lucky: a re-sent droplet read at a shifted position fails
+     CRC8 and is discarded, so it can never enter the peel under a wrong subset.
+     The post-wrap airtime is therefore not corrupt, it is DEAD. Measured on the
+     fast ring at the shipped defaults: 70 droplet slots fit inside the loop, v1
+     fills 44 of them and the remaining 26 yield nothing at all; v2 fills 70.
+     (Reading such a window through crcAlign rather than at absolute framing
+     lands on the aliased-down lag instead, which recovers them as duplicates —
+     no new information either way. Wasted, not wrong.) */
+  function ringCarouselLen(annulus, profile, g, K) {
+    var base = carouselLen(K);
+    var cd = profile.countdown;
+    if (g.carouselVersion !== 2 || !cd) return base;
+    var fps = profile.frame_rate_hz;
+    var loopF = Math.max(2, Math.round(cd.loop_s * fps));
+    var freezeF = Math.min(loopF - 1, Math.round(cd.freeze_s * fps));
+    // Mirrors emission.timeline/buildSchedule exactly: the freeze is carved OUT
+    // of the loop, and buildSchedule sizes itself ceil(frames/F)+1 symbols.
+    var symTotal = Math.ceil(Math.max(1, loopF - freezeF) / annulus.rotation.frames_per_symbol) + 1;
+    var symData = Math.max(0, symTotal - profile.preamble_symbols);
+    // Ceil so the droplet straddling the loop's end is a FRESH one rather than a
+    // wrap back to c = 0 (it is truncated either way; only its identity differs).
+    return Math.max(base, Math.ceil(symData / ringD(annulus, g)));
+  }
 
   /* Degree + subset for LT droplet c (c ≥ 1), deterministic from ring seed.
      Droplets c = 1..min(3,K) are forced degree-1 singles of blocks 0..2 —
@@ -229,16 +275,21 @@
     if (tb.K > 200) throw new Error("payload too large: K=" + tb.K + " blocks (cap 200 — " + (200 * g.dataBytes) + " bytes at this droplet size)");
     var L = carouselLen(tb.K);
     var tShift = opts && opts.tile ? opts.tile : 0;
+    var Ls = [];
     var carousels = profile.annuli.map(function (a) {
       var D = ringD(a, g);
-      var syms = new Uint8Array(L * D);
-      for (var c = 0; c < L; c++) {
+      var Lr = ringCarouselLen(a, profile, g, tb.K);
+      Ls.push(Lr);
+      var syms = new Uint8Array(Lr * D);
+      for (var c = 0; c < Lr; c++) {
         var dr = dropletBytes(c, tb.blocks, tb.K, tileSeed(a.rotation.seed, tShift), payloadBytes, g);
         syms.set(bitsToSymbols(dr.data, dr.crc, a, g), c * D);
       }
       return syms;
     });
-    return { carousels: carousels, K: tb.K, L: L, geom: g, framed: framed, wireLen: payloadBytes.length };
+    // L stays the nominal 2K+12 (what the carousel would be without the loop
+    // extension); Ls is what each ring actually carries.
+    return { carousels: carousels, K: tb.K, L: L, Ls: Ls, geom: g, framed: framed, wireLen: payloadBytes.length };
   }
 
   /* Decoder side: decoded symbol list (+erasures) at a known lag → verified
@@ -545,7 +596,7 @@
   }
 
   var API = { encodeCarousels: encodeCarousels, collect: collect, crcAlign: crcAlign, assemble: assemble,
-              geom: geom, ringD: ringD, carouselLen: carouselLen, subsetFor: subsetFor,
+              geom: geom, ringD: ringD, carouselLen: carouselLen, ringCarouselLen: ringCarouselLen, subsetFor: subsetFor,
               isHeaderSlot: isHeaderSlot, parseHeader: parseHeader, HEADER_EVERY: HEADER_EVERY,
               crc8: crc8, crc16: crc16, toGray: toGray, fromGray: fromGray,
               selfFrame: selfFrame, unframe: unframe, tileSeed: tileSeed,

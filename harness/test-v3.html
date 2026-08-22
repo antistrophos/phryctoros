@@ -543,6 +543,66 @@ async function main() {
       " · payload " + JSON.stringify(ranked.ok === true ? ranked.text.slice(0, 18) + "…" : ranked.reason));
   }
 
+  await tick("T22P: carousel_version 2 fills the loop with DISTINCT droplets…");
+  {
+    // A ring's carousel period is (preamble + L·D)·F frames, and D varies with
+    // M — so under a flat L = 2K+12 the FAST rings come around before the loop
+    // ends and start re-sending. collect() checksums [c, ...bytes], binding the
+    // droplet INDEX into the CRC, so a re-send read at a shifted position fails
+    // CRC8 and is discarded — it cannot enter the peel under a wrong subset.
+    // The post-wrap airtime is therefore not corrupt, it is DEAD: the slots are
+    // full, they are tried, and they yield nothing. v2 extends each ring's
+    // carousel to cover the loop so those same slots carry new droplets.
+    //
+    // The assertion counts yield off one fast ring over a whole loop: under v1,
+    // 70 slots are tried and only L of them pass, with nothing at all recovered
+    // past c = L-1. Under v2 every tried slot passes, c = L is a genuinely new
+    // droplet, and the payload still assembles byte-exact.
+    const msgC = "PHRYCTOROS CARRIES THE STORE";
+    const mk = (p) => {
+      const fps = p.frame_rate_hz, cd = p.countdown;
+      const framesData = Math.round(cd.loop_s * fps) - Math.round(cd.freeze_s * fps);
+      const enc = OC.fountain.encodeCarousels(p, OC.fountain.textToBytes(msgC));
+      const scheds = OC.emission.buildSchedules(p, framesData, enc.carousels);
+      const Dof = (a) => OC.fountain.ringD(a, enc.geom);
+      let ri = 0, si = 0;                       // fastest / slowest ring by D
+      p.annuli.forEach((a, i) => {
+        if (Dof(a) < Dof(p.annuli[ri])) ri = i;
+        if (Dof(a) > Dof(p.annuli[si])) si = i;
+      });
+      const dec = [];
+      for (let i = 0; i < scheds[ri].symbols.length; i++) dec.push({ i, s: scheds[ri].symbols[i], resid: 0 });
+      const col = OC.fountain.collect(dec, 0, p.annuli[ri], p);
+      const passed = col.passed;
+      const at = (c) => passed.find(d => d.c === c);
+      const asm = OC.fountain.assemble(
+        [{ seed: p.annuli[ri].rotation.seed, droplets: passed.map(d => ({ c: d.c, bytes: d.bytes })) }], p);
+      return { enc, ri, si, passed, at, asm, tried: col.tried, dead: col.tried - passed.length,
+               cMax: Math.max.apply(null, passed.map(d => d.c)),
+               L: enc.L, Lfast: enc.Ls[ri], Lslow: enc.Ls[si] };
+    };
+    const same = (x, y) => !!(x && y && x.bytes.length === y.bytes.length &&
+                              Array.prototype.every.call(x.bytes, (b, i) => b === y.bytes[i]));
+    const V1 = mk(OC.profile.profileV3("classic"));
+    const V2 = mk(OC.profile.profileV3());
+    const L = V1.L;
+    record("T22P carousel fill: under carousel_version 1 a fast ring's post-wrap slots are tried and yield NOTHING (the CRC binds c, so re-sends are discarded, not mislabelled) and nothing is recovered past c=L-1; under 2 the carousel covers the loop, every tried slot pays, c=L is a genuinely new droplet, no ring's carousel is shorter than the 2K+12 floor, and the payload still assembles byte-exact",
+      !!(V1.enc.Ls.every(x => x === L) &&
+         V1.tried > V1.passed.length && V1.passed.length === L &&
+         V1.cMax === L - 1 && !V1.at(L) &&
+         V2.dead === 0 && V2.tried === V2.passed.length &&
+         V2.at(0) && V2.at(L) && !same(V2.at(0), V2.at(L)) &&
+         V2.Lfast > L && V2.Lslow === L && V2.enc.Ls.every(x => x >= L) &&
+         V2.passed.length > V1.passed.length &&
+         V2.asm.ok === true && V2.asm.text === msgC),
+      "nominal L=" + L +
+      " · v1 Ls=[" + V1.enc.Ls.join(",") + "] tried " + V1.tried + " → passed " + V1.passed.length +
+      " (" + V1.dead + " dead, cMax " + V1.cMax + ")" +
+      " · v2 Ls=[" + V2.enc.Ls.join(",") + "] tried " + V2.tried + " → passed " + V2.passed.length +
+      " (" + V2.dead + " dead, cMax " + V2.cMax + ")" +
+      " · v2 payload " + JSON.stringify(V2.asm.ok === true ? V2.asm.text : V2.asm.reason));
+  }
+
   await tick("T22L: fast renderer ≡ exact renderer (pixels and droplets)…");
   {
     // The video export renders through the opt-in FAST path (angle map +

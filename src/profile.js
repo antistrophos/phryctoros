@@ -259,7 +259,11 @@
       // original ladder, since a clip filmed then used both. Decoders fall
       // back automatically on a validated mismatch, so pre-flip captures need
       // no setting — the version is a default, not a requirement.
-      carriage: { droplet_bits: hi ? 48 : 24, self_framing: true, subset_version: classic ? 1 : 2 },
+      // carousel_version 2 sizes each ring's carousel to the LOOP rather than to
+      // a flat 2K+12, so a fast ring's surplus carries distinct droplets instead
+      // of repeats. classic keeps 1 so pre-change scenes re-emit bit-identically.
+      carriage: { droplet_bits: hi ? 48 : 24, self_framing: true, subset_version: classic ? 1 : 2,
+                  carousel_version: classic ? 1 : 2 },
       countdown: { freeze_s: 3, loop_s: 60 },  // §6: defaults 3/60, floor freeze ≥ 1
       // §6 envelope QR (recurring, internal format, dark-on-gray). Width chosen so
       // the quiet-inclusive half-DIAGONAL stays inside the 0.90 donut budget.

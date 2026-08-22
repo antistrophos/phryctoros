@@ -820,9 +820,12 @@ function ocSettingsString() {
    to come around once. A loop SHORTER than that period means the ring's tail
    droplets are never emitted at all — no amount of filming recovers them,
    because every loop replays the identical schedule from index 0. A loop LONGER
-   means the ring re-sends droplets the ledger already holds (still useful as
-   retries, but no new information). D varies with M, so the rings have
-   DIFFERENT periods and the slowest one sets the honest floor. */
+   means the ring re-sends — and under carousel_version 1 those re-sends pay
+   NOTHING: collect() binds the droplet index into the CRC, so a droplet read at
+   a shifted position is discarded. Measured on the fast ring at the defaults,
+   70 slots fit in the loop and 26 of them yield nothing at all. Version 2
+   extends the carousel so those slots carry new droplets instead. D varies with
+   M, so the rings have DIFFERENT periods and the slowest sets the honest floor. */
 function ocCarouselInfo() {
   const el = $("carouselInfo");
   if (!el) return;
@@ -850,21 +853,30 @@ function ocCarouselInfo() {
     const D = OC.fountain.ringD(a, g), F = a.rotation.frames_per_symbol;
     const symTotal = Math.ceil(framesData / F) + 1;        // = buildSchedule's nSym
     const emitted = Math.floor(Math.max(0, symTotal - Pn) / D);  // whole droplets only
-    const distinct = Math.min(emitted, L), repeats = Math.max(0, emitted - L);
-    const periodS = (Pn + L * D) * F / fps;                // motion time for one full carousel
+    // Lr is what this ring actually carries: the nominal 2K+12 under
+    // carousel_version 1, extended to cover the loop under 2.
+    const Lr = OC.fountain.ringCarouselLen(a, profile, g, K);
+    const distinct = Math.min(emitted, Lr), repeats = Math.max(0, emitted - Lr);
+    const periodS = (Pn + L * D) * F / fps;                // time for one NOMINAL carousel
     const needLoop = freezeS + periodS;                    // the loop_s that would complete it
+    // "Short" is judged against the NOMINAL carousel — a ring that cannot deliver
+    // 2K+12 distinct droplets in a loop is the actionable case (raise the loop).
+    // Falling short of an EXTENDED Lr is by construction, not a fault.
     if (distinct < L) { anyShort = true; if (needLoop > worstNeed) worstNeed = needLoop; }
     rows += "<tr><td>a" + a.index + "</td><td>M=" + a.rotation.M + "</td><td>" + D + "</td><td>" + F +
             "</td><td>" + periodS.toFixed(1) + " s</td>" +
-            "<td class='" + (distinct < L ? "err" : "ok") + "'>" + distinct + " / " + L +
-            (distinct < L ? "  (" + (L - distinct) + " never sent)" : repeats ? "  (+" + repeats + " repeats)" : "") +
+            "<td class='" + (distinct < L ? "err" : "ok") + "'>" + distinct +
+            (distinct < L ? " / " + L + "  (" + (L - distinct) + " never sent)"
+              : repeats ? "  (+" + repeats + " slots WASTED — re-sends the CRC discards)"
+              : Lr > L ? "  (loop-filled; would be " + L + " + " + (emitted - L) + " wasted)" : "") +
             "</td></tr>";
   });
 
   el.innerHTML =
     "<table><tr><th>ring</th><th>M</th><th>D sym</th><th>F</th><th>carousel period</th>" +
-    "<th>droplets emitted per loop</th></tr>" + rows + "</table>" +
-    "<p class='" + (anyShort ? "err" : "ok") + "'>K=" + K + " blocks · carousel L=" + L + " droplets · " +
+    "<th>distinct droplets / loop</th></tr>" + rows + "</table>" +
+    "<p class='" + (anyShort ? "err" : "ok") + "'>K=" + K + " blocks · nominal carousel " + L +
+    " droplets (carousel_version " + g.carouselVersion + ") · " +
     framesData + " data frames (" + (framesData / fps).toFixed(1) + " s of the " + loopS + " s loop)" +
     (anyShort
       ? " — SHORT: raise loop to " + Math.ceil(worstNeed) + " s so every ring completes its carousel, or accept that the marked rings never emit their tail."
