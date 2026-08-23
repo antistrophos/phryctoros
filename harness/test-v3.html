@@ -804,6 +804,59 @@ async function main() {
       reg.emitters.length + " emitters (method " + (reg.method || "finder") + "), " + breakers + " breaker(s)");
   }
 
+  await tick("T23d: 6-up SADDLE registration — the multi-plate constellation peel…");
+  {
+    // T23b covers the RING path (default bullseye corners). Saddle-first
+    // registration is gated on corner_style "quadrant", so nothing above
+    // exercises it under tiling — and until 2026-08-22 nothing COULD: the
+    // branch was gated on `tiling <= 1`, so a tiled frame fell straight through
+    // to rings, the pre-saddle ladder with the 30°/45° walls the saddle build
+    // existed to remove. This is that gap's test.
+    //
+    // solveAll greedy-peels: take the best constellation, remove its four
+    // corners, repeat. NOT spatial clustering — within a plate the corners are
+    // 5.3 u apart (2 × 2.65) while the nearest corner of the neighbouring plate
+    // is only 1.9 u away (pitch 7.2 − 5.3), so inter-tile spacing is SMALLER
+    // than intra-tile and proximity would group ACROSS plates. Geometry
+    // separates them: a cross-tile quad implies a centre in the gutter, so
+    // ringMeanH reads background at both flat_circle_r radii and the band
+    // contrast collapses.
+    //
+    // SCALE IS PINNED DELIBERATELY. Detection is scale-sensitive and NOT
+    // monotonically so — measured on this very frame, plates solved: 6 at
+    // scale 66, 0 at 58, 1 at 51, 5 at 44. Same signature as the 45° scale
+    // band, with no tilt involved, so it is a property of a fixed RESP_RHO on a
+    // factor-2 pyramid rather than anything about tiling. This test asserts the
+    // PEEL MECHANISM at a scale where detection supplies the corners; it is not
+    // a robustness claim, and a failure here means the peel broke, not that the
+    // detector drifted (that would show as a low candidate count).
+    const p6s = OC.profile.profileV3("paced", {
+      tiling: 6, plate: { corner_style: "quadrant" },
+      render: { size_px: 1400, scale_px_per_unit: 66 } });
+    const seq6 = OC.emission.renderSequence(p6s, 60, { payloadBytes: OC.fountain.textToBytes("SIX UP") });
+    const img6 = seq6.frames[40].img;
+    seq6.frames = null;
+    const sl6 = OC.saddle.solveAll(img6, p6s, {});
+    const reg6 = OC.register.registerAll(img6, { profile: p6s });
+    // Centres must form the 3×2 lattice at pitch × scale, not six solves of one plate.
+    const cs = sl6.map(s => OC.geom.applyH(s.H, 0, 0));
+    const xs = [...new Set(cs.map(c => Math.round(c[0] / 40)))];
+    const ys = [...new Set(cs.map(c => Math.round(c[1] / 40)))];
+    let minSep = Infinity;
+    for (let i = 0; i < cs.length; i++)
+      for (let j = i + 1; j < cs.length; j++)
+        minSep = Math.min(minSep, Math.hypot(cs[i][0] - cs[j][0], cs[i][1] - cs[j][1]));
+    const pitchPx = p6s.tile_pitch * p6s.render.scale_px_per_unit;
+    record("T23d 6-up saddle registration: the constellation peel separates six plates from one candidate pool, their centres form the 3×2 lattice at pitch×scale, and registerAll returns six emitters by the saddle path (not the rings fallback)",
+      !!(sl6.length === 6 && reg6.emitters.length === 6 && reg6.method === "saddles" &&
+         xs.length === 3 && ys.length === 2 &&
+         Math.abs(minSep - pitchPx) < 0.06 * pitchPx),
+      "plates " + sl6.length + " · emitters " + reg6.emitters.length + " (method " + reg6.method + ")" +
+      " · distinct cols/rows " + xs.length + "/" + ys.length +
+      " · min centre separation " + Math.round(minSep) + "px vs pitch×scale " + Math.round(pitchPx) + "px" +
+      " · phiErr " + sl6.map(s => s.phiErr.toFixed(2)).join("/"));
+  }
+
   await tick("T23c: 2-up pooled optical decode — one peel over two tile-seeded carousels…");
   {
     const p2 = OC.profile.profileV3(undefined, { tiling: 2, render: { scale_px_per_unit: 100 } });

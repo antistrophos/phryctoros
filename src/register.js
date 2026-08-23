@@ -495,24 +495,32 @@
     // plate only for now (the 6-up constellation rides the tile-keyed work);
     // any failure falls through to the rings/finder ladder unchanged.
     if (isV3reg && pV3.plate.corner_style === "quadrant" && !opts.noSaddles) {
-      var layoutN = pV3.tiling || 1;
-      if (layoutN <= 1) {
-        var sres = SD().solve(img, pV3, opts.saddleOpts || {});
-        if (sres) {
-          var gS = G();
-          var pC = gS.applyH(sres.H, 0, 0);
-          var pX = gS.applyH(sres.H, pV3.flat_circle_r, 0);
-          var pY = gS.applyH(sres.H, 0, pV3.flat_circle_r);
-          var sEff = (Math.hypot(pX[0] - pC[0], pX[1] - pC[1]) +
-                      Math.hypot(pY[0] - pC[0], pY[1] - pC[1])) / 2;
-          var mkS = function (ux, uy) { var pq = gS.applyH(sres.H, ux, uy); return { x: pq[0], y: pq[1], unit: sEff / 25 }; };
-          var emS = {
-            H: sres.H, moduleSizePx: sEff / 25, fiducialWidthPx: sEff, chirality: 1,
-            corners: { TL: mkS(-FC, -FC), TR: mkS(FC, -FC), BL: mkS(-FC, FC) },
-            method: "saddles", timingScore: sres.bandContrast, structureScore: 1 - sres.phiErr / 0.7
-          };
-          return { emitters: [emS], candidates: [], method: "saddles" };
-        }
+      // TILED FRAMES REGISTER SADDLE-FIRST TOO (2026-08-22). This was gated on
+      // `tiling <= 1`, so a 6-up frame never attempted the saddle path and fell
+      // straight through to rings — the PRE-saddle ladder, with exactly the
+      // 30°/45° walls the saddle build was made to remove. saddle.solveAll
+      // greedy-peels one constellation per plate; see there for why proximity
+      // clustering does not work (inter-tile corner spacing is SMALLER than
+      // intra-tile). Any failure still falls through unchanged.
+      var gS = G();
+      var emitFromSolve = function (sres) {
+        var pC = gS.applyH(sres.H, 0, 0);
+        var pX = gS.applyH(sres.H, pV3.flat_circle_r, 0);
+        var pY = gS.applyH(sres.H, 0, pV3.flat_circle_r);
+        var sEff = (Math.hypot(pX[0] - pC[0], pX[1] - pC[1]) +
+                    Math.hypot(pY[0] - pC[0], pY[1] - pC[1])) / 2;
+        var mkS = function (ux, uy) { var pq = gS.applyH(sres.H, ux, uy); return { x: pq[0], y: pq[1], unit: sEff / 25 }; };
+        return {
+          H: sres.H, moduleSizePx: sEff / 25, fiducialWidthPx: sEff, chirality: 1,
+          corners: { TL: mkS(-FC, -FC), TR: mkS(FC, -FC), BL: mkS(-FC, FC) },
+          method: "saddles", timingScore: sres.bandContrast, structureScore: 1 - sres.phiErr / 0.7
+        };
+      };
+      var sList = SD().solveAll(img, pV3, opts.saddleOpts || {});
+      if (sList && sList.length) {
+        var emsS = [];
+        for (var si = 0; si < sList.length; si++) emsS.push(emitFromSolve(sList[si]));
+        return { emitters: emsS, candidates: [], method: "saddles" };
       }
     }
     // qr_persistent (diagnostic): the QR is guaranteed present, so the

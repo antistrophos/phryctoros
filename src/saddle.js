@@ -522,6 +522,53 @@
     return constellation(cands, profile, img, opts);
   }
 
+  /* MULTI-PLATE SOLVE (2026-08-22) — the tiled case, which registration has
+     been refusing outright: register.js gated saddle-first on `tiling <= 1`, so
+     a 6-up frame never attempted it and fell straight through to the rings
+     ladder — the pre-saddle path, with the 30°/45° walls the saddle build
+     existed to knock down.
+
+     GREEDY PEEL, NOT SPATIAL CLUSTERING. Proximity is the obvious approach and
+     it is wrong here: within a plate the corner marks sit 5.3 u apart (2 × 2.65),
+     while the NEAREST corner of the adjacent plate is only 1.9 u away
+     (pitch 7.2 − 2 × 2.65). Inter-tile spacing is SMALLER than intra-tile, so
+     distance clustering would group across plates. Geometry separates them,
+     not proximity — so take the best constellation, remove its four corners
+     from the pool, and repeat.
+
+     Cross-tile quads are refused by the band-contrast gate: four corners
+     spanning two plates imply a centre in the gutter, so ringMeanH reads
+     background at both flat_circle_r radii and the contrast collapses. Worth
+     knowing that gate only became live on camera frames with the img.norm fix
+     — before it a 0-255 quantity was compared against a 0-1 threshold and could
+     never fail, which would have let cross-tile quads through unchallenged. */
+  function solveAll(img, profile, opts) {
+    opts = opts || {};
+    var want = Math.max(1, opts.maxPlates || (profile.tiling || 1));
+    if (want <= 1) { var one = solve(img, profile, opts); return one ? [one] : []; }
+    var dOpts = {}, k;
+    for (k in opts) dOpts[k] = opts[k];
+    dOpts.maxCandidates = opts.maxCandidates || Math.max(24, 6 * want);
+    dOpts.wantCandidates = opts.wantCandidates || 4 * want;   // the finer rung's bar, per plate
+    var pool = detect(img, dOpts);
+    var cOpts = {};
+    for (k in opts) cOpts[k] = opts[k];
+    // The 4-subset search is O(n^4), so the cap matters: 4 corners per plate
+    // plus slack, bounded so a large `tiling` cannot detonate the search.
+    cOpts.maxConstellation = opts.maxConstellation || Math.min(32, 4 * want + 4);
+    var out = [];
+    for (var t = 0; t < want && pool.length >= 4; t++) {
+      var con = constellation(pool, profile, img, cOpts);
+      if (!con) break;
+      out.push(con);
+      var used = con.points, next = [];
+      for (var i = 0; i < pool.length; i++)
+        if (used.indexOf(pool[i]) < 0) next.push(pool[i]);
+      pool = next;
+    }
+    return out;
+  }
+
   /* Per-frame solve-as-tracker: project the 4 model corners through the
      current H, refine each with cross-selective Förstner, light-verify the
      anti-phase signature at two radii, re-DLT. All four must hold — a miss
@@ -558,7 +605,7 @@
   }
 
   var API = { detect: detect, measureAt: measureAt, constellation: constellation,
-              solve: solve, trackSolve: trackSolve, ringHarm: ringHarm, forstner: forstner };
+              solve: solve, solveAll: solveAll, trackSolve: trackSolve, ringHarm: ringHarm, forstner: forstner };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   global.OC = global.OC || {}; global.OC.saddle = API;
 })(typeof window !== "undefined" ? window : globalThis);
