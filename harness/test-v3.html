@@ -493,6 +493,12 @@ async function main() {
     const envBad = new Uint8Array(envB); envBad[5] ^= 0x10;           // one session bit → CRC16 must refuse
     let seqB2 = OC.emission.renderSequence(pB, 580, { payloadInfo: infoB });
     let slB = seqB2.frames.slice(190);
+    // (c) THE FOLD: ≥1 period observed but NO contiguous frame — [210, 440) is
+    // 230 frames (1.25 periods of 184) and the frame starts at 200 and 384 both
+    // fall outside it. Every carousel position was still seen once, so folding
+    // the symbols modulo the period recovers the frame (the 5 ft field clip's
+    // case: 246 clean symbols, period 184, no contiguous frame).
+    let slC = seqB2.frames.slice(210, 440);
     seqB2 = null;
     const rB = OC.pipeline.decodeSequence(slB, pB, { beacon: true });
     slB = null;
@@ -501,15 +507,24 @@ async function main() {
     const okB = !!(vB.ok && parsedB && parsedB.session32 === 0xC0FFEE42 && parsedB.K === 7 && parsedB.len === 13 &&
                    parsedB.pcrc === 0x1234 && parsedB.preset === "resilient" && parsedB.tiling === 1 &&
                    OC.plate.parseEnvelope(envBad) === null &&
-                   rowB2 && !rowB2.error && rowB2.alignMethod === "framed" && fB &&
+                   rowB2 && !rowB2.error && rowB2.alignMethod === "framed" && !rowB2.folded && fB &&
                    fB.session32 === 0xC0FFEE42 && fB.K === 7 && fB.loop_s === pB.countdown.loop_s);
-    record("T22r beacon mid-loop join: a capture that never saw the preamble still frames the control carousel — (a) default M=2/F=4, short unsealed envelope, off-grid start, accepted on ≥2 identical frames; (b) sealed v1 envelope at M=4/F=2, accepted on CRC8+CRC16 from ONE frame, session32/K/len/pcrc/preset/tiling parsed off the air and a flipped session bit refused",
-      okA && okB,
+    const rC = OC.pipeline.decodeSequence(slC, pB, { beacon: true });
+    slC = null;
+    const rowC = rC.error ? null : rC.emitters[0].annuli.find(a => a.beacon);
+    const fC = rowC && rowC.envelopeFields;
+    const okC = !!(rowC && !rowC.error && rowC.alignMethod === "framed" && rowC.folded === true && fC &&
+                   fC.session32 === 0xC0FFEE42 && fC.K === 7 && fC.pcrc === 0x1234 && rowC.foldAgree === 1);
+    record("T22r beacon mid-loop join: a capture that never saw the preamble still frames the control carousel — (a) default M=2/F=4, short unsealed envelope, off-grid start, accepted on ≥2 identical frames; (b) sealed v1 envelope at M=4/F=2, accepted on CRC8+CRC16 from ONE contiguous frame, session32/K/len/pcrc/preset/tiling parsed off the air and a flipped session bit refused; (c) ≥1 period but NO contiguous frame — the symbols FOLD modulo the period and the sealed frame is recovered from the doubled ring with its repeats agreeing 100%",
+      okA && okB && okC,
       "(a) " + (rowA ? "lock " + rowA.alignMethod + " off " + rowA.alignOffset + " phase " + rowA.alignLag + " frames " + rowA.envelopeFrames + " env " + rowA.envelope + (rowA.error ? " ERR " + rowA.error : "")
                      : "no beacon row: " + JSON.stringify(rA).slice(0, 100)) +
       " · (b) " + (rowB2 ? "lock " + rowB2.alignMethod + " off " + rowB2.alignOffset + " phase " + rowB2.alignLag + " frames " + rowB2.envelopeFrames +
                            " fields " + JSON.stringify(fB) + (rowB2.error ? " ERR " + rowB2.error : "")
                          : "no beacon row: " + JSON.stringify(rB).slice(0, 100)) +
+      " · (c) " + (rowC ? "lock " + rowC.alignMethod + (rowC.folded ? " FOLDED agree " + rowC.foldAgree + "/" + rowC.foldCompared : " not folded") + " off " + rowC.alignOffset + " phase " + rowC.alignLag +
+                          " symbols " + rowC.symbols + " session " + (fC ? fC.session32.toString(16) : "—") + (rowC.error ? " ERR " + rowC.error : "")
+                        : "no beacon row: " + JSON.stringify(rC).slice(0, 100)) +
       " · validate " + vB.ok + " · parse " + JSON.stringify(parsedB));
   }
 

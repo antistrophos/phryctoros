@@ -211,7 +211,8 @@ function layerSummary(res) {
       "<tr><th>annulus</th><th>layer</th><th>present</th><th>carrier</th><th>SER</th><th>erasures</th><th>lock</th><th>contrast</th><th>SNR/harmonic (dB)</th><th>verdict</th></tr>";
     em.annuli.forEach(a => {
       const snr = a.snr_db ? Object.entries(a.snr_db).map(([k, v]) => "k" + k + ":" + v).join(" ") : "—";
-      const lock = a.alignMethod ? (a.alignMethod + " lag " + a.alignLag + (a.alignMatchFrac ? " (" + a.alignMatchFrac + ")" : "")) : "—";
+      const lock = a.alignMethod ? (a.alignMethod + (a.folded ? " folded" : "") + " lag " + a.alignLag + (a.alignMatchFrac ? " (" + a.alignMatchFrac + ")" : "") +
+                                    (a.folded ? " (repeats agree " + Math.round((a.foldAgree || 0) * 100) + "%/" + a.foldCompared + ")" : "")) : "—";
       const verdict = !a.present ? "<span class='dim'>unresolved</span>" :
         a.beacon && a.envelope ? "<span class='ok'>ENVELOPE " + a.envelope +
           (a.envelopeFields ? " — " + a.envelopeFields.preset + " session " + a.envelopeFields.session32.toString(16).padStart(8, "0") +
@@ -556,7 +557,8 @@ async function harvestDecode(v, geo, file) {
         if (!a || !a.beacon || !a.envelope) continue;
         const f = a.envelopeFields;
         line += f
-          ? " — <span class='ok'>ENVELOPE " + a.alignMethod + ": " + f.preset + " session " + f.session32.toString(16).padStart(8, "0") +
+          ? " — <span class='ok'>ENVELOPE " + a.alignMethod + (a.folded ? " (folded, repeats agree " + Math.round((a.foldAgree || 0) * 100) + "% of " + a.foldCompared + ")" : "") +
+            ": " + f.preset + " session " + f.session32.toString(16).padStart(8, "0") +
             " K=" + f.K + " len=" + f.len + " tiling=" + f.tiling + " loop=" + f.loop_s + "s freeze=" + f.freeze_s + "s</span>"
           : " — <span class='warn'>beacon frame " + a.envelope + " (unparsed)</span>";
       }

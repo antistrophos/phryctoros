@@ -307,6 +307,22 @@
     return fr.length ? fr[0] : null;
   }
 
+  /* The frames an alignment actually yields: a FOLDED alignment (beaconAlign
+     below) carries its synthesised carousel ring, and the frame lives in the
+     doubled ring, not in the contiguous stream; anything else reads the
+     stream at the alignment's bit phase. */
+  function beaconFramesFor(decoded, align, M) {
+    if (align && align.folded && align.ring) {
+      var P = align.ring.length, doubled = new Array(2 * P);
+      for (var j = 0; j < 2 * P; j++) {
+        var sv = align.ring[j % P];
+        doubled[j] = { s: (sv === undefined || sv === null) ? null : sv };
+      }
+      return beaconFrames(doubled, align.lag, M);
+    }
+    return beaconFrames(decoded, align ? align.lag : 0, M);
+  }
+
   /* §6 envelope, internal format v1 (emission.envelopeBytes is the writer):
      version · family · flags (bit0 = high-rate) · session32 · K · len ·
      pcrc16 · capability · freeze (ds) · loop (s) · tiling · 2 reserved ·
@@ -351,7 +367,25 @@
     var base = (baseOverride !== undefined && baseOverride !== null) ? baseOverride : (track.firstValid || 0);
     var verify = opts.verify || function (env) { return !!parseEnvelope(env); };
     var minFrames = opts.minFrames || 2;
+    // THE FOLD. The carousel is periodic, so a window holding ≥1 period has
+    // seen EVERY carousel position even when no single frame lies contiguous
+    // inside it (the 5 ft field clip: 246 clean symbols, period 184, no
+    // frame — the frame start fell past symbol 62). Fold the symbols modulo
+    // the period, erase positions whose repeats disagree, and scan the
+    // doubled ring — a frame starting anywhere is then contiguous. Needs the
+    // period: the v1 envelope frames as 23 bytes (opts.frameBytes overrides,
+    // ≤ 0 disables); a wrong period merely yields no frame. Folded frames are
+    // SYNTHESISED, so they are accepted only when verify says yes (the CRC16
+    // seal) — repeat-agreement is reported, not trusted alone.
+    var frameBytes = opts.frameBytes !== undefined ? opts.frameBytes : 23;
+    var Psym = frameBytes > 0 ? Math.round(frameBytes * 8 / bitsPer) : 0;
     var best = null;
+    var consider = function (cand) {
+      if (!best || (cand.verified && !best.verified) ||
+          (cand.verified === best.verified && !cand.folded && best.folded) ||
+          (cand.verified === best.verified && !!cand.folded === !!best.folded && cand.score > best.score))
+        best = cand;
+    };
     for (var oi = 0; oi < F; oi++) {
       var off = base + oi;
       var decoded = demap.decode(track, annulus, profile, off);
@@ -373,10 +407,34 @@
           }
         }
         if (!verified && agree < minFrames) continue;
-        var cand = { offset: off, lag: ph, score: frames.length, max: decoded.length, method: "framed", verified: verified };
-        if (!best || (cand.verified && !best.verified) ||
-            (cand.verified === best.verified && cand.score > best.score))
-          best = cand;
+        consider({ offset: off, lag: ph, score: frames.length, max: decoded.length, method: "framed", verified: verified });
+      }
+      if (best && best.offset === off && !best.folded) continue; // contiguous frame at this offset — no fold needed
+      if (Psym > 0 && decoded.length >= Psym) {
+        var ring = new Array(Psym), seen = 0, compared = 0, agreed = 0;
+        for (var di = 0; di < decoded.length; di++) {
+          var sv = decoded[di].s;
+          if (sv === null || sv === undefined) continue;
+          var pos = di % Psym;
+          if (ring[pos] === undefined) { ring[pos] = sv; seen++; }
+          else if (ring[pos] !== null) {
+            compared++;
+            if (ring[pos] === sv) agreed++; else ring[pos] = null; // repeats disagree → erase
+          }
+        }
+        if (seen < Psym) continue;
+        var doubled = new Array(2 * Psym);
+        for (var dj = 0; dj < 2 * Psym; dj++) doubled[dj] = { s: ring[dj % Psym] === undefined ? null : ring[dj % Psym] };
+        for (var ph2 = 0; ph2 < phases; ph2++) {
+          var ff = beaconFrames(doubled, ph2, M);
+          for (var fq = 0; fq < ff.length; fq++) {
+            if (!verify(ff[fq].envelope)) continue;
+            consider({ offset: off, lag: ph2, score: 1, max: decoded.length, method: "framed", verified: true,
+                       folded: true, foldAgree: compared ? Math.round(1000 * agreed / compared) / 1000 : null, foldCompared: compared,
+                       ring: ring });
+            break;
+          }
+        }
       }
     }
     return best;
@@ -384,7 +442,7 @@
 
   var API = { findBullseye: findBullseye, plateSolve: plateSolve, fitCircleEdge: fitCircleEdge,
               beaconAnnulus: beaconAnnulus, beaconDecode: beaconDecode, beaconFrames: beaconFrames,
-              beaconAlign: beaconAlign, parseEnvelope: parseEnvelope };
+              beaconFramesFor: beaconFramesFor, beaconAlign: beaconAlign, parseEnvelope: parseEnvelope };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   global.OC = global.OC || {}; global.OC.plate = API;
 })(typeof window !== "undefined" ? window : globalThis);

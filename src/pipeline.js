@@ -394,7 +394,7 @@
 
           if (a.beacon) {
             var plateB = dep("plate");
-            var envFrames = plateB.beaconFrames(decoded, align.lag, a.rotation.M);
+            var envFrames = plateB.beaconFramesFor(decoded, align, a.rotation.M);
             if (!envFrames.length && align.method !== "framed") {
               // A preamble lock that frames nothing is not a lock. At M=2 the
               // preamble (1, M−1, 1, …) is ALL ONES, so any run of 1-bits in
@@ -406,7 +406,7 @@
               if (alignF) {
                 align = alignF;
                 decoded = demap.decode(track, a, profile, align.offset);
-                envFrames = plateB.beaconFrames(decoded, align.lag, a.rotation.M);
+                envFrames = plateB.beaconFramesFor(decoded, align, a.rotation.M);
               }
             }
             // Prefer a frame that parses as a sealed v1 envelope (CRC16);
@@ -417,16 +417,27 @@
               if (pf) { env = envFrames[ef]; envFields = pf; }
             }
             if (!env && envFrames.length) env = envFrames[0];
+            // Symbol-level receipt: the control frame is LONG (23 bytes = 184
+            // symbols at M=2) under one CRC, so a few erasures sink every frame
+            // where a 24-symbol droplet would shrug — the count says whether a
+            // missing envelope is symbol quality or the carousel-phase draw.
+            var nullSyms = 0;
+            for (var ns = 0; ns < decoded.length; ns++) if (decoded[ns].s === null || decoded[ns].s === undefined) nullSyms++;
             return {
               annulus: a.index, layer: a.layer, present: true, beacon: true,
               contrast: round3(meanContrast), validFrames: valid,
               carrierRatio: carrierRatio, alignMethod: align.method || "preamble",
               alignOffset: align.offset, alignLag: align.lag,
+              symbols: decoded.length, erasures: nullSyms,
+              erasureRate: decoded.length ? round3(nullSyms / decoded.length) : null,
+              folded: align.folded || undefined,
+              foldAgree: align.folded ? align.foldAgree : undefined,
+              foldCompared: align.folded ? align.foldCompared : undefined,
               envelope: env ? toHex(env.envelope) : null,
               envelopeAt: env ? env.at : null,
               envelopeFrames: envFrames.length,
               envelopeFields: envFields || undefined,
-              error: env ? undefined : "beacon locked but no framed envelope in the captured span"
+              error: env ? undefined : "beacon locked but no framed envelope in the captured span (" + nullSyms + "/" + decoded.length + " symbols erased)"
             };
           }
 
