@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- single-file build 2026-08-21 — regenerate with build_standalone.py -->
+<!-- single-file build 2026-08-23 — regenerate with build_standalone.py -->
 
 <html lang="en">
 <head>
@@ -40,7 +40,7 @@
   <label>camera <select id="m_cam"><option>rear</option><option>front</option></select></label>
   <label>handheld <input id="m_hand" type="checkbox" checked></label>
   <label>emitter loop (s) <input id="m_loop" type="number" value="60" style="width:4rem"></label>
-  <label>profile <select id="m_prof"><option value="v2">v2 (current)</option><option value="v2p">v2 + payload (Phase 1)</option><option value="v20">v2 @20 fps</option><option value="v20p">v2 @20 fps + payload</option><option value="v30">v2 @30 fps</option><option value="v30p">v2 @30 fps + payload</option><option value="v3">V3 resilient (payload; film at 60 fps)</option><option value="v3hr">V3 high-rate (payload; film at 60 fps)</option><option value="v3c">V3 CLASSIC ladder (legacy: base outermost, pre-2026-08-21 clips)</option><option value="v3a">V3 auto-detect preset (payload)</option><option value="v1">v1 (legacy clips)</option></select></label>
+  <label>profile <select id="m_prof"><option value="v2">v2 (current)</option><option value="v2p">v2 + payload (Phase 1)</option><option value="v3">v3.1 resilient (paced standard; payload; film at 60 fps)</option><option value="v3hr">v3.1 high-rate (paced; payload; film at 60 fps)</option><option value="v3f">V3 FLAT (legacy: flat F, pre-ruling clips)</option><option value="v3hrf">V3 high-rate FLAT (legacy)</option><option value="v3c">V3 CLASSIC ladder (legacy: base outermost, pre-2026-08-21 clips)</option><option value="v3a">V3 auto-detect preset (payload)</option></select></label>
   <label id="v3opts" style="display:none"><input id="m_solve" type="checkbox" checked> plate solve <input id="m_beacon" type="checkbox" checked> beacon <input id="m_quad" type="checkbox"> quadrant corners (v3.1) <input id="m_qrp" type="checkbox"> persistent QR (diagnostic)</label>
   <label>capture fps <select id="m_capfps"><option value="30">30</option><option value="60">60</option></select></label>
   <label>notes <input id="m_notes" style="width:12rem"></label>
@@ -389,8 +389,9 @@
       // table put layer 0 OUTERMOST; the §7.1 diagram says the opposite and v1
       // faithfully implemented the diagram. Field physics endorsed the rule:
       // phase noise scales as blur-px/radius-px, so the base layer belongs on
-      // the biggest ring. v1 clips decode only under profileV1() — the profile
-      // is the CONTRACT, and this swap is an emission version, not a patch.
+      // the biggest ring. The swap is an emission version, not a patch — the
+      // profile is the CONTRACT. (v1's builder was pruned 2026-08-21; v1 clips
+      // now need it revived from git.)
       profile_version: "phase0-v2",
       units: "fiducial-width",
       // 15 fps emission against 30 fps capture: every emission frame persists two
@@ -526,62 +527,25 @@
     return { ok: errors.length === 0, errors: errors, warnings: warnings, flicker: flicker };
   }
 
-  /* The v1 emission contract, frozen: layer 0 innermost (the §7.1-diagram
-     ordering v1 shipped with). Clips filmed under v1 decode ONLY under this. */
-  function profileV1(overrides) {
-    var p = defaultProfile();
-    p.profile_version = "phase0-v1";
-    p.annuli = [
-      { index: 0, layer: 0, r_inner: 1.05, r0: 1.45,
-        rotation: { nominal_hz: 1.5, rate_tier_fps: 30, constellation: "dqpsk", M: 4, gray: true, frames_per_symbol: 4, seed: 101 },
-        boundary: { harmonics: [1, 2, 3], amplitudes: [0.030, 0.050, 0.050], phases_deg: [0, 40, 80] } },
-      { index: 1, layer: 1, r_inner: 1.75, r0: 2.15,
-        rotation: { nominal_hz: 1.0, rate_tier_fps: 30, constellation: "d8psk", M: 8, gray: true, frames_per_symbol: 4, seed: 202 },
-        boundary: { harmonics: [1, 2, 3, 5, 8], amplitudes: [0.020, 0.030, 0.030, 0.030, 0.030], phases_deg: [0, 30, 60, 90, 120] } },
-      { index: 2, layer: 2, r_inner: 2.45, r0: 2.85,
-        rotation: { nominal_hz: 0.75, rate_tier_fps: 30, constellation: "d16psk", M: 16, gray: true, frames_per_symbol: 4, seed: 303 },
-        boundary: { harmonics: [1, 2, 3, 5, 8, 13, 20], amplitudes: [0.014, 0.018, 0.018, 0.018, 0.018, 0.018, 0.018], phases_deg: [0, 25, 50, 75, 100, 125, 150] } }
-    ];
-    if (overrides) deepMerge(p, overrides);
-    return p;
-  }
+  /* PRUNED 2026-08-21 (practitioner's ruling): profileV1, profileV2r20 and
+     profileV2r30 are gone. Every selectable standard is a mode-mismatch
+     surface, and mismatch — not optics — has cost three field trials; these
+     three bought nothing against that. Their clips are no longer decodable
+     without reviving the builders from git, which is the accepted price.
 
-  /* The 20 fps rate variant of v2 (walk-6 follow-on). Same geometry, same
-     rotation nominal_hz — the F1 flicker report is seconds-denominated, so it
-     is IDENTICAL to v2's — and the same frames_per_symbol, so the symbol rate
-     rises 3.75 → 5 sym/s (+33%) on every ring. 20 divides the 60 Hz refresh
-     (each frame holds exactly 3 vsyncs; 24 does not divide 60, which is why
-     20 goes first). Against 30 fps capture each emission frame gets 1.5 looks:
-     worst-phase cameras leave alternate frames with only a TORN look, so this
-     variant stands on F2 row-time repair where v2 stood on duplicate
-     selection. Slip margin improves (per-frame nominal advance shrinks 15/20). */
-  function profileV2r20(overrides) {
-    var p = defaultProfile();
-    p.profile_version = "phase0-v2r20";
-    p.frame_rate_hz = 20;
-    for (var i = 0; i < p.annuli.length; i++) p.annuli[i].rotation.rate_tier_fps = 20;
-    if (overrides) deepMerge(p, overrides);
-    return p;
-  }
+     defaultProfile (v2 @15) STAYS: it is not legacy but the TEST SUBSTRATE,
+     exercising sample/register/demap/rowtime/harvest through a simpler profile
+     on all three suite pages, with T2b's acuity regimes calibrated against its
+     numbers.
 
-  /* The 30 fps rate variant — REQUIRES 60 fps capture (the 24 fps design
-     note's condition, satisfied the clean way): 60/30 = the exact 2-looks-
-     per-frame geometry the proven 15@30 tear defense was designed around,
-     with duplicate SELECTION carrying tears again (rowtime stays backstop).
-     Same nominal_hz (flicker identical), same frames_per_symbol → symbol
-     rate 3.75 → 7.5 sym/s (+100% on every ring, droplet rate included);
-     slip margin improves further (L0 per-frame advance 81° → 63°). 30
-     divides the 60 Hz refresh (2 vsyncs/frame). Costs are capture-side and
-     physical: 1/60 s exposure halves per-frame light, 60 fps halves
-     per-frame codec bitrate — film LIT and well-framed. */
-  function profileV2r30(overrides) {
-    var p = defaultProfile();
-    p.profile_version = "phase0-v2r30";
-    p.frame_rate_hz = 30;
-    for (var i = 0; i < p.annuli.length; i++) p.annuli[i].rotation.rate_tier_fps = 30;
-    if (overrides) deepMerge(p, overrides);
-    return p;
-  }
+     Coverage that left with them, recorded rather than quietly transplanted:
+     T19b's 20@30 worst phase — alternate frames torn with NO clean duplicate to
+     select — was the hardest exercise of the rowtime repair path, and that
+     regime can still arise in the field through dropped frames at any rate. It
+     wants a test authored on its own terms at v3, not a re-tuned transplant.
+
+     harness/pool36.html carried a frozen literal instead (preservation
+     artifact: the mined droplets outlive the builder that framed them). */
 
   /* THE V3 CONTRACT (frozen 2026-08-16, corpus technical/phryctoros-v3-contract.md):
      trough-packed tiles on a self-anchoring calibration plate. Four boundary-CPM
@@ -594,7 +558,7 @@
      units, measured every frame with nothing to average — no fiducial-width
      anchor, QR-free steady state. Presets (§2): ONE toggle, session-atomic;
      the base edge never upgrades (must-decode tier + the M≤4 carrier gate). */
-  /* preset: undefined | "high-rate" | "classic" | "high-rate-classic"
+  /* preset: undefined | "high-rate" | "classic" | "paced" | "high-rate-paced"
      ("inverted" is kept as an alias for the default — it names what the
      default now IS, and older settings strings still carry it.)
 
@@ -609,19 +573,41 @@
      (coarse and robust near centre, fine outward) for the v4 plate.
 
      "classic" keeps the ORIGINAL ladder so pre-flip captures still decode —
-     the profile is the CONTRACT, exactly as profileV1 preserves the v1 layer
-     order. High-rate inverts too (my reading of "the inverted structure",
+     the profile is the CONTRACT. It is the one legacy preset kept through the
+     2026-08-21 prune, because field37–44 are the pre-saddle angle ladder and
+     that autopsy is still queued. High-rate inverts too (my reading of "the inverted structure",
      flagged: the radial argument is preset-independent and a split family
      would leave the two presets with opposite radial semantics; revert by
      making `inv` false for hi if that reading is wrong). */
   function profileV3(preset, overrides) {
-    var hi = preset === "high-rate" || preset === "high-rate-classic";
-    var classic = preset === "classic" || preset === "high-rate-classic";
+    // PACED IS THE STANDARD (practitioner's ruling, 2026-08-23): per-ring
+    // frames_per_symbol is the v3.1 definition, not a mode — so (family,
+    // preset) fully determines every ring's F, discovery has nothing extra
+    // to learn, and the envelope's b[2] stays the one toggle it was frozen
+    // as. "flat" is the explicit legacy opt-out ("flat", "high-rate-flat")
+    // for pre-ruling captures, which decode by deliberate profile selection,
+    // never by discovery. "paced" remains accepted as a no-op alias so the
+    // trial-era names (v3p / v3hrp, and their pasted settings strings) keep
+    // meaning what they meant. "classic" stays flat + the pre-flip ladder.
+    var ps = String(preset == null ? "" : preset);
+    var pacedExplicit = ps.indexOf("paced") >= 0;
+    var flat = ps.indexOf("flat") >= 0;
+    var base = ps.replace(/-?paced/, "").replace(/-?flat/, "").replace(/^-+|-+$/g, "");
+    // "high-rate-classic" was pruned 2026-08-21: a combination that existed only
+    // because two flags composed, never filmed, and it broke the envelope's
+    // high-rate toggle (envelopeBytes b[2] compares preset exactly).
+    var hi = base === "high-rate";
+    var classic = base === "classic";
     var inv = !classic;
+    var paced = flat ? false : (classic ? pacedExplicit : true);
     var p = {
-      profile_version: hi ? (classic ? "v3-hr-classic" : "v3-hr") : (classic ? "v3-classic" : "v3"),
+      // hi and classic are mutually exclusive since the high-rate-classic prune.
+      // Version strings tell the truth across the ruling boundary: the paced
+      // default is v3.1; the historical strings "v3" / "v3-hr" keep naming
+      // exactly the flat profiles that recorded them in old ledgers.
+      profile_version: hi ? "v3-hr" : (classic ? "v3-classic" : "v3"),
       units: "flat-circle-3.00",
-      preset: hi ? (classic ? "high-rate-classic" : "high-rate") : (classic ? "resilient-classic" : "resilient"),
+      preset: hi ? "high-rate" : (classic ? "resilient-classic" : "resilient"),
       frame_rate_hz: 30,            // §7: 30 fps emission @ 60 fps capture baseline
       render: {
         size_px: 1024,
@@ -636,7 +622,11 @@
       // original ladder, since a clip filmed then used both. Decoders fall
       // back automatically on a validated mismatch, so pre-flip captures need
       // no setting — the version is a default, not a requirement.
-      carriage: { droplet_bits: hi ? 48 : 24, self_framing: true, subset_version: classic ? 1 : 2 },
+      // carousel_version 2 sizes each ring's carousel to the LOOP rather than to
+      // a flat 2K+12, so a fast ring's surplus carries distinct droplets instead
+      // of repeats. classic keeps 1 so pre-change scenes re-emit bit-identically.
+      carriage: { droplet_bits: hi ? 48 : 24, self_framing: true, subset_version: classic ? 1 : 2,
+                  carousel_version: classic ? 1 : 2 },
       countdown: { freeze_s: 3, loop_s: 60 },  // §6: defaults 3/60, floor freeze ≥ 1
       // §6 envelope QR (recurring, internal format, dark-on-gray). Width chosen so
       // the quiet-inclusive half-DIAGONAL stays inside the 0.90 donut budget.
@@ -730,6 +720,40 @@
         p.annuli[iv].boundary = srcC.boundary;
         p.annuli[iv].layer = iv;
       }
+    }
+    // PACED RINGS — the practitioner's ruling that the inner data ring's
+    // frames_per_symbol shackles come off, the coming dedicated signal ring
+    // taking over the low-rate robust duty.
+    //
+    // A droplet occupies D·F frames, D = ceil(droplet_bits / log2 M). Under a
+    // FLAT F the base ring's droplets are the longest — lowest M means the most
+    // symbols per droplet — so the base is simultaneously the slowest to deliver
+    // a carousel AND the one starved inside a harvest window. That starvation is
+    // measured, not assumed: ~2.5 droplets per 8 s window against crcAlign's
+    // ≥2-pass bar was the diagnosed cause of a0's lock fragility, and finer
+    // sampling did not move it.
+    //
+    // Pacing sets each ring's F to equalise droplet DURATION at the FASTEST
+    // ring's, so nothing slows down and the slow rings speed up. F is already
+    // per-annulus everywhere in emission and demod, it is FLICKER-NEUTRAL (it
+    // changes how often a data step lands, never nominal_hz, so the
+    // photosensitivity table is untouched), and lag normalisation made mixed-F
+    // decoding safe. The cost is real and bounded: fewer frames in demap's
+    // least-squares slope fit, Var(Δθ) = 12F·σ²/((F+1)(F+2)), so F 4→2 is ~0.97
+    // dB worse per symbol — spent on the ring with the WIDEST decision threshold
+    // (M=4 ⟹ π/4, against π/16 outward) and the highest per-harmonic SNR.
+    if (paced) {
+      var dbits = p.carriage.droplet_bits;
+      var Dof = function (a) { return Math.ceil(dbits / Math.round(Math.log(a.rotation.M) / Math.LN2)); };
+      var target = Infinity;
+      p.annuli.forEach(function (a) { target = Math.min(target, Dof(a) * a.rotation.frames_per_symbol); });
+      p.annuli.forEach(function (a) { a.rotation.frames_per_symbol = Math.max(1, Math.round(target / Dof(a))); });
+      // Marker, not a preset rename: profile.preset is read as an envelope
+      // toggle (emission.envelopeBytes b[2]) and must keep its exact spelling.
+      p.carriage.paced = true;
+      // classic+paced stays a suffix (a compat curiosity, not a standard);
+      // the v3.1 names are reserved for the current-ladder standard profiles.
+      p.profile_version = classic ? p.profile_version + "-paced" : (hi ? "v3.1-hr" : "v3.1");
     }
     if (overrides) deepMerge(p, overrides);
     return p;
@@ -875,7 +899,7 @@
     return { ok: errors.length === 0, errors: errors, warnings: warnings, flicker: flicker };
   }
 
-  var API = { defaultProfile: defaultProfile, profileV1: profileV1, profileV2r20: profileV2r20, profileV2r30: profileV2r30, profileV3: profileV3, isV3: isV3, bandBoundary: bandBoundary, validate: validate, sumAmp: sumAmp, sampleWindow: sampleWindow, deepMerge: deepMerge };
+  var API = { defaultProfile: defaultProfile, profileV3: profileV3, isV3: isV3, bandBoundary: bandBoundary, validate: validate, sumAmp: sumAmp, sampleWindow: sampleWindow, deepMerge: deepMerge };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   global.OC = global.OC || {}; global.OC.profile = API;
 })(typeof window !== "undefined" ? window : globalThis);
@@ -2181,24 +2205,32 @@
     // plate only for now (the 6-up constellation rides the tile-keyed work);
     // any failure falls through to the rings/finder ladder unchanged.
     if (isV3reg && pV3.plate.corner_style === "quadrant" && !opts.noSaddles) {
-      var layoutN = pV3.tiling || 1;
-      if (layoutN <= 1) {
-        var sres = SD().solve(img, pV3, opts.saddleOpts || {});
-        if (sres) {
-          var gS = G();
-          var pC = gS.applyH(sres.H, 0, 0);
-          var pX = gS.applyH(sres.H, pV3.flat_circle_r, 0);
-          var pY = gS.applyH(sres.H, 0, pV3.flat_circle_r);
-          var sEff = (Math.hypot(pX[0] - pC[0], pX[1] - pC[1]) +
-                      Math.hypot(pY[0] - pC[0], pY[1] - pC[1])) / 2;
-          var mkS = function (ux, uy) { var pq = gS.applyH(sres.H, ux, uy); return { x: pq[0], y: pq[1], unit: sEff / 25 }; };
-          var emS = {
-            H: sres.H, moduleSizePx: sEff / 25, fiducialWidthPx: sEff, chirality: 1,
-            corners: { TL: mkS(-FC, -FC), TR: mkS(FC, -FC), BL: mkS(-FC, FC) },
-            method: "saddles", timingScore: sres.bandContrast, structureScore: 1 - sres.phiErr / 0.7
-          };
-          return { emitters: [emS], candidates: [], method: "saddles" };
-        }
+      // TILED FRAMES REGISTER SADDLE-FIRST TOO (2026-08-22). This was gated on
+      // `tiling <= 1`, so a 6-up frame never attempted the saddle path and fell
+      // straight through to rings — the PRE-saddle ladder, with exactly the
+      // 30°/45° walls the saddle build was made to remove. saddle.solveAll
+      // greedy-peels one constellation per plate; see there for why proximity
+      // clustering does not work (inter-tile corner spacing is SMALLER than
+      // intra-tile). Any failure still falls through unchanged.
+      var gS = G();
+      var emitFromSolve = function (sres) {
+        var pC = gS.applyH(sres.H, 0, 0);
+        var pX = gS.applyH(sres.H, pV3.flat_circle_r, 0);
+        var pY = gS.applyH(sres.H, 0, pV3.flat_circle_r);
+        var sEff = (Math.hypot(pX[0] - pC[0], pX[1] - pC[1]) +
+                    Math.hypot(pY[0] - pC[0], pY[1] - pC[1])) / 2;
+        var mkS = function (ux, uy) { var pq = gS.applyH(sres.H, ux, uy); return { x: pq[0], y: pq[1], unit: sEff / 25 }; };
+        return {
+          H: sres.H, moduleSizePx: sEff / 25, fiducialWidthPx: sEff, chirality: 1,
+          corners: { TL: mkS(-FC, -FC), TR: mkS(FC, -FC), BL: mkS(-FC, FC) },
+          method: "saddles", timingScore: sres.bandContrast, structureScore: 1 - sres.phiErr / 0.7
+        };
+      };
+      var sList = SD().solveAll(img, pV3, opts.saddleOpts || {});
+      if (sList && sList.length) {
+        var emsS = [];
+        for (var si = 0; si < sList.length; si++) emsS.push(emitFromSolve(sList[si]));
+        return { emitters: emsS, candidates: [], method: "saddles" };
       }
     }
     // qr_persistent (diagnostic): the QR is guaranteed present, so the
@@ -2503,11 +2535,15 @@
     };
   }
 
-  /* Decoded beacon symbols → the control carousel's bytes. Framing per the
-     emitter (emission.beaconSymbols): magic 0xB3, len, envelope bytes, CRC8
-     over everything before it; the carousel cycles, so scan every byte offset
-     in the reassembled absolute stream. Erasures poison their byte. */
-  function beaconDecode(decoded, lag, M) {
+  /* Decoded beacon symbols → EVERY CRC8-passing control frame in the window.
+     Framing per the emitter (emission.beaconSymbols): magic 0xB3, len,
+     envelope bytes, CRC8 over everything before it; the carousel cycles, so
+     scan every byte offset in the reassembled absolute stream. Erasures
+     poison their byte. `lag` only matters modulo the byte grid (8 bits at
+     M=2, 4 symbols at M=4) — the magic scan absorbs the rest — which is what
+     lets beaconAlign frame a capture that never saw the preamble. Frames
+     come back in stream order; each is { envelope, at, len }. */
+  function beaconFrames(decoded, lag, M) {
     var F = (typeof module !== "undefined" && module.exports) ? require("./fountain.js") : global.OC.fountain;
     var bitsPer = M === 4 ? 2 : 1;
     var bits = {};
@@ -2533,6 +2569,7 @@
       }
       bytes[k] = ok ? val : null;
     }
+    var out = [];
     for (var at = 0; at + 2 < nBytes; at++) {
       if (bytes[at] !== 0xB3) continue;
       var len = bytes[at + 1];
@@ -2546,13 +2583,153 @@
       if (!whole) continue;
       var u8 = new Uint8Array(frame);
       if (F.crc8(u8, u8.length - 1) !== u8[u8.length - 1]) continue;
-      return { envelope: u8.subarray(2, 2 + len), at: at, len: len };
+      out.push({ envelope: u8.subarray(2, 2 + len), at: at, len: len });
     }
-    return null;
+    return out;
+  }
+
+  /* First framed envelope in the window (the original single-frame read). */
+  function beaconDecode(decoded, lag, M) {
+    var fr = beaconFrames(decoded, lag, M);
+    return fr.length ? fr[0] : null;
+  }
+
+  /* The frames an alignment actually yields: a FOLDED alignment (beaconAlign
+     below) carries its synthesised carousel ring, and the frame lives in the
+     doubled ring, not in the contiguous stream; anything else reads the
+     stream at the alignment's bit phase. */
+  function beaconFramesFor(decoded, align, M) {
+    if (align && align.folded && align.ring) {
+      var P = align.ring.length, doubled = new Array(2 * P);
+      for (var j = 0; j < 2 * P; j++) {
+        var sv = align.ring[j % P];
+        doubled[j] = { s: (sv === undefined || sv === null) ? null : sv };
+      }
+      return beaconFrames(doubled, align.lag, M);
+    }
+    return beaconFrames(decoded, align ? align.lag : 0, M);
+  }
+
+  /* §6 envelope, internal format v1 (emission.envelopeBytes is the writer):
+     version · family · flags (bit0 = high-rate) · session32 · K · len ·
+     pcrc16 · capability · freeze (ds) · loop (s) · tiling · 2 reserved ·
+     CRC16 over bytes 0–17. Returns the fields, or null when the bytes are
+     not a sealed v1 envelope (wrong length, version, or CRC). */
+  function parseEnvelope(env) {
+    var F = (typeof module !== "undefined" && module.exports) ? require("./fountain.js") : global.OC.fountain;
+    if (!env || env.length !== 20 || env[0] !== 1) return null;
+    var crc = F.crc16(env.subarray ? env.subarray(0, 18) : Array.prototype.slice.call(env, 0, 18));
+    if (((env[18] << 8) | env[19]) !== crc) return null;
+    return {
+      version: env[0], family: env[1], flags: env[2],
+      preset: (env[2] & 1) ? "high-rate" : "resilient",
+      session32: ((env[3] << 24) | (env[4] << 16) | (env[5] << 8) | env[6]) >>> 0,
+      K: env[7], len: (env[8] << 8) | env[9], pcrc: (env[10] << 8) | env[11],
+      capability: env[12], freeze_s: env[13] / 10, loop_s: env[14], tiling: env[15],
+      reserved: [env[16], env[17]]
+    };
+  }
+
+  /* FRAMING-BASED BEACON ALIGNER — the mid-loop join. The control carousel
+     is periodic and self-delimiting, so a capture that never saw the preamble
+     can still frame it: the data rings' crcAlign applied to a fixed frame.
+     Two unknowns, as always — the sub-symbol frame offset o ∈ [0, F) and the
+     bit phase (the byte grid: 8 phases at M=2, 4 at M=4; any whole-byte lag
+     is absorbed by the magic scan). Decode at each offset, try each phase,
+     collect CRC8-passing frames, and ACCEPT only on evidence stronger than
+     one 16-bit pass (magic + CRC8 is a 1-in-65536 chance PER candidate
+     position and a window tries ~10³ of them): a frame that also passes the
+     envelope's own CRC16 (24 check bits — the v1 envelope carries it), or
+     ≥2 frames with identical bytes (the carousel repeating), or opts.verify
+     saying yes. opts.minFrames = 1 lowers the bar explicitly (tests with
+     synthetic short envelopes). Score = passing frames, verified first;
+     ties break to the lower offset. Returns { offset, lag, score, max,
+     method: "framed", verified } or null — lag is the BIT PHASE, which is all
+     beaconDecode needs, not an emission-symbol count. */
+  function beaconAlign(track, annulus, profile, baseOverride, opts) {
+    var demap = (typeof module !== "undefined" && module.exports) ? require("./demap.js") : global.OC.demap;
+    opts = opts || {};
+    var F = annulus.rotation.frames_per_symbol, M = annulus.rotation.M;
+    var bitsPer = M === 4 ? 2 : 1, phases = 8 / bitsPer;
+    var base = (baseOverride !== undefined && baseOverride !== null) ? baseOverride : (track.firstValid || 0);
+    var verify = opts.verify || function (env) { return !!parseEnvelope(env); };
+    var minFrames = opts.minFrames || 2;
+    // THE FOLD. The carousel is periodic, so a window holding ≥1 period has
+    // seen EVERY carousel position even when no single frame lies contiguous
+    // inside it (the 5 ft field clip: 246 clean symbols, period 184, no
+    // frame — the frame start fell past symbol 62). Fold the symbols modulo
+    // the period, erase positions whose repeats disagree, and scan the
+    // doubled ring — a frame starting anywhere is then contiguous. Needs the
+    // period: the v1 envelope frames as 23 bytes (opts.frameBytes overrides,
+    // ≤ 0 disables); a wrong period merely yields no frame. Folded frames are
+    // SYNTHESISED, so they are accepted only when verify says yes (the CRC16
+    // seal) — repeat-agreement is reported, not trusted alone.
+    var frameBytes = opts.frameBytes !== undefined ? opts.frameBytes : 23;
+    var Psym = frameBytes > 0 ? Math.round(frameBytes * 8 / bitsPer) : 0;
+    var best = null;
+    var consider = function (cand) {
+      if (!best || (cand.verified && !best.verified) ||
+          (cand.verified === best.verified && !cand.folded && best.folded) ||
+          (cand.verified === best.verified && !!cand.folded === !!best.folded && cand.score > best.score))
+        best = cand;
+    };
+    for (var oi = 0; oi < F; oi++) {
+      var off = base + oi;
+      var decoded = demap.decode(track, annulus, profile, off);
+      if (!decoded.length) continue;
+      for (var ph = 0; ph < phases; ph++) {
+        var frames = beaconFrames(decoded, ph, M);
+        if (!frames.length) continue;
+        var verified = false, agree = 1;
+        for (var q = 0; q < frames.length; q++) {
+          if (verify(frames[q].envelope)) { verified = true; break; }
+        }
+        if (!verified && frames.length >= 2) {
+          // identical bytes across repeats — the carousel's own redundancy
+          var counts = {};
+          for (var r = 0; r < frames.length; r++) {
+            var key = Array.prototype.join.call(frames[r].envelope, ",");
+            counts[key] = (counts[key] || 0) + 1;
+            if (counts[key] > agree) agree = counts[key];
+          }
+        }
+        if (!verified && agree < minFrames) continue;
+        consider({ offset: off, lag: ph, score: frames.length, max: decoded.length, method: "framed", verified: verified });
+      }
+      if (best && best.offset === off && !best.folded) continue; // contiguous frame at this offset — no fold needed
+      if (Psym > 0 && decoded.length >= Psym) {
+        var ring = new Array(Psym), seen = 0, compared = 0, agreed = 0;
+        for (var di = 0; di < decoded.length; di++) {
+          var sv = decoded[di].s;
+          if (sv === null || sv === undefined) continue;
+          var pos = di % Psym;
+          if (ring[pos] === undefined) { ring[pos] = sv; seen++; }
+          else if (ring[pos] !== null) {
+            compared++;
+            if (ring[pos] === sv) agreed++; else ring[pos] = null; // repeats disagree → erase
+          }
+        }
+        if (seen < Psym) continue;
+        var doubled = new Array(2 * Psym);
+        for (var dj = 0; dj < 2 * Psym; dj++) doubled[dj] = { s: ring[dj % Psym] === undefined ? null : ring[dj % Psym] };
+        for (var ph2 = 0; ph2 < phases; ph2++) {
+          var ff = beaconFrames(doubled, ph2, M);
+          for (var fq = 0; fq < ff.length; fq++) {
+            if (!verify(ff[fq].envelope)) continue;
+            consider({ offset: off, lag: ph2, score: 1, max: decoded.length, method: "framed", verified: true,
+                       folded: true, foldAgree: compared ? Math.round(1000 * agreed / compared) / 1000 : null, foldCompared: compared,
+                       ring: ring });
+            break;
+          }
+        }
+      }
+    }
+    return best;
   }
 
   var API = { findBullseye: findBullseye, plateSolve: plateSolve, fitCircleEdge: fitCircleEdge,
-              beaconAnnulus: beaconAnnulus, beaconDecode: beaconDecode };
+              beaconAnnulus: beaconAnnulus, beaconDecode: beaconDecode, beaconFrames: beaconFrames,
+              beaconFramesFor: beaconFramesFor, beaconAlign: beaconAlign, parseEnvelope: parseEnvelope };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   global.OC = global.OC || {}; global.OC.plate = API;
 })(typeof window !== "undefined" ? window : globalThis);
@@ -2595,6 +2772,12 @@
   function G() { return (typeof module !== "undefined" && module.exports) ? require("./geom.js") : global.OC.geom; }
 
   var NS = 16, RESP_RHO = 5;
+  // Förstner refinement window cap. The window is meant to sit INSIDE the swap
+  // circle (0.9·rFlip), but the cap stops it scaling once the mark is large —
+  // so at big mark sizes the window covers a shrinking fraction of the target.
+  // Overridable per call (opts.forstnerRadMax) so the cap can be measured
+  // rather than assumed; 14 is the shipped default.
+  var FORSTNER_RAD_MAX = 14;
   var COS = [], SIN = [], C1R = [], C1I = [], C2R = [], C2I = [], C3R = [], C3I = [];
   (function () {
     for (var k = 0; k < NS; k++) {
@@ -2642,6 +2825,34 @@
     return { mean: m, rms: Math.sqrt(ss / NS),
              m1: Math.hypot(a1r, a1i) * s, m2: Math.hypot(a2r, a2i) * s, m3: Math.hypot(a3r, a3i) * s,
              re2: a2r * s, im2: a2i * s, phi2: Math.atan2(a2i, a2r) };
+  }
+
+  /* Bilinear ×2, the pyramid's missing direction. downsample2 only ever makes
+     marks SMALLER, so the scan's finest probe is RESP_RHO at level 0 and any
+     swap-target under ~5 px radius in native pixels matches nothing at any
+     level — however sharp and well exposed it is. Upsampling is the only way to
+     hand the scan a smaller EFFECTIVE probe. Half-pixel centres (the -0.5/+0.5
+     convention) so an upsampled coordinate divided by 2 lands back on the
+     original sample grid. */
+  function upsample2(img) {
+    var w = img.w, h = img.h, d = img.data;
+    if (w < 2 || h < 2) return { w: w, h: h, data: new Float32Array(d) };
+    var w2 = w * 2, h2 = h * 2;
+    var out = { w: w2, h: h2, data: new Float32Array(w2 * h2) };
+    for (var y = 0; y < h2; y++) {
+      var sy = (y + 0.5) * 0.5 - 0.5, y0 = Math.floor(sy), fy = sy - y0;
+      if (y0 < 0) { y0 = 0; fy = 0; }
+      if (y0 > h - 2) { y0 = h - 2; fy = 1; }
+      var r0 = y0 * w, r1 = r0 + w, oo = y * w2;
+      for (var x = 0; x < w2; x++) {
+        var sx = (x + 0.5) * 0.5 - 0.5, x0 = Math.floor(sx), fx = sx - x0;
+        if (x0 < 0) { x0 = 0; fx = 0; }
+        if (x0 > w - 2) { x0 = w - 2; fx = 1; }
+        var a = d[r0 + x0], b = d[r0 + x0 + 1], c = d[r1 + x0], e = d[r1 + x0 + 1];
+        out.data[oo + x] = (a + (b - a) * fx) * (1 - fy) + (c + (e - c) * fx) * fy;
+      }
+    }
+    return out;
   }
 
   function downsample2(img) {
@@ -2842,7 +3053,7 @@
     phi2 = Math.atan2(Math.sin(phi2), Math.cos(phi2));
 
     // cross-selective Förstner, window inside the swap circle
-    var rad = Math.max(4, Math.min(14, 0.9 * rFlip));
+    var rad = Math.max(4, Math.min(opts.forstnerRadMax || FORSTNER_RAD_MAX, 0.9 * rFlip));
     var f1 = forstner(img, cx, cy, rad, true);
     if (!f1) return null;
     var f2 = forstner(img, f1.x, f1.y, rad, true) || f1;
@@ -2852,8 +3063,9 @@
 
   /* Pyramid detect: scan every level, map hits to full-res, verify + refine
      each at full res, dedupe. Strongest first. */
-  function detect(img, opts) {
-    opts = opts || {};
+  /* Candidate search over one image, coarsening pyramid only. detect() wraps
+     this with the finer rung — see there. */
+  function detectIn(img, opts) {
     var pyr = [img], maxLevels = opts.maxLevels || 4;
     while (pyr.length < maxLevels) {
       var top = pyr[pyr.length - 1];
@@ -2891,6 +3103,52 @@
     }
     out.sort(function (a, b) { return b.strength - a.strength; });
     return out;
+  }
+
+  /* THE FINER RUNG (2026-08-22, found by the range ladder).
+
+     The pyramid only coarsens, and RESP_RHO is a fixed 5 px, so the scan probes
+     effective swap radii of 5/10/20/40 px and CANNOT go below 5 px in native
+     pixels. Measured on the 1–5 ft ladder (high-rate paced, indoor-dim,
+     0.30 m emitter): 4-of-4 corners at 1 ft and 2 ft (fiducial 360.6 and
+     179.4 px), then 0, 1, 1 at 3, 4 and 5 ft — while the plate stayed sharp,
+     well exposed, and obviously legible by eye. The cliff was ours, not the
+     optics'. Re-running the same frames upsampled recovers every range:
+
+       range   1x   1.5x   2x   3x
+       2 ft     4     4     4    4
+       3 ft     0     4     4    4
+       4 ft     1     1     4    4
+       5 ft     1     2     4    4
+
+     So: scan normally, and only if the search comes up short, scan again on a
+     2x upsample and keep it if it does better. Same escalate-on-failure shape
+     the pre-scan already uses (800 -> 1600 -> native), and the near case — where
+     the normal pyramid already finds its corners — pays nothing at all.
+
+     NOT a contrast problem: floors of 0.015 / 0.008 / 0.004 returned identical
+     candidates and identical strengths to four decimals. The candidates were
+     never generated, so no threshold could have admitted them.
+
+     opts.wantCandidates (default 4 — a constellation needs four corners) sets
+     the bar; opts.upscale:false disables. Coordinates and radii come back in
+     ORIGINAL pixels, so callers are unaffected. */
+  function detect(img, opts) {
+    opts = opts || {};
+    var out = detectIn(img, opts);
+    var want = opts.wantCandidates || 4;
+    if (out.length >= want || opts.upscale === false) return out;
+    // Guard: transient, but 4x the pixels — decline absurd frames rather than
+    // thrash. The decode path runs on the pre-scan's crop, so this is small there.
+    if (4 * img.w * img.h > (opts.maxUpscalePx || 40e6)) return out;
+    var up = detectIn(upsample2(img), opts);
+    if (up.length <= out.length) return out;
+    for (var i = 0; i < up.length; i++) {
+      up[i].x *= 0.5; up[i].y *= 0.5;          // back to original pixels
+      up[i].rFlip *= 0.5; up[i].R *= 0.5;      // radii scale with them
+      up[i].upscaled = true;                   // phi2 is an angle; strength/rms/cond are responses
+    }
+    return up;
   }
 
   function jacobianAt(H, x, y) {
@@ -2949,7 +3207,14 @@
     var inMean = ringMeanH(img, H, flatR * 0.95, g);
     var outMean = ringMeanH(img, H, flatR + 0.06, g);
     if (inMean === null || outMean === null) return null;
-    var bandContrast = outMean - inMean;
+    // NORMALIZE BY img.norm — the convention this codebase already holds
+    // (sample.js: "Uint8 camera frames carry norm:255; synthetic Float32
+    // default 1"; plate.js and register.js both divide before thresholding).
+    // saddle.js did not, so this gate compared a 0-255 quantity against a 0-1
+    // threshold: ACTIVE on synthetic frames (where T24f exercises it) and
+    // INERT on every camera frame. Measured on field footage: raw ~70, i.e.
+    // 0.275 normalized — the right value, against a threshold 4.5x below it.
+    var bandContrast = (outMean - inMean) / (img.norm || 1);
     if (bandContrast < (opts.bandContrastMin !== undefined ? opts.bandContrastMin : 0.06)) return null;
     var total = bandContrast + 0.3 * (0.7 - phiErr);
     return { total: total, H: H, phiErr: phiErr, bandContrast: bandContrast };
@@ -2996,6 +3261,53 @@
     return constellation(cands, profile, img, opts);
   }
 
+  /* MULTI-PLATE SOLVE (2026-08-22) — the tiled case, which registration has
+     been refusing outright: register.js gated saddle-first on `tiling <= 1`, so
+     a 6-up frame never attempted it and fell straight through to the rings
+     ladder — the pre-saddle path, with the 30°/45° walls the saddle build
+     existed to knock down.
+
+     GREEDY PEEL, NOT SPATIAL CLUSTERING. Proximity is the obvious approach and
+     it is wrong here: within a plate the corner marks sit 5.3 u apart (2 × 2.65),
+     while the NEAREST corner of the adjacent plate is only 1.9 u away
+     (pitch 7.2 − 2 × 2.65). Inter-tile spacing is SMALLER than intra-tile, so
+     distance clustering would group across plates. Geometry separates them,
+     not proximity — so take the best constellation, remove its four corners
+     from the pool, and repeat.
+
+     Cross-tile quads are refused by the band-contrast gate: four corners
+     spanning two plates imply a centre in the gutter, so ringMeanH reads
+     background at both flat_circle_r radii and the contrast collapses. Worth
+     knowing that gate only became live on camera frames with the img.norm fix
+     — before it a 0-255 quantity was compared against a 0-1 threshold and could
+     never fail, which would have let cross-tile quads through unchallenged. */
+  function solveAll(img, profile, opts) {
+    opts = opts || {};
+    var want = Math.max(1, opts.maxPlates || (profile.tiling || 1));
+    if (want <= 1) { var one = solve(img, profile, opts); return one ? [one] : []; }
+    var dOpts = {}, k;
+    for (k in opts) dOpts[k] = opts[k];
+    dOpts.maxCandidates = opts.maxCandidates || Math.max(24, 6 * want);
+    dOpts.wantCandidates = opts.wantCandidates || 4 * want;   // the finer rung's bar, per plate
+    var pool = detect(img, dOpts);
+    var cOpts = {};
+    for (k in opts) cOpts[k] = opts[k];
+    // The 4-subset search is O(n^4), so the cap matters: 4 corners per plate
+    // plus slack, bounded so a large `tiling` cannot detonate the search.
+    cOpts.maxConstellation = opts.maxConstellation || Math.min(32, 4 * want + 4);
+    var out = [];
+    for (var t = 0; t < want && pool.length >= 4; t++) {
+      var con = constellation(pool, profile, img, cOpts);
+      if (!con) break;
+      out.push(con);
+      var used = con.points, next = [];
+      for (var i = 0; i < pool.length; i++)
+        if (used.indexOf(pool[i]) < 0) next.push(pool[i]);
+      pool = next;
+    }
+    return out;
+  }
+
   /* Per-frame solve-as-tracker: project the 4 model corners through the
      current H, refine each with cross-selective Förstner, light-verify the
      anti-phase signature at two radii, re-DLT. All four must hold — a miss
@@ -3014,7 +3326,7 @@
       var J = jacobianAt(Hprev, model[c][0], model[c][1]);
       if (J.det <= 0) return null;
       var rFlipPx = 0.5 * cR * Math.sqrt(J.det);
-      var rad = Math.max(4, Math.min(14, 0.9 * rFlipPx));
+      var rad = Math.max(4, Math.min(opts.forstnerRadMax || FORSTNER_RAD_MAX, 0.9 * rFlipPx));
       var f1 = forstner(img, p[0], p[1], rad, true);
       if (!f1) return null;
       var f2 = forstner(img, f1.x, f1.y, rad, true) || f1;
@@ -3032,7 +3344,7 @@
   }
 
   var API = { detect: detect, measureAt: measureAt, constellation: constellation,
-              solve: solve, trackSolve: trackSolve, ringHarm: ringHarm, forstner: forstner };
+              solve: solve, solveAll: solveAll, trackSolve: trackSolve, ringHarm: ringHarm, forstner: forstner };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   global.OC = global.OC || {}; global.OC.saddle = API;
 })(typeof window !== "undefined" ? window : globalThis);
@@ -4382,7 +4694,11 @@
     // original and stays the DEFAULT for any profile that does not declare
     // one, so every archived clip and every legacy profile decodes unchanged.
     var sv = (profile.carriage && profile.carriage.subset_version) || 1;
-    return { dropletBits: db, dataBits: db - 8, dataBytes: (db - 8) / 8, subsetVersion: sv };
+    // carousel_version selects how long each ring's carousel is (see
+    // ringCarouselLen). 1 is the original fixed 2K+12 and stays the DEFAULT for
+    // any profile that does not declare one.
+    var cv = (profile.carriage && profile.carriage.carousel_version) || 1;
+    return { dropletBits: db, dataBits: db - 8, dataBytes: (db - 8) / 8, subsetVersion: sv, carouselVersion: cv };
   }
   // D = symbols per droplet. Ceil: droplet_bits divisible by 12 covers the
   // 2/3/4-bit constellations exactly; M=32 (5 bits, the v3 high-rate preset)
@@ -4396,6 +4712,48 @@
   var HEADER_EVERY = 8;
   function isHeaderSlot(c) { return c % HEADER_EVERY === 0; }
   function carouselLen(K) { return 2 * K + 12; }
+
+  /* PER-RING carousel length (carousel_version 2).
+
+     v1 gave every ring the same 2K+12 droplets. But D varies with M, so a ring's
+     carousel period — (preamble + L·D)·F frames — varies too, and the fast rings
+     come around long before the loop ends: measured at the shipped defaults
+     (v3 resilient, 60 s loop, K=16), the M=16 rings finish their 44 droplets at
+     36 s and spend the remaining 21 s re-sending, while the base ring never
+     reaches its own 44 at all.
+
+     v2 extends each ring's carousel to cover the loop, so that surplus buys
+     DISTINCT droplets instead of repeats — strictly more information into the
+     peel at identical rate, amplitude and symbol count. It never SHORTENS a
+     carousel (max with the 2K+12 floor), so a ring too slow to finish is left
+     exactly as it was.
+
+     The decoder needs no version switch and no knowledge of L: it derives c from
+     the symbol position alone, and collect() checksums [c, ...bytes] — the
+     droplet INDEX is bound into the CRC. That binding is what keeps v1 SAFE
+     rather than merely lucky: a re-sent droplet read at a shifted position fails
+     CRC8 and is discarded, so it can never enter the peel under a wrong subset.
+     The post-wrap airtime is therefore not corrupt, it is DEAD. Measured on the
+     fast ring at the shipped defaults: 70 droplet slots fit inside the loop, v1
+     fills 44 of them and the remaining 26 yield nothing at all; v2 fills 70.
+     (Reading such a window through crcAlign rather than at absolute framing
+     lands on the aliased-down lag instead, which recovers them as duplicates —
+     no new information either way. Wasted, not wrong.) */
+  function ringCarouselLen(annulus, profile, g, K) {
+    var base = carouselLen(K);
+    var cd = profile.countdown;
+    if (g.carouselVersion !== 2 || !cd) return base;
+    var fps = profile.frame_rate_hz;
+    var loopF = Math.max(2, Math.round(cd.loop_s * fps));
+    var freezeF = Math.min(loopF - 1, Math.round(cd.freeze_s * fps));
+    // Mirrors emission.timeline/buildSchedule exactly: the freeze is carved OUT
+    // of the loop, and buildSchedule sizes itself ceil(frames/F)+1 symbols.
+    var symTotal = Math.ceil(Math.max(1, loopF - freezeF) / annulus.rotation.frames_per_symbol) + 1;
+    var symData = Math.max(0, symTotal - profile.preamble_symbols);
+    // Ceil so the droplet straddling the loop's end is a FRESH one rather than a
+    // wrap back to c = 0 (it is truncated either way; only its identity differs).
+    return Math.max(base, Math.ceil(symData / ringD(annulus, g)));
+  }
 
   /* Degree + subset for LT droplet c (c ≥ 1), deterministic from ring seed.
      Droplets c = 1..min(3,K) are forced degree-1 singles of blocks 0..2 —
@@ -4555,16 +4913,21 @@
     if (tb.K > 200) throw new Error("payload too large: K=" + tb.K + " blocks (cap 200 — " + (200 * g.dataBytes) + " bytes at this droplet size)");
     var L = carouselLen(tb.K);
     var tShift = opts && opts.tile ? opts.tile : 0;
+    var Ls = [];
     var carousels = profile.annuli.map(function (a) {
       var D = ringD(a, g);
-      var syms = new Uint8Array(L * D);
-      for (var c = 0; c < L; c++) {
+      var Lr = ringCarouselLen(a, profile, g, tb.K);
+      Ls.push(Lr);
+      var syms = new Uint8Array(Lr * D);
+      for (var c = 0; c < Lr; c++) {
         var dr = dropletBytes(c, tb.blocks, tb.K, tileSeed(a.rotation.seed, tShift), payloadBytes, g);
         syms.set(bitsToSymbols(dr.data, dr.crc, a, g), c * D);
       }
       return syms;
     });
-    return { carousels: carousels, K: tb.K, L: L, geom: g, framed: framed, wireLen: payloadBytes.length };
+    // L stays the nominal 2K+12 (what the carousel would be without the loop
+    // extension); Ls is what each ring actually carries.
+    return { carousels: carousels, K: tb.K, L: L, Ls: Ls, geom: g, framed: framed, wireLen: payloadBytes.length };
   }
 
   /* Decoder side: decoded symbol list (+erasures) at a known lag → verified
@@ -4871,7 +5234,7 @@
   }
 
   var API = { encodeCarousels: encodeCarousels, collect: collect, crcAlign: crcAlign, assemble: assemble,
-              geom: geom, ringD: ringD, carouselLen: carouselLen, subsetFor: subsetFor,
+              geom: geom, ringD: ringD, carouselLen: carouselLen, ringCarouselLen: ringCarouselLen, subsetFor: subsetFor,
               isHeaderSlot: isHeaderSlot, parseHeader: parseHeader, HEADER_EVERY: HEADER_EVERY,
               crc8: crc8, crc16: crc16, toGray: toGray, fromGray: fromGray,
               selfFrame: selfFrame, unframe: unframe, tileSeed: tileSeed,
@@ -4921,9 +5284,10 @@
       version: 1,
       profile_version: profile.profile_version,
       droplet_bits: F().geom(profile).dropletBits,
+      tiling: profile.tiling || 1, // tile-keyed rings: rings[tileSeed(seed, t)] (absent on old ledgers = 1)
       session: session || null,
       header: null,               // { K, len, hex } once any header droplet lands
-      rings: {},                  // rings[seed][c] = hex — witnessed droplets only
+      rings: {},                  // rings[seed][c] = hex — witnessed droplets only; seed is the TILE seed
       clips: []                   // provenance: { name, windows: [[t0,t1],…] } per clip harvested
     };
   }
@@ -4946,11 +5310,18 @@
   }
 
   /* Feed one window's decodeSequence result (payload mode) into the ledger.
-     Every CRC-passed droplet enters under its ring's seed; duplicates are
-     free (the same wire bytes recur every carousel period and across clips —
-     the dedupe key is (ring, c); session identity is the operator's ledger
-     choice pre-v3). The header is banked once: header BYTES are identical at
-     every header slot of every ring (they depend only on K + payload), so
+     Every CRC-passed droplet enters under its ring's TILE seed
+     (fountain.tileSeed(seed, tile) — tile 0 / untiled is the base seed, so
+     1-up ledgers are byte-identical to before); duplicates are free (the
+     same wire bytes recur every carousel period and across clips — the
+     dedupe key is (tile ring, c); session identity is the operator's ledger
+     choice pre-v3). Tiles carry the SAME blocks under DIFFERENT subsets, so
+     a tile-blind key would bank tile 3's slot c as tile 0's and poison the
+     peel — the 6-up harvest failure. An emitter whose tile could not be
+     placed (tile −1) is skipped: its seed cannot be named, so its droplets
+     cannot be banked honestly (the pipeline's own pool skips it the same
+     way). The header is banked once: header BYTES are identical at every
+     header slot of every ring and tile (they depend only on K + payload), so
      one sighting holds them all — the planner prices every header slot as
      held from that moment. A droplet_bits mismatch refuses the absorb
      rather than silently mixing framings. */
@@ -4958,11 +5329,17 @@
     var g = F().geom(profile);
     if (ledger.droplet_bits !== g.dropletBits)
       return { added: 0, dup: 0, conflicts: 0, quarantined: 0, mismatch: true };
-    var added = 0, dup = 0, conflicts = 0, quarantined = 0, consensus = null;
+    var added = 0, dup = 0, conflicts = 0, quarantined = 0, consensus = null, unplaced = 0;
     if (!res || res.error || !res.emitters)
       return { added: 0, dup: 0, conflicts: 0, quarantined: 0, lagConsensus: null };
     for (var e = 0; e < res.emitters.length; e++) {
       var annuli = res.emitters[e].annuli || [];
+      var tile = res.emitters[e].tile;
+      if (tile === -1) {
+        for (var ui = 0; ui < annuli.length; ui++) if (annuli[ui] && annuli[ui].droplets) unplaced += annuli[ui].droplets.length;
+        continue;
+      }
+      var tileIdx = tile > 0 ? tile : 0;
       // Lag consensus, IN FRAMES. Every ring shares the emission clock and the
       // capture start, so within a window every locked ring must agree about
       // WHEN the window began — but lag counts that ring's own SYMBOLS, and a
@@ -5012,7 +5389,7 @@
         }
         var pa = annulusByIndex(profile, a.annulus);
         if (!pa) continue;
-        var seed = pa.rotation.seed;
+        var seed = F().tileSeed(pa.rotation.seed, tileIdx);
         var ring = ledger.rings[seed] || (ledger.rings[seed] = {});
         for (var d = 0; d < a.droplets.length; d++) {
           var dr = a.droplets[d]; // { c, hex }
@@ -5030,19 +5407,45 @@
         }
       }
     }
-    return { added: added, dup: dup, conflicts: conflicts, quarantined: quarantined, lagConsensus: consensus };
+    return { added: added, dup: dup, conflicts: conflicts, quarantined: quarantined, unplaced: unplaced, lagConsensus: consensus };
   }
 
   /* The ledger in fountain.assemble's shape — the peel never knows whether a
-     droplet arrived this window, last window, or from another clip's take. */
+     droplet arrived this window, last window, from another clip's take, or
+     from another TILE: every held tile-ring goes in (tile-distinct seeds make
+     the pool collision-free, exactly as the pipeline's own multi-tile peel),
+     so a 6-up harvest peels across tiles the way a 6-up window does. */
   function ringsFor(ledger, profile) {
-    return profile.annuli.map(function (a) {
-      var seed = a.rotation.seed;
-      var held = ledger.rings[seed] || {};
+    var out = [];
+    for (var seedKey in ledger.rings) {
+      var held = ledger.rings[seedKey];
       var droplets = [];
       for (var c in held) droplets.push({ c: +c, bytes: hexToBytes(held[c]) });
-      return { seed: seed, droplets: droplets };
+      out.push({ seed: +seedKey, droplets: droplets });
+    }
+    // Stable order: the profile's base rings first (tile 0), then the rest
+    // ascending — the peel is order-independent, the receipt is not.
+    var baseSeeds = profile.annuli.map(function (a) { return a.rotation.seed; });
+    out.sort(function (x, y) {
+      var bx = baseSeeds.indexOf(x.seed), by = baseSeeds.indexOf(y.seed);
+      if (bx >= 0 && by >= 0) return bx - by;
+      if (bx >= 0) return -1;
+      if (by >= 0) return 1;
+      return x.seed - y.seed;
     });
+    return out;
+  }
+
+  /* Tile seeds that have banked anything for a given base ring — the tiles
+     the harvest has actually SEEN (a tile never in frame never enters the
+     union, so the planner never waits on what cannot be received). */
+  function seenTileSeeds(ledger, baseSeed) {
+    var tiles = ledger.tiling || 1, out = [];
+    for (var t = 0; t < tiles; t++) {
+      var s = F().tileSeed(baseSeed, t);
+      if (ledger.rings[s]) out.push(s);
+    }
+    return out;
   }
 
   /* EARLY EXIT's question, asked after every window: is the payload in hand?
@@ -5172,11 +5575,19 @@
     for (var li = 0; li < locks.length; li++) {
       var lock = locks[li];
       if (!lock) continue;
-      var held = ledger.rings[lock.seed] || {};
+      // Tiles share the clock, so slot c is simultaneous on every tile's
+      // ring; it is HELD only when every tile seen so far holds it (one
+      // tile's gap is still worth the seek). Untiled: the base seed alone.
+      var tileRings = seenTileSeeds(ledger, lock.seed).map(function (s) { return ledger.rings[s]; });
+      var heldAll = function (c) {
+        if (!tileRings.length) return false;
+        for (var ti = 0; ti < tileRings.length; ti++) if (tileRings[ti][c] === undefined) return false;
+        return true;
+      };
       var cA = Math.max(0, slotAtFrame(lock, f0));
       var cB = slotAtFrame(lock, f1);
       for (var c = cA; c <= cB; c++) {
-        if (held[c] !== undefined) continue;
+        if (heldAll(c)) continue;
         if (ledger.header && F().isHeaderSlot(c)) continue;
         var s = slotSpan(lock, c);
         var a = Math.max(f0, s[0]), b = Math.min(f1, s[1]);
@@ -5264,7 +5675,7 @@
 
   var API = {
     createLedger: createLedger, serializeLedger: serializeLedger, parseLedger: parseLedger,
-    counts: counts, absorb: absorb, ringsFor: ringsFor, tryPeel: tryPeel,
+    counts: counts, absorb: absorb, ringsFor: ringsFor, tryPeel: tryPeel, seenTileSeeds: seenTileSeeds,
     lockFrom: lockFrom, frameOfSymbol: frameOfSymbol, symbolAtFrame: symbolAtFrame,
     slotSpan: slotSpan, slotAtFrame: slotAtFrame, predictLag: predictLag,
     maxDropletFrames: maxDropletFrames,
@@ -5732,10 +6143,10 @@
         // constant across a ring's series (the DFT and row-time compare
         // contours frame to frame). opts.arcPitchPx overrides; ≤ 0 restores
         // the flat 256.
-        // V3 ONLY. v1/v2 are frozen profiles with an archived clip corpus
-        // (field1–44); their sampling stays bit-stable so those captures keep
-        // decoding exactly as recorded — the same contract logic that keeps
-        // profileV1 and profileV3("classic") around. (Enabling it for v2 moved
+        // V3 ONLY. v2 (defaultProfile) is a frozen profile with an archived clip
+        // corpus; its sampling stays bit-stable so those captures keep decoding
+        // exactly as recorded — the same contract logic that keeps
+        // profileV3("classic") around for field37–44. (Enabling it for v2 moved
         // T12's torn-duplicate stress case across its tolerance bar, which is
         // the archived-decode drift this rule exists to prevent.)
         var pitchPx = opts.arcPitchPx != null ? opts.arcPitchPx
@@ -5842,14 +6253,18 @@
             // mid-loop sync (fountain.js); reference mode correlates the seeds.
             // opts.alignHints[annulus index] = {min,max} predicted-lag band
             // (harvest hop windows price their own lag from the bootstrap lock).
-            // The beacon has neither fallback (its data is the control
-            // carousel, not the seeded stream, and it carries no droplets):
-            // preamble lock or an honest no-lock row — v0 limitation, mid-
-            // cycle beacon joins wait on a framing-based aligner.
             align = opts.payload
               ? dep("fountain").crcAlign(track, a, profile, syncBase, maxLagSym,
                   opts.alignHints && opts.alignHints[a.index])
               : demap.correlateStream(track, a, profile, maxLagSym, syncBase);
+          }
+          if (!align && a.beacon) {
+            // The beacon's mid-loop join: its data is the control carousel,
+            // not the seeded stream, and it carries no droplets — so it frames
+            // on ITSELF (magic + CRC8 + the envelope's CRC16; plate.beaconAlign).
+            // Until this existed the beacon only read from captures that saw
+            // the preamble, which field captures never do.
+            align = dep("plate").beaconAlign(track, a, profile, syncBase, opts.beaconAlign);
           }
           // CONSENSUS ADMISSION (second chance): sibling rings already agreed a
           // framing, so this ring is not choosing one — it is reading at a given
@@ -5888,15 +6303,51 @@
           var decoded = demap.decode(track, a, profile, align.offset);
 
           if (a.beacon) {
-            var env = dep("plate").beaconDecode(decoded, align.lag, a.rotation.M);
+            var plateB = dep("plate");
+            var envFrames = plateB.beaconFramesFor(decoded, align, a.rotation.M);
+            if (!envFrames.length && align.method !== "framed") {
+              // A preamble lock that frames nothing is not a lock. At M=2 the
+              // preamble (1, M−1, 1, …) is ALL ONES, so any run of 1-bits in
+              // the control bytes matches it at some small lag — a mid-loop
+              // capture false-locks routinely (T22r found it). Frame on the
+              // carousel itself instead; the preamble path still wins at the
+              // stream head, where it is genuine and cheaper.
+              var alignF = plateB.beaconAlign(track, a, profile, syncBase, opts.beaconAlign);
+              if (alignF) {
+                align = alignF;
+                decoded = demap.decode(track, a, profile, align.offset);
+                envFrames = plateB.beaconFramesFor(decoded, align, a.rotation.M);
+              }
+            }
+            // Prefer a frame that parses as a sealed v1 envelope (CRC16);
+            // fall back to the first CRC8-framed one (short synthetic envelopes).
+            var env = null, envFields = null;
+            for (var ef = 0; ef < envFrames.length && !envFields; ef++) {
+              var pf = plateB.parseEnvelope(envFrames[ef].envelope);
+              if (pf) { env = envFrames[ef]; envFields = pf; }
+            }
+            if (!env && envFrames.length) env = envFrames[0];
+            // Symbol-level receipt: the control frame is LONG (23 bytes = 184
+            // symbols at M=2) under one CRC, so a few erasures sink every frame
+            // where a 24-symbol droplet would shrug — the count says whether a
+            // missing envelope is symbol quality or the carousel-phase draw.
+            var nullSyms = 0;
+            for (var ns = 0; ns < decoded.length; ns++) if (decoded[ns].s === null || decoded[ns].s === undefined) nullSyms++;
             return {
               annulus: a.index, layer: a.layer, present: true, beacon: true,
               contrast: round3(meanContrast), validFrames: valid,
               carrierRatio: carrierRatio, alignMethod: align.method || "preamble",
               alignOffset: align.offset, alignLag: align.lag,
+              symbols: decoded.length, erasures: nullSyms,
+              erasureRate: decoded.length ? round3(nullSyms / decoded.length) : null,
+              folded: align.folded || undefined,
+              foldAgree: align.folded ? align.foldAgree : undefined,
+              foldCompared: align.folded ? align.foldCompared : undefined,
               envelope: env ? toHex(env.envelope) : null,
               envelopeAt: env ? env.at : null,
-              error: env ? undefined : "beacon locked but no framed envelope in the captured span"
+              envelopeFrames: envFrames.length,
+              envelopeFields: envFields || undefined,
+              error: env ? undefined : "beacon locked but no framed envelope in the captured span (" + nullSyms + "/" + decoded.length + " symbols erased)"
             };
           }
 
@@ -6055,7 +6506,11 @@
         if (payload && payload.bytes) payload.hex = toHex(payload.bytes);
         if (payload) delete payload.bytes;
       }
+      // Plate centre in capture pixels (H maps plate units → image): the
+      // spatial identity of this emitter for anything keyed per plate.
+      var cPx = em.H ? dep("geom").applyH(em.H, 0, 0) : null;
       return { fiducialWidthPx: Math.round(em.fiducialWidthPx * 10) / 10, method: em.method || "finder",
+               center: cPx ? [Math.round(cPx[0] * 10) / 10, Math.round(cPx[1] * 10) / 10] : undefined,
                conic: conicBriefs ? conicBriefs[emIdx] : undefined,
                plateSolve: solveBriefs ? solveBriefs[emIdx] : undefined,
                tile: tileOf ? tileOf[emIdx] : undefined,
@@ -6153,17 +6608,21 @@
 "use strict";
 const OC = window.OC;
 const $ = id => document.getElementById(id);
-// The profile is the CONTRACT: v2 for new emissions, v1 for clips filmed before
-// the layer swap. The selector picks which mapping decodes.
+// The profile is the CONTRACT: the selector picks which mapping decodes.
+// v1 and the v2 rate variants (v20/v30) were pruned 2026-08-21 — every extra
+// selectable standard is mode-mismatch surface, and mismatch has cost more
+// field trials here than optics has. Clips filmed under them need the builders
+// revived from git; that was the accepted price of the ruling.
 function currentProfile() {
   const v = $("m_prof") ? $("m_prof").value : "v2";
-  if (v === "v1") return OC.profile.profileV1();
-  if (v === "v20" || v === "v20p") return OC.profile.profileV2r20();
-  if (v === "v30" || v === "v30p") return OC.profile.profileV2r30();
-  // v3 = the inverted ladder as of 2026-08-21 (base innermost); v3i is the
-  // legacy alias for the same thing; v3c decodes pre-flip captures.
-  if (v === "v3" || v === "v3a" || v === "v3i") return v31Opts(OC.profile.profileV3());
-  if (v === "v3hr") return v31Opts(OC.profile.profileV3("high-rate"));
+  // v3 = the inverted ladder as of 2026-08-21 (base innermost); PACED is the
+  // v3.1 standard as of 2026-08-23, so v3/v3hr are paced and the trial names
+  // v3p/v3hrp resolve to the same profiles. v3f/v3hrf decode pre-ruling flat
+  // clips; v3c decodes pre-flip captures; v3i is the old inverted alias.
+  if (v === "v3" || v === "v3a" || v === "v3i" || v === "v3p") return v31Opts(OC.profile.profileV3());
+  if (v === "v3hr" || v === "v3hrp") return v31Opts(OC.profile.profileV3("high-rate"));
+  if (v === "v3f") return v31Opts(OC.profile.profileV3("flat"));
+  if (v === "v3hrf") return v31Opts(OC.profile.profileV3("high-rate-flat"));
   if (v === "v3c") return v31Opts(OC.profile.profileV3("classic"));
   return OC.profile.defaultProfile();
 }
@@ -6175,8 +6634,8 @@ function v31Opts(p) {
   if ($("m_qrp") && $("m_qrp").checked) p.qr_persistent = true;
   return p;
 }
-function payloadMode() { const v = $("m_prof") && $("m_prof").value; return v === "v2p" || v === "v20p" || v === "v30p" || v3Mode(); }
-function v3Mode() { const v = $("m_prof") && $("m_prof").value; return v === "v3" || v === "v3hr" || v === "v3a" || v === "v3i" || v === "v3c"; }
+function payloadMode() { const v = $("m_prof") && $("m_prof").value; return v === "v2p" || v3Mode(); }
+function v3Mode() { const v = $("m_prof") && $("m_prof").value; return v === "v3" || v === "v3hr" || v === "v3a" || v === "v3i" || v === "v3c" || v === "v3p" || v === "v3hrp" || v === "v3f" || v === "v3hrf"; }
 if ($("m_prof")) $("m_prof").onchange = () => { $("v3opts").style.display = v3Mode() ? "" : "none"; };
 // The file path SEEKS at the capture cadence — a 60 fps clip stepped at 1/30
 // silently drops every other camera frame and starves the duplicate defense.
@@ -6264,9 +6723,13 @@ function layerSummary(res) {
       "<tr><th>annulus</th><th>layer</th><th>present</th><th>carrier</th><th>SER</th><th>erasures</th><th>lock</th><th>contrast</th><th>SNR/harmonic (dB)</th><th>verdict</th></tr>";
     em.annuli.forEach(a => {
       const snr = a.snr_db ? Object.entries(a.snr_db).map(([k, v]) => "k" + k + ":" + v).join(" ") : "—";
-      const lock = a.alignMethod ? (a.alignMethod + " lag " + a.alignLag + (a.alignMatchFrac ? " (" + a.alignMatchFrac + ")" : "")) : "—";
+      const lock = a.alignMethod ? (a.alignMethod + (a.folded ? " folded" : "") + " lag " + a.alignLag + (a.alignMatchFrac ? " (" + a.alignMatchFrac + ")" : "") +
+                                    (a.folded ? " (repeats agree " + Math.round((a.foldAgree || 0) * 100) + "%/" + a.foldCompared + ")" : "")) : "—";
       const verdict = !a.present ? "<span class='dim'>unresolved</span>" :
-        a.beacon && a.envelope ? "<span class='ok'>ENVELOPE " + a.envelope + "</span>" :
+        a.beacon && a.envelope ? "<span class='ok'>ENVELOPE " + a.envelope +
+          (a.envelopeFields ? " — " + a.envelopeFields.preset + " session " + a.envelopeFields.session32.toString(16).padStart(8, "0") +
+            " K=" + a.envelopeFields.K + " tiling=" + a.envelopeFields.tiling + " loop=" + a.envelopeFields.loop_s + "s" : "") +
+          (a.envelopeFrames > 1 ? " ×" + a.envelopeFrames : "") + "</span>" :
         a.error ? "<span class='bad'>" + a.error + "</span>" :
         a.dropletsPassed != null ? "<span class='" + (a.dropletsPassed > 0 ? "ok" : "warn") + "'>" + a.dropletsPassed + "/" + a.dropletsTried + " droplets</span>" :
         a.ok ? "<span class='ok'>DECODES</span>" : "<span class='warn'>degraded</span>";
@@ -6552,7 +7015,11 @@ async function harvestDecode(v, geo, file) {
       // the per-frame solve was wired into the plain path only — the harvest
       // (where angled captures actually live) never got it; field 1-up run
       // showed the cost: k1 SNR +7 dB over the ladder, zero CRC passes
-      plateSolve: isV3h && $("m_solve").checked
+      plateSolve: isV3h && $("m_solve").checked,
+      // the beacon was plain-path only too, and could only preamble-lock — so
+      // the envelope had never been read from a field capture. With the
+      // framing-based aligner it joins mid-loop like everything else.
+      beacon: isV3h && $("m_beacon").checked
     });
     // kick the provisional next window's seeks under the decode
     if (!queue.length && !prefetch) {
@@ -6596,8 +7063,20 @@ async function harvestDecode(v, geo, file) {
       }
       if (lockedAny) everLocked = true;
       peel = HV.tryPeel(led, profile);
+      // The beacon's envelope, read off the air: the emitter's own statement of
+      // preset / session / K / tiling / loop — the settings string, from the wire.
+      for (const em of res.emitters) for (const a of (em.annuli || [])) {
+        if (!a || !a.beacon || !a.envelope) continue;
+        const f = a.envelopeFields;
+        line += f
+          ? " — <span class='ok'>ENVELOPE " + a.alignMethod + (a.folded ? " (folded, repeats agree " + Math.round((a.foldAgree || 0) * 100) + "% of " + a.foldCompared + ")" : "") +
+            ": " + f.preset + " session " + f.session32.toString(16).padStart(8, "0") +
+            " K=" + f.K + " len=" + f.len + " tiling=" + f.tiling + " loop=" + f.loop_s + "s freeze=" + f.freeze_s + "s</span>"
+          : " — <span class='warn'>beacon frame " + a.envelope + " (unparsed)</span>";
+      }
       line += " — +" + got.added + " droplets (" + got.dup + " dup" +
         (got.quarantined ? ", <span class='warn'>" + got.quarantined + " quarantined</span>" : "") +
+        (got.unplaced ? ", <span class='warn'>" + got.unplaced + " on unplaced tiles (not banked)</span>" : "") +
         (got.conflicts ? ", <span class='bad'>" + got.conflicts + " byte-conflicts</span>" : "") +
         ") — " +
         (peel.ok ? "<span class='ok'>PEEL COMPLETE</span>"
@@ -6702,40 +7181,193 @@ $("fileIn").onchange = async () => {
     // MULTI-SCALE (first-walk lesson): a distant/zoomed emitter that is invisible
     // at the 800 px downscale can be perfectly registrable at native resolution —
     // escalate the pre-scan scale until something registers.
+    //
+    // WIDENED 2026-08-22, on measurement. Registration has a working SCALE BAND
+    // that depends on screen angle, and the bands do not nest — measured on the
+    // 20/30/45 degree ladder, deterministic across every timestamp:
+    //
+    //   30 deg  1280 .. 1920   (fails at 1024 — plate too small)
+    //   45 deg  1024 .. 1600   (fails at 1792+ — plate too LARGE, which is
+    //                           backwards from every resolution intuition; the
+    //                           rejection is an R-ratio gate in scoreHypothesis,
+    //                           upstream of phiTol/bandContrastMin, and 45's phi
+    //                           error is 0.295 against a 0.7 tolerance — the
+    //                           swap-target's tilt-immunity is NOT the problem)
+    //
+    // Overlap: 1280-1600. The old ladder was [800, 1600, native] and broke on
+    // first success, so it landed on 1600 — inside the overlap BY COINCIDENCE.
+    // That accident is the only reason the 45 degree field clip decoded at all;
+    // [800, 1920] would have failed it outright. 1280 is now an explicit rung so
+    // the overlap is covered on purpose rather than by luck, and a second rung in
+    // the band means one arbitrary constant no longer carries the angled case.
+    // 800 stays first: it is the fast path and near head-on plates register there.
+    // The plate's ACTUAL projected extent, in native pixels, from the registered
+    // homography — not a proxy. fiducialWidthPx is ~3.0 units head-on but only
+    // ~2.69 at 45 degrees, so a margin scaled in fiducial widths silently
+    // shrinks relative to the plate exactly when tilt is steepest. Projecting
+    // the plate's own outer reach (corner marks at 2.65 + r_out 0.40) is
+    // pose-correct by construction, and at tilt the box hugs the ellipse.
+    const PLATE_REACH_U = 3.05;
+    // TILING: the decoder maps over ALL emitters and identifies the designated
+    // tile by its breaker ring, so every tile must be inside the capture. A box
+    // hugging ONE plate would take one tile and silently drop the rest. We do
+    // not know WHICH tile a given detection is, so reach far enough that any
+    // tile's box covers the whole lattice: (cols-1)*pitch on x, (rows-1)*pitch
+    // on y. (The old flat 4.2*fid = 12.6 u covered 6-up only by accident, and
+    // not reliably — a corner tile needs 3.05 + 2*7.2 = 17.45 u on x.)
+    const tileLay = (OC.emission && OC.emission.tileLayout)
+      ? OC.emission.tileLayout(currentProfile()) : { cols: 1, rows: 1, pitch: 0 };
+    const REACH_X = PLATE_REACH_U + (tileLay.cols - 1) * (tileLay.pitch || 0);
+    const REACH_Y = PLATE_REACH_U + (tileLay.rows - 1) * (tileLay.pitch || 0);
+    // Rectangle perimeter, not a circle: with tiling the covered region is a
+    // grid, and under a homography a straight edge stays straight, so sampling
+    // the perimeter bounds the image exactly.
+    const plateBBox = (em, sc) => {
+      const Hm = em.H || (em.plate && em.plate.H);
+      if (!Hm || !OC.geom || !OC.geom.applyH) return null;
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      const edge = (ux, uy) => {
+        const q = OC.geom.applyH(Hm, ux, uy);
+        const X = q[0] * sc, Y = q[1] * sc;
+        if (!isFinite(X) || !isFinite(Y)) return false;
+        if (X < x0) x0 = X; if (X > x1) x1 = X;
+        if (Y < y0) y0 = Y; if (Y > y1) y1 = Y;
+        return true;
+      };
+      for (let i = 0; i <= 8; i++) {
+        const t = -1 + 2 * i / 8;
+        if (!edge(t * REACH_X, -REACH_Y) || !edge(t * REACH_X, REACH_Y) ||
+            !edge(-REACH_X, t * REACH_Y) || !edge(REACH_X, t * REACH_Y)) return null;
+      }
+      return { x0, y0, x1, y1 };
+    };
+    // One shape for both probe passes — the sweep below used to build its hits
+    // separately and so missed the bbox, silently falling back to the fid rule.
+    const hitOf = (em, sc) => ({
+      cx: ((em.corners.TL.x + em.corners.TR.x + em.corners.BL.x) / 3 + em.fiducialWidthPx * 0.14) * sc,
+      cy: ((em.corners.TL.y + em.corners.TR.y + em.corners.BL.y) / 3 + em.fiducialWidthPx * 0.14) * sc,
+      fid: em.fiducialWidthPx * sc,
+      bb: plateBBox(em, sc)
+    });
     let hits = [];
-    for (const PWs of [800, 1600, Math.min(2200, v.videoWidth)]) {
+    for (const PWs of [800, 1280, 1600, Math.min(2200, v.videoWidth)]) {
       const PHs = Math.round(PWs * v.videoHeight / v.videoWidth);
       pc.width = PWs; pc.height = PHs;
       for (const t of [0.5, v.duration * 0.3, v.duration * 0.6, Math.max(0.5, v.duration - 1)]) {
         await seek(Math.min(t, v.duration - 0.1));
         pctx.drawImage(v, 0, 0, PWs, PHs);
         const reg = OC.register.registerAll(toLumFromCanvas(pctx, PWs, PHs), { profile: currentProfile() });
+        // EVERY emitter, not just the first: a tiled emission registers one per
+        // tile and the decoder maps over all of them.
         if (reg.emitters.length) {
-          const em = reg.emitters[0];
           const sc = v.videoWidth / PWs;
-          hits.push({
-            cx: ((em.corners.TL.x + em.corners.TR.x + em.corners.BL.x) / 3 + em.fiducialWidthPx * 0.14) * sc,
-            cy: ((em.corners.TL.y + em.corners.TR.y + em.corners.BL.y) / 3 + em.fiducialWidthPx * 0.14) * sc,
-            fid: em.fiducialWidthPx * sc
-          });
+          for (const em of reg.emitters) hits.push(hitOf(em, sc));
         }
       }
       if (hits.length) break;
     }
+    // DENSER SWEEP ON FAILURE (2026-08-22). Four probe instants is thin: the
+    // realistic remaining cause of a whole-clip pre-scan miss is not
+    // detectability — the scale ladder and the saddle rung between them cover
+    // that — but four unlucky instants (motion blur, an occluding hand, the rig
+    // being adjusted). Losing the crop is expensive in a way that CANNOT be
+    // recovered downstream: seekWindow stores every captured frame's luma at the
+    // capture size, so the 1024-wide cap is load-bearing for memory (~590 KB per
+    // frame, ~700 MB for a 20 s window already) and the uncropped path therefore
+    // has to downscale the WHOLE frame — shrinking the emitter precisely when it
+    // was already too hard to find. Cheaper to spend a few more seeks here than
+    // to hand the harvest a capture the emitter cannot survive.
+    // Only runs when everything above missed, so the common case pays nothing.
+    if (!hits.length) {
+      setStatus("pre-scan: nothing yet — sweeping more instants…", "warn");
+      const dense = [];
+      for (let i = 1; i <= 12; i++) dense.push(v.duration * i / 13);
+      for (const PWs of [1280, Math.min(2200, v.videoWidth)]) {
+        const PHs = Math.round(PWs * v.videoHeight / v.videoWidth);
+        pc.width = PWs; pc.height = PHs;
+        for (const t of dense) {
+          await seek(Math.min(Math.max(0.1, t), v.duration - 0.1));
+          pctx.drawImage(v, 0, 0, PWs, PHs);
+          const reg = OC.register.registerAll(toLumFromCanvas(pctx, PWs, PHs), { profile: currentProfile() });
+          if (reg.emitters.length) {
+            const sc = v.videoWidth / PWs;
+            for (const em of reg.emitters) hits.push(hitOf(em, sc));
+          }
+        }
+        if (hits.length) break;
+      }
+    }
     let box = null;
     if (hits.length) {
       const fidMax = Math.max(...hits.map(h => h.fid));
-      const half = fidMax * 4.2;
-      const x0 = Math.min(...hits.map(h => h.cx)) - half, x1 = Math.max(...hits.map(h => h.cx)) + half;
-      const y0 = Math.min(...hits.map(h => h.cy)) - half, y1 = Math.max(...hits.map(h => h.cy)) + half;
+      // ADAPTIVE MARGIN (2026-08-22). The old rule was a flat 4.2 x fid half-
+      // width around the union of hit CENTRES. Measured: fiducialWidthPx is
+      // ~3.0 units, i.e. roughly the plate's RADIUS, so 4.2 x fid = 12.6 units
+      // against a plate reach of 3.05 — a box ~4.1x the plate in each direction,
+      // ~17x its area. It made the capture 78-92% of the whole frame on near
+      // clips, which the 1024 cap then converted straight into lost resolution.
+      //
+      // The union already absorbs sway: x0/x1 span min..max over hits, and the
+      // margin sits ON TOP of that. So the margin never needed to carry sway —
+      // only the plate itself, registration error, and motion BETWEEN the probe
+      // instants (4, or 12 on the retry), which is the one thing the union
+      // cannot see. Hence: union the plate's projected extents, then add slack
+      // that scales with OBSERVED sway. Hold the emitter still and the box
+      // collapses to the plate; hand it high-sway footage and the box grows to
+      // keep everything, paying in capture area rather than in lost droplets.
+      //
+      // Falls back to the old fid rule if no hit yielded a homography, so a
+      // registration path that reports corners but no H is not left worse off.
+      const withBB = hits.filter(h => h.bb);
+      const swayX = Math.max(...hits.map(h => h.cx)) - Math.min(...hits.map(h => h.cx));
+      const swayY = Math.max(...hits.map(h => h.cy)) - Math.min(...hits.map(h => h.cy));
+      const slack = 0.30 * fidMax + 0.50 * Math.max(swayX, swayY);
+      const x0 = withBB.length ? Math.min(...withBB.map(h => h.bb.x0)) - slack
+                               : Math.min(...hits.map(h => h.cx)) - fidMax * 4.2;
+      const x1 = withBB.length ? Math.max(...withBB.map(h => h.bb.x1)) + slack
+                               : Math.max(...hits.map(h => h.cx)) + fidMax * 4.2;
+      const y0 = withBB.length ? Math.min(...withBB.map(h => h.bb.y0)) - slack
+                               : Math.min(...hits.map(h => h.cy)) - fidMax * 4.2;
+      const y1 = withBB.length ? Math.max(...withBB.map(h => h.bb.y1)) + slack
+                               : Math.max(...hits.map(h => h.cy)) + fidMax * 4.2;
       const sx = Math.max(0, Math.round(x0)), sy = Math.max(0, Math.round(y0));
-      box = { sx, sy, sw: Math.min(v.videoWidth - sx, Math.round(x1 - x0)), sh: Math.min(v.videoHeight - sy, Math.round(y1 - y0)) };
+      box = { sx, sy, sw: Math.min(v.videoWidth - sx, Math.round(x1 - x0)), sh: Math.min(v.videoHeight - sy, Math.round(y1 - y0)), fid: fidMax };
     }
     const c = document.createElement("canvas");
     const ctx = c.getContext("2d", { willReadFrequently: true });
     let sx = 0, sy = 0, sw = v.videoWidth, sh = v.videoHeight;
     if (box) ({ sx, sy, sw, sh } = box);
-    const W = Math.min(1024, sw), H = Math.round(sh * W / sw);
+    // SCALE-FIX (2026-08-22): normalize the capture to a target FIDUCIAL size,
+    // not a target crop width.
+    //
+    // The old rule was W = min(1024, sw). Because the crop is 8.4 x fid, the fid
+    // CANCELS: eff_fid = fid * 1024 / (8.4 * fid) = 122, every time. Measured on
+    // four clips: native fid 200 / 210 / 178 all arrived at the decoder as 122.
+    // So the decoder was already being scale-normalized -- by accident, keyed to
+    // the wrong quantity, and only while the margin happens to be 4.2 fid. Move
+    // the camera closer and every extra pixel was discarded.
+    //
+    // Keying to the fiducial makes it deliberate and decouples it from the
+    // margin -- which matters, because tightening the margin ALONE would raise
+    // eff_fid (a 2 x fid half-margin puts the box under 1024, so no downscale at
+    // all) and 45 degrees fails above ~167-187 fid. The margin can now change
+    // without moving what the decoder sees.
+    //
+    // Downscaling is free: the scale already happens inside the same drawImage,
+    // and getImageData, the luma loop, the stored bytes and the arc-pitch ray
+    // count all shrink with it (same 2.4 px arc pitch, fewer rays -- the design
+    // intent preserved). It also box-filters, trading surplus resolution for SNR.
+    // Never UPSCALES: below the target the plate is simply smaller, down to the
+    // ~75 px detection floor.
+    //
+    // 122 is the value the system has been running at, measured to work, and it
+    // sits mid-bracket between that ~75 floor and 45's ~167 ceiling. Kept exactly
+    // so this change moves the KEY, not the behaviour.
+    const TARGET_FID_PX = 122;
+    let W = Math.min(1024, sw);
+    if (box && box.fid > 0)
+      W = Math.max(64, Math.min(sw, 1024, Math.round(sw * TARGET_FID_PX / box.fid)));
+    const H = Math.round(sh * W / sw);
     c.width = W; c.height = H;
     const geo = { ctx, sx, sy, sw, sh, W, H };
     const capFps = captureFps();
@@ -6803,8 +7435,11 @@ function ocApplySettings(str) {
   const kv = {};
   for (const p of t.slice(1)) { const i = p.indexOf("="); if (i > 0) kv[p.slice(0, i)] = p.slice(i + 1); }
   const pay = kv.payload === "1";
-  const map = { "15": pay ? "v2p" : "v2", "20": pay ? "v20p" : "v20", "30": pay ? "v30p" : "v30",
-                "v3": "v3", "v3hr": "v3hr", "v3i": "v3", "v3c": "v3c" };  // v3i strings predate the flip
+  const map = { "15": pay ? "v2p" : "v2",
+                "v3": "v3", "v3hr": "v3hr", "v3i": "v3", "v3c": "v3c",
+                // Trial-era strings resolve to the paced standard they always
+                // meant (ruling 2026-08-23); v3f is the flat legacy opt-out.
+                "v3p": "v3", "v3hrp": "v3hr", "v3f": "v3f" };  // v3i strings predate the flip
   const target = map[kv.prof];
   if (!target) return { err: "unknown prof \"" + kv.prof + "\"" };
   $("m_prof").value = target;
@@ -6816,7 +7451,8 @@ function ocApplySettings(str) {
   const bits = [target, "capture " + (kv.capfps || "?") + " fps", (kv.tiling || "1") + "-up emitter"];
   if (kv.quad === "1") bits.push("quadrant corners");
   if (kv.qrp === "1") bits.push("persistent QR");
-  const v3fam = kv.prof === "v3" || kv.prof === "v3hr" || kv.prof === "v3i" || kv.prof === "v3c";
+  const v3fam = kv.prof === "v3" || kv.prof === "v3hr" || kv.prof === "v3i" || kv.prof === "v3c" ||
+                kv.prof === "v3p" || kv.prof === "v3hrp" || kv.prof === "v3f";
   const warn = v3fam && !pay;
   return {
     text: "applied:  " + bits.join("  ·  ") +

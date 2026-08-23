@@ -58,10 +58,9 @@
   <p style="margin:.3rem 0">
     <label>rate <select id="rateSel">
       <option value="15">15 fps — v2 (the banker; film at 30 fps)</option>
-      <option value="v3">30 fps — V3 resilient (base innermost, M 4/8/16/16 outward; film at 60 fps)</option>
-      <option value="v3hr">30 fps — V3 high-rate (M=32 close-range preset, 48-bit droplets; film at 60 fps)</option>
-      <option value="v3p">30 fps — V3 PACED (trial: per-ring F 2/3/4/4 — base droplets 1.6s→0.8s, 2× base supply)</option>
-      <option value="v3hrp">30 fps — V3 high-rate PACED (trial: base 3.2s→1.6s droplets)</option>
+      <option value="v3">30 fps — v3.1 resilient (paced is the standard: per-ring F 2/3/4/4, M 4/8/16/16; film at 60 fps)</option>
+      <option value="v3hr">30 fps — v3.1 high-rate (paced; M=32 close-range preset, 48-bit droplets; film at 60 fps)</option>
+      <option value="v3f">30 fps — V3 FLAT (legacy: flat F 4/4/4/4 — only for re-emitting pre-ruling scenes)</option>
       <option value="v3c">30 fps — V3 CLASSIC ladder (legacy: base outermost — for re-emitting pre-2026-08-21 scenes)</option>
     </select></label>
     <label style="margin-left:.8rem">tiling <select id="tileSel">
@@ -106,10 +105,12 @@ let profile = OC.profile.defaultProfile();
 $("profileTxt").value = JSON.stringify(profile, null, 2);
 $("rateSel").onchange = () => {
   const v = $("rateSel").value;
-  profile = (v === "v3" || v === "v3i") ? OC.profile.profileV3()   // v3i = legacy alias, same ladder
-    : v === "v3hr" ? OC.profile.profileV3("high-rate")
-    : v === "v3p" ? OC.profile.profileV3("paced")
-    : v === "v3hrp" ? OC.profile.profileV3("high-rate-paced")
+  // Paced is the v3.1 standard (ruling 2026-08-23): v3/v3hr ARE paced now, and
+  // the trial names v3p/v3hrp resolve to the same profiles ("paced" is a no-op
+  // alias in profileV3). v3f = the explicit flat legacy opt-out.
+  profile = (v === "v3" || v === "v3i" || v === "v3p") ? OC.profile.profileV3()   // v3i = legacy alias, same ladder
+    : (v === "v3hr" || v === "v3hrp") ? OC.profile.profileV3("high-rate")
+    : v === "v3f" ? OC.profile.profileV3("flat")
     : v === "v3c" ? OC.profile.profileV3("classic")
     : OC.profile.defaultProfile();   // "15" — the v2 rate variants were pruned 2026-08-21
   $("profileTxt").value = JSON.stringify(profile, null, 2);
@@ -886,9 +887,10 @@ function ocCarouselInfo() {
 
 function ocRefreshMode() {
   const rate = $("rateSel").value, pay = $("payloadChk").checked;
-  const names = { "15": "v2 @15 fps", "v3": "V3 resilient (base innermost)",
-                  "v3hr": "V3 high-rate", "v3i": "V3 resilient (base innermost)", "v3c": "V3 CLASSIC ladder (legacy)",
-                  "v3p": "V3 PACED (F 2/3/4/4 — trial)", "v3hrp": "V3 high-rate PACED (trial)" };
+  const names = { "15": "v2 @15 fps", "v3": "v3.1 resilient (paced)",
+                  "v3hr": "v3.1 high-rate (paced)", "v3i": "v3.1 resilient (paced)", "v3c": "V3 CLASSIC ladder (legacy)",
+                  "v3f": "V3 FLAT (legacy)",
+                  "v3p": "v3.1 resilient (paced)", "v3hrp": "v3.1 high-rate (paced)" };
   const bits = [names[rate] || rate,
     pay ? "PAYLOAD" : "REFERENCE (no content!)",
     $("tileSel").value + "-up"];

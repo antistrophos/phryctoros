@@ -93,13 +93,15 @@ async function runClip(name) {
   const seek = t => new Promise(r => { v.onseeked = () => r(); v.currentTime = t; });
   const qs = new URLSearchParams(location.search);
   const pv = qs.get("profile");
-  // v1 / v20 / v30 pruned 2026-08-21 with their profile builders.
-  const profile = pv === "v3" ? OC.profile.profileV3()
-    : pv === "v3q" ? OC.profile.profileV3(undefined, { qr_persistent: true }) // finder-first decode for persistent-QR emissions
-    : pv === "v3hr" ? OC.profile.profileV3("high-rate")
-    : pv === "v3i" ? OC.profile.profileV3()            // legacy alias — v3 IS the inverted ladder now
-    : pv === "v3p" ? OC.profile.profileV3("paced")     // per-ring frames_per_symbol (trial)
-    : pv === "v3hrp" ? OC.profile.profileV3("high-rate-paced")
+  // v1 / v20 / v30 pruned 2026-08-21 with their profile builders. Paced is the
+  // v3.1 standard as of 2026-08-23: v3/v3hr are paced, the trial names
+  // v3p/v3hrp resolve to the same profiles, and v3f/v3hrf decode the
+  // pre-ruling FLAT clips (2026-08-18..21 era).
+  const profile = (pv === "v3" || pv === "v3i" || pv === "v3p") ? OC.profile.profileV3()
+    : pv === "v3q" ? OC.profile.profileV3("flat", { qr_persistent: true }) // finder-first decode for persistent-QR emissions — that interim-lock era predates pacing, so it pins FLAT
+    : (pv === "v3hr" || pv === "v3hrp") ? OC.profile.profileV3("high-rate")
+    : pv === "v3f" ? OC.profile.profileV3("flat")
+    : pv === "v3hrf" ? OC.profile.profileV3("high-rate-flat")
     : pv === "v3c" ? OC.profile.profileV3("classic")   // pre-2026-08-21 captures (base outermost)
     : OC.profile.defaultProfile();
   // quad=1: v3.1 amendment-2 quadrant corners (saddle-first registration +

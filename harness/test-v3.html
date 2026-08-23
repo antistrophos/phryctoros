@@ -612,17 +612,20 @@ async function main() {
       " · payload " + JSON.stringify(ranked.ok === true ? ranked.text.slice(0, 18) + "…" : ranked.reason));
   }
 
-  await tick("T22Q: paced rings — per-ring frames_per_symbol, mixed-F decode…");
+  await tick("T22Q: paced rings — the v3.1 STANDARD, per-ring frames_per_symbol, mixed-F decode…");
   {
-    // The practitioner's ruling that the inner data ring's F shackles come off.
-    // A droplet occupies D·F frames and D = ceil(droplet_bits / log2 M), so a
-    // flat F leaves the BASE ring with the longest droplets — slowest to deliver
-    // a carousel and starved inside a harvest window. Pacing equalises droplet
-    // DURATION at the fastest ring's, so nothing slows and the slow rings speed
-    // up. This asserts the arithmetic, the compatibility, and — the part that
-    // had never been exercised — that a genuinely MIXED-F emission decodes.
-    const pFlat = OC.profile.profileV3();
-    const pPace = OC.profile.profileV3("paced");
+    // The practitioner's ruling that the inner data ring's F shackles come off —
+    // promoted 2026-08-23 from trial to THE STANDARD: profileV3() is paced, so
+    // (family, preset) fully determines every ring's F and discovery needs no
+    // pacing flag; "flat" is the explicit legacy opt-out for pre-ruling
+    // captures. A droplet occupies D·F frames and D = ceil(droplet_bits /
+    // log2 M), so a flat F leaves the BASE ring with the longest droplets —
+    // slowest to deliver a carousel and starved inside a harvest window.
+    // Pacing equalises droplet DURATION at the fastest ring's, so nothing
+    // slows and the slow rings speed up. This asserts the arithmetic, the
+    // compatibility, and that a genuinely MIXED-F emission decodes.
+    const pFlat = OC.profile.profileV3("flat");
+    const pPace = OC.profile.profileV3();
     const gF = OC.fountain.geom(pFlat), gP = OC.fountain.geom(pPace);
     const durF = pFlat.annuli.map(a => OC.fountain.ringD(a, gF) * a.rotation.frames_per_symbol);
     const durP = pPace.annuli.map(a => OC.fountain.ringD(a, gP) * a.rotation.frames_per_symbol);
@@ -635,9 +638,19 @@ async function main() {
                                                 a.rotation.nominal_hz === pFlat.annuli[i].rotation.nominal_hz &&
                                                 a.r0 === pFlat.annuli[i].r0);
     // profile.preset is read as an envelope toggle (envelopeBytes b[2]) and must
-    // keep its exact spelling; the marker rides carriage.paced instead.
+    // keep its exact spelling; the marker rides carriage.paced instead. The
+    // version strings tell the truth across the ruling boundary: the paced
+    // default is v3.1; historical "v3" keeps naming the flat profile that
+    // recorded it in old ledgers. "paced" stays a no-op alias of the default
+    // so trial-era settings strings (v3p / v3hrp) keep meaning what they meant.
     const presetOk = pPace.preset === pFlat.preset && pPace.carriage.paced === true &&
-                     !pFlat.carriage.paced && pPace.profile_version === "v3-paced";
+                     !pFlat.carriage.paced && pPace.profile_version === "v3.1" &&
+                     pFlat.profile_version === "v3" &&
+                     JSON.stringify(OC.profile.profileV3("paced")) === JSON.stringify(pPace) &&
+                     JSON.stringify(OC.profile.profileV3("high-rate-paced")) === JSON.stringify(OC.profile.profileV3("high-rate")) &&
+                     OC.profile.profileV3("high-rate").profile_version === "v3.1-hr" &&
+                     OC.profile.profileV3("high-rate-flat").profile_version === "v3-hr" &&
+                     !OC.profile.profileV3("classic").carriage.paced;
     // Mixed-F round trip at a cheap scale, flat as the control.
     const msgQ = "PACED";
     const rt = (p) => {
@@ -648,8 +661,8 @@ async function main() {
       return { pay: em && em.payload, drops: em ? em.annuli.map(a => a.dropletsPassed) : [] };
     };
     const small = (p) => OC.profile.profileV3(p, { render: { size_px: 640, scale_px_per_unit: 100 } });
-    const rF = rt(small(undefined)), rP = rt(small("paced"));
-    record("T22Q paced rings: per-ring frames_per_symbol equalises droplet duration at the fastest ring's without slowing any ring or touching M / rates / geometry, the profile still validates (the base ring's per-frame advance is a warning, not an error), preset spelling is preserved for the envelope toggle, and a MIXED-F emission decodes byte-exact with the base ring delivering strictly more droplets",
+    const rF = rt(small("flat")), rP = rt(small(undefined));
+    record("T22Q paced rings ARE the v3.1 standard: profileV3() is paced (v3.1), \"flat\" is the explicit legacy opt-out (historical version strings preserved), \"paced\" is a no-op alias; pacing equalises droplet duration at the fastest ring's without slowing any ring or touching M / rates / geometry, the profile still validates (the base ring's per-frame advance is a warning, not an error), preset spelling is preserved for the envelope toggle, and a MIXED-F emission decodes byte-exact with the base ring delivering strictly more droplets",
       !!(paceOk && presetOk && vP.ok === true &&
          vP.warnings.some(w => /advance/.test(w)) &&
          rF.pay && rF.pay.ok === true && rF.pay.text === msgQ &&
@@ -712,7 +725,9 @@ async function main() {
          V1.cMax === L - 1 && !V1.at(L) &&
          V2.dead === 0 && V2.tried === V2.passed.length &&
          V2.at(0) && V2.at(L) && !same(V2.at(0), V2.at(L)) &&
-         V2.Lfast > L && V2.Lslow === L && V2.enc.Ls.every(x => x >= L) &&
+         // (under the paced default every ring finishes early and extends past
+         // the floor — the flat-era "slowest ring sits AT 2K+12" no longer holds)
+         V2.Lfast > L && V2.Lslow >= L && V2.enc.Ls.every(x => x >= L) &&
          V2.passed.length > V1.passed.length &&
          V2.asm.ok === true && V2.asm.text === msgC),
       "nominal L=" + L +
@@ -785,7 +800,14 @@ async function main() {
     // so a single CRC pass at that exact (lag, offset) is the ordinary 1/256
     // standard. Same window decoded both ways: the ring must gain its lock
     // from consensus, and the lock must agree with the siblings' lag.
-    const pM = OC.profile.profileV3("high-rate", { plate: { corner_style: "quadrant" },
+    //
+    // PINNED FLAT: this starvation geometry is a flat-F construction — the
+    // paced standard (2026-08-23 ruling) equalises droplet duration precisely
+    // so the base ring is never the starved one, which is why the scenario
+    // stopped constructing under profileV3() the day pacing became default.
+    // The MECHANISM stays in the decoder for any marginal window; this
+    // exercises it with the geometry that reliably starves.
+    const pM = OC.profile.profileV3("high-rate-flat", { plate: { corner_style: "quadrant" },
       render: { size_px: 448, scale_px_per_unit: 70 } });
     const gM = OC.fountain.geom(pM);
     const dM = pM.annuli.map(a => OC.fountain.ringD(a, gM));

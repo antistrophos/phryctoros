@@ -203,19 +203,31 @@
      would leave the two presets with opposite radial semantics; revert by
      making `inv` false for hi if that reading is wrong). */
   function profileV3(preset, overrides) {
-    // "paced" composes with the other presets ("paced", "high-rate-paced"): it
-    // is a frames_per_symbol policy, orthogonal to the M ladder and the rate.
+    // PACED IS THE STANDARD (practitioner's ruling, 2026-08-23): per-ring
+    // frames_per_symbol is the v3.1 definition, not a mode — so (family,
+    // preset) fully determines every ring's F, discovery has nothing extra
+    // to learn, and the envelope's b[2] stays the one toggle it was frozen
+    // as. "flat" is the explicit legacy opt-out ("flat", "high-rate-flat")
+    // for pre-ruling captures, which decode by deliberate profile selection,
+    // never by discovery. "paced" remains accepted as a no-op alias so the
+    // trial-era names (v3p / v3hrp, and their pasted settings strings) keep
+    // meaning what they meant. "classic" stays flat + the pre-flip ladder.
     var ps = String(preset == null ? "" : preset);
-    var paced = ps.indexOf("paced") >= 0;
-    var base = ps.replace(/-?paced/, "").replace(/^-+|-+$/g, "");
+    var pacedExplicit = ps.indexOf("paced") >= 0;
+    var flat = ps.indexOf("flat") >= 0;
+    var base = ps.replace(/-?paced/, "").replace(/-?flat/, "").replace(/^-+|-+$/g, "");
     // "high-rate-classic" was pruned 2026-08-21: a combination that existed only
     // because two flags composed, never filmed, and it broke the envelope's
     // high-rate toggle (envelopeBytes b[2] compares preset exactly).
     var hi = base === "high-rate";
     var classic = base === "classic";
     var inv = !classic;
+    var paced = flat ? false : (classic ? pacedExplicit : true);
     var p = {
       // hi and classic are mutually exclusive since the high-rate-classic prune.
+      // Version strings tell the truth across the ruling boundary: the paced
+      // default is v3.1; the historical strings "v3" / "v3-hr" keep naming
+      // exactly the flat profiles that recorded them in old ledgers.
       profile_version: hi ? "v3-hr" : (classic ? "v3-classic" : "v3"),
       units: "flat-circle-3.00",
       preset: hi ? "high-rate" : (classic ? "resilient-classic" : "resilient"),
@@ -362,7 +374,9 @@
       // Marker, not a preset rename: profile.preset is read as an envelope
       // toggle (emission.envelopeBytes b[2]) and must keep its exact spelling.
       p.carriage.paced = true;
-      p.profile_version += "-paced";
+      // classic+paced stays a suffix (a compat curiosity, not a standard);
+      // the v3.1 names are reserved for the current-ladder standard profiles.
+      p.profile_version = classic ? p.profile_version + "-paced" : (hi ? "v3.1-hr" : "v3.1");
     }
     if (overrides) deepMerge(p, overrides);
     return p;

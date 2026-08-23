@@ -38,7 +38,7 @@
   <label>camera <select id="m_cam"><option>rear</option><option>front</option></select></label>
   <label>handheld <input id="m_hand" type="checkbox" checked></label>
   <label>emitter loop (s) <input id="m_loop" type="number" value="60" style="width:4rem"></label>
-  <label>profile <select id="m_prof"><option value="v2">v2 (current)</option><option value="v2p">v2 + payload (Phase 1)</option><option value="v3">V3 resilient (payload; film at 60 fps)</option><option value="v3hr">V3 high-rate (payload; film at 60 fps)</option><option value="v3p">V3 PACED (per-ring F 2/3/4/4 — trial)</option><option value="v3hrp">V3 high-rate PACED (trial)</option><option value="v3c">V3 CLASSIC ladder (legacy: base outermost, pre-2026-08-21 clips)</option><option value="v3a">V3 auto-detect preset (payload)</option></select></label>
+  <label>profile <select id="m_prof"><option value="v2">v2 (current)</option><option value="v2p">v2 + payload (Phase 1)</option><option value="v3">v3.1 resilient (paced standard; payload; film at 60 fps)</option><option value="v3hr">v3.1 high-rate (paced; payload; film at 60 fps)</option><option value="v3f">V3 FLAT (legacy: flat F, pre-ruling clips)</option><option value="v3hrf">V3 high-rate FLAT (legacy)</option><option value="v3c">V3 CLASSIC ladder (legacy: base outermost, pre-2026-08-21 clips)</option><option value="v3a">V3 auto-detect preset (payload)</option></select></label>
   <label id="v3opts" style="display:none"><input id="m_solve" type="checkbox" checked> plate solve <input id="m_beacon" type="checkbox" checked> beacon <input id="m_quad" type="checkbox"> quadrant corners (v3.1) <input id="m_qrp" type="checkbox"> persistent QR (diagnostic)</label>
   <label>capture fps <select id="m_capfps"><option value="30">30</option><option value="60">60</option></select></label>
   <label>notes <input id="m_notes" style="width:12rem"></label>
@@ -104,13 +104,14 @@ const $ = id => document.getElementById(id);
 // revived from git; that was the accepted price of the ruling.
 function currentProfile() {
   const v = $("m_prof") ? $("m_prof").value : "v2";
-  // v3 = the inverted ladder as of 2026-08-21 (base innermost); v3i is the
-  // legacy alias for the same thing; v3c decodes pre-flip captures.
-  if (v === "v3" || v === "v3a" || v === "v3i") return v31Opts(OC.profile.profileV3());
-  if (v === "v3hr") return v31Opts(OC.profile.profileV3("high-rate"));
-  // PACED: per-ring frames_per_symbol equalising droplet duration (trial).
-  if (v === "v3p") return v31Opts(OC.profile.profileV3("paced"));
-  if (v === "v3hrp") return v31Opts(OC.profile.profileV3("high-rate-paced"));
+  // v3 = the inverted ladder as of 2026-08-21 (base innermost); PACED is the
+  // v3.1 standard as of 2026-08-23, so v3/v3hr are paced and the trial names
+  // v3p/v3hrp resolve to the same profiles. v3f/v3hrf decode pre-ruling flat
+  // clips; v3c decodes pre-flip captures; v3i is the old inverted alias.
+  if (v === "v3" || v === "v3a" || v === "v3i" || v === "v3p") return v31Opts(OC.profile.profileV3());
+  if (v === "v3hr" || v === "v3hrp") return v31Opts(OC.profile.profileV3("high-rate"));
+  if (v === "v3f") return v31Opts(OC.profile.profileV3("flat"));
+  if (v === "v3hrf") return v31Opts(OC.profile.profileV3("high-rate-flat"));
   if (v === "v3c") return v31Opts(OC.profile.profileV3("classic"));
   return OC.profile.defaultProfile();
 }
@@ -123,7 +124,7 @@ function v31Opts(p) {
   return p;
 }
 function payloadMode() { const v = $("m_prof") && $("m_prof").value; return v === "v2p" || v3Mode(); }
-function v3Mode() { const v = $("m_prof") && $("m_prof").value; return v === "v3" || v === "v3hr" || v === "v3a" || v === "v3i" || v === "v3c" || v === "v3p" || v === "v3hrp"; }
+function v3Mode() { const v = $("m_prof") && $("m_prof").value; return v === "v3" || v === "v3hr" || v === "v3a" || v === "v3i" || v === "v3c" || v === "v3p" || v === "v3hrp" || v === "v3f" || v === "v3hrf"; }
 if ($("m_prof")) $("m_prof").onchange = () => { $("v3opts").style.display = v3Mode() ? "" : "none"; };
 // The file path SEEKS at the capture cadence — a 60 fps clip stepped at 1/30
 // silently drops every other camera frame and starves the duplicate defense.
@@ -925,7 +926,9 @@ function ocApplySettings(str) {
   const pay = kv.payload === "1";
   const map = { "15": pay ? "v2p" : "v2",
                 "v3": "v3", "v3hr": "v3hr", "v3i": "v3", "v3c": "v3c",
-                "v3p": "v3p", "v3hrp": "v3hrp" };  // v3i strings predate the flip
+                // Trial-era strings resolve to the paced standard they always
+                // meant (ruling 2026-08-23); v3f is the flat legacy opt-out.
+                "v3p": "v3", "v3hrp": "v3hr", "v3f": "v3f" };  // v3i strings predate the flip
   const target = map[kv.prof];
   if (!target) return { err: "unknown prof \"" + kv.prof + "\"" };
   $("m_prof").value = target;
@@ -938,7 +941,7 @@ function ocApplySettings(str) {
   if (kv.quad === "1") bits.push("quadrant corners");
   if (kv.qrp === "1") bits.push("persistent QR");
   const v3fam = kv.prof === "v3" || kv.prof === "v3hr" || kv.prof === "v3i" || kv.prof === "v3c" ||
-                kv.prof === "v3p" || kv.prof === "v3hrp";
+                kv.prof === "v3p" || kv.prof === "v3hrp" || kv.prof === "v3f";
   const warn = v3fam && !pay;
   return {
     text: "applied:  " + bits.join("  ·  ") +
