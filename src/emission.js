@@ -95,8 +95,11 @@
   function FN() { return (typeof module !== "undefined" && module.exports) ? require("./fountain.js") : global.OC.fountain; }
 
   /* §6 envelope, internal format v1, 20 bytes. info: { K, len, pcrc, capability }
-     for an attached payload (null → zeros: identity-only envelope). */
-  function envelopeBytes(profile, info) {
+     for an attached payload (null → zeros: identity-only envelope).
+     tile: the index of the tile carrying THIS copy (D-ring ruling 4,
+     2026-08-23) — the beacon rides tile 0 today, so it defaults to 0; the
+     per-tile D-ring (ruling 1b) will stamp each tile's own. */
+  function envelopeBytes(profile, info, tile) {
     var F = FN();
     var b = new Uint8Array(20);
     b[0] = 1;                                        // envelope format version
@@ -113,7 +116,17 @@
     b[13] = profile.countdown ? Math.round(profile.countdown.freeze_s * 10) & 255 : 0; // deciseconds
     b[14] = profile.countdown ? profile.countdown.loop_s & 255 : 0;
     b[15] = profile.tiling || 1;
-    // [16..17] control-plane reservations (DR/BDR, ceremony/login, rate reports)
+    // [16..17] — D-ring ruling 4 (2026-08-23): tile index + grid shape, SCOPED
+    // TO ONE PANEL. b[16] = index of the tile carrying this copy; b[17] = the
+    // panel's lattice, cols<<4 | rows, with 0 meaning single-panel (1×1) so
+    // every tiling=1 envelope ever emitted — zeros here — stays byte-exact
+    // under the definition. Tiles pool only within one session's grid: two
+    // screens, or two grids, are two sessions and never tile together by
+    // default. (Both bytes sit under the CRC16, so a grid change moves the
+    // fast tag — a config change is a tag change, as the interlock requires.)
+    b[16] = (tile || 0) & 255;
+    var lay = tileLayout(profile);
+    b[17] = lay.n > 1 ? (((lay.cols & 15) << 4) | (lay.rows & 15)) : 0;
     var crc = F.crc16(b.subarray(0, 18));
     b[18] = crc >> 8; b[19] = crc & 255;
     return b;

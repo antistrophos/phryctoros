@@ -369,6 +369,29 @@ async function main() {
     record("T22e envelope: CRC16 seals bytes 0–17; module map deterministic, whitened density 0.35–0.65",
       crcOk && same && density > 0.35 && density < 0.65,
       "crc " + crcOk + " density " + density.toFixed(3));
+    // D-ring ruling 4 (2026-08-23): b[16] = tile carrying this copy, b[17] =
+    // the panel's grid (cols<<4 | rows, 0 = single-panel). tiling=1 keeps
+    // writing zeros, so every pre-ruling envelope is byte-exact under the
+    // definition. Both bytes sit under the CRC16, so two tiles of one grid
+    // carry DISTINCT fast tags (per-plate handles — intended: the short tag
+    // is continuity of one plate, session identity is the envelope's).
+    const p6e = OC.profile.profileV3(undefined, { tiling: 6 });
+    const p2e = OC.profile.profileV3(undefined, { tiling: 2 });
+    const e1 = OC.emission.envelopeBytes(p3, null);
+    const e6a = OC.emission.envelopeBytes(p6e, null);
+    const e6b = OC.emission.envelopeBytes(p6e, null, 4);
+    const e2 = OC.emission.envelopeBytes(p2e, null);
+    const f1 = OC.plate.parseEnvelope(e1), f6a = OC.plate.parseEnvelope(e6a),
+          f6b = OC.plate.parseEnvelope(e6b), f2 = OC.plate.parseEnvelope(e2);
+    record("T22e tile/grid fields (ruling 4): tiling=1 writes zeros (pre-ruling envelopes byte-exact) and parses as tile 0 of 1×1; 6-up writes grid 0x32 (3×2) and stamps the carrying tile; 2-up writes 0x21; two tiles of one grid seal to DISTINCT tags",
+      !!(e1[16] === 0 && e1[17] === 0 && f1 && f1.tile === 0 && f1.grid.cols === 1 && f1.grid.rows === 1 &&
+         e6a[17] === 0x32 && f6a && f6a.grid.cols === 3 && f6a.grid.rows === 2 && f6a.tile === 0 &&
+         e6b[16] === 4 && f6b && f6b.tile === 4 && f6b.grid.cols === 3 &&
+         e2[17] === 0x21 && f2 && f2.grid.cols === 2 && f2.grid.rows === 1 &&
+         ((e6a[18] << 8) | e6a[19]) !== ((e6b[18] << 8) | e6b[19])),
+      "1-up b16/17 " + e1[16] + "/" + e1[17] + " · 6-up grid 0x" + e6a[17].toString(16) +
+      " tile4 b16 " + e6b[16] + " · 2-up grid 0x" + e2[17].toString(16) +
+      " · tags tile0 " + ((e6a[18] << 8) | e6a[19]).toString(16) + " vs tile4 " + ((e6b[18] << 8) | e6b[19]).toString(16));
   }
 
   let v3seq = null, v3res = null, v3msg = null; // shared with the rung-2 tests below

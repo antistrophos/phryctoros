@@ -1004,8 +1004,11 @@
   function FN() { return (typeof module !== "undefined" && module.exports) ? require("./fountain.js") : global.OC.fountain; }
 
   /* §6 envelope, internal format v1, 20 bytes. info: { K, len, pcrc, capability }
-     for an attached payload (null → zeros: identity-only envelope). */
-  function envelopeBytes(profile, info) {
+     for an attached payload (null → zeros: identity-only envelope).
+     tile: the index of the tile carrying THIS copy (D-ring ruling 4,
+     2026-08-23) — the beacon rides tile 0 today, so it defaults to 0; the
+     per-tile D-ring (ruling 1b) will stamp each tile's own. */
+  function envelopeBytes(profile, info, tile) {
     var F = FN();
     var b = new Uint8Array(20);
     b[0] = 1;                                        // envelope format version
@@ -1022,7 +1025,17 @@
     b[13] = profile.countdown ? Math.round(profile.countdown.freeze_s * 10) & 255 : 0; // deciseconds
     b[14] = profile.countdown ? profile.countdown.loop_s & 255 : 0;
     b[15] = profile.tiling || 1;
-    // [16..17] control-plane reservations (DR/BDR, ceremony/login, rate reports)
+    // [16..17] — D-ring ruling 4 (2026-08-23): tile index + grid shape, SCOPED
+    // TO ONE PANEL. b[16] = index of the tile carrying this copy; b[17] = the
+    // panel's lattice, cols<<4 | rows, with 0 meaning single-panel (1×1) so
+    // every tiling=1 envelope ever emitted — zeros here — stays byte-exact
+    // under the definition. Tiles pool only within one session's grid: two
+    // screens, or two grids, are two sessions and never tile together by
+    // default. (Both bytes sit under the CRC16, so a grid change moves the
+    // fast tag — a config change is a tag change, as the interlock requires.)
+    b[16] = (tile || 0) & 255;
+    var lay = tileLayout(profile);
+    b[17] = lay.n > 1 ? (((lay.cols & 15) << 4) | (lay.rows & 15)) : 0;
     var crc = F.crc16(b.subarray(0, 18));
     b[18] = crc >> 8; b[19] = crc & 255;
     return b;
@@ -2612,9 +2625,16 @@
 
   /* §6 envelope, internal format v1 (emission.envelopeBytes is the writer):
      version · family · flags (bit0 = high-rate) · session32 · K · len ·
-     pcrc16 · capability · freeze (ds) · loop (s) · tiling · 2 reserved ·
+     pcrc16 · capability · freeze (ds) · loop (s) · tiling · tile · grid ·
      CRC16 over bytes 0–17. Returns the fields, or null when the bytes are
-     not a sealed v1 envelope (wrong length, version, or CRC). */
+     not a sealed v1 envelope (wrong length, version, or CRC).
+     tile/grid (D-ring ruling 4, 2026-08-23): b[16] = the index of the tile
+     carrying this copy; b[17] = the panel's lattice (cols<<4 | rows), 0
+     meaning single-panel — pre-ruling envelopes wrote zeros, which parse
+     identically under the definition. The scope is ONE panel: tiles pool
+     only when they share session32 AND hold a valid slot in that session's
+     grid; separate screens or grids are separate sessions and never tile
+     together by default. */
   function parseEnvelope(env) {
     var F = (typeof module !== "undefined" && module.exports) ? require("./fountain.js") : global.OC.fountain;
     if (!env || env.length !== 20 || env[0] !== 1) return null;
@@ -2626,7 +2646,8 @@
       session32: ((env[3] << 24) | (env[4] << 16) | (env[5] << 8) | env[6]) >>> 0,
       K: env[7], len: (env[8] << 8) | env[9], pcrc: (env[10] << 8) | env[11],
       capability: env[12], freeze_s: env[13] / 10, loop_s: env[14], tiling: env[15],
-      reserved: [env[16], env[17]]
+      tile: env[16],
+      grid: env[17] === 0 ? { cols: 1, rows: 1 } : { cols: env[17] >> 4, rows: env[17] & 15 }
     };
   }
 
@@ -6728,7 +6749,9 @@ function layerSummary(res) {
       const verdict = !a.present ? "<span class='dim'>unresolved</span>" :
         a.beacon && a.envelope ? "<span class='ok'>ENVELOPE " + a.envelope +
           (a.envelopeFields ? " — " + a.envelopeFields.preset + " session " + a.envelopeFields.session32.toString(16).padStart(8, "0") +
-            " K=" + a.envelopeFields.K + " tiling=" + a.envelopeFields.tiling + " loop=" + a.envelopeFields.loop_s + "s" : "") +
+            " K=" + a.envelopeFields.K + " tiling=" + a.envelopeFields.tiling +
+            (a.envelopeFields.tiling > 1 ? " (grid " + a.envelopeFields.grid.cols + "×" + a.envelopeFields.grid.rows + ", tile " + a.envelopeFields.tile + ")" : "") +
+            " loop=" + a.envelopeFields.loop_s + "s" : "") +
           (a.envelopeFrames > 1 ? " ×" + a.envelopeFrames : "") + "</span>" :
         a.error ? "<span class='bad'>" + a.error + "</span>" :
         a.dropletsPassed != null ? "<span class='" + (a.dropletsPassed > 0 ? "ok" : "warn") + "'>" + a.dropletsPassed + "/" + a.dropletsTried + " droplets</span>" :
@@ -7071,7 +7094,9 @@ async function harvestDecode(v, geo, file) {
         line += f
           ? " — <span class='ok'>ENVELOPE " + a.alignMethod + (a.folded ? " (folded, repeats agree " + Math.round((a.foldAgree || 0) * 100) + "% of " + a.foldCompared + ")" : "") +
             ": " + f.preset + " session " + f.session32.toString(16).padStart(8, "0") +
-            " K=" + f.K + " len=" + f.len + " tiling=" + f.tiling + " loop=" + f.loop_s + "s freeze=" + f.freeze_s + "s</span>"
+            " K=" + f.K + " len=" + f.len + " tiling=" + f.tiling +
+            (f.tiling > 1 ? " (grid " + f.grid.cols + "×" + f.grid.rows + ", carried by tile " + f.tile + ")" : "") +
+            " loop=" + f.loop_s + "s freeze=" + f.freeze_s + "s</span>"
           : " — <span class='warn'>beacon frame " + a.envelope + " (unparsed)</span>";
       }
       line += " — +" + got.added + " droplets (" + got.dup + " dup" +

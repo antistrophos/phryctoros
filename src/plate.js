@@ -325,9 +325,16 @@
 
   /* §6 envelope, internal format v1 (emission.envelopeBytes is the writer):
      version · family · flags (bit0 = high-rate) · session32 · K · len ·
-     pcrc16 · capability · freeze (ds) · loop (s) · tiling · 2 reserved ·
+     pcrc16 · capability · freeze (ds) · loop (s) · tiling · tile · grid ·
      CRC16 over bytes 0–17. Returns the fields, or null when the bytes are
-     not a sealed v1 envelope (wrong length, version, or CRC). */
+     not a sealed v1 envelope (wrong length, version, or CRC).
+     tile/grid (D-ring ruling 4, 2026-08-23): b[16] = the index of the tile
+     carrying this copy; b[17] = the panel's lattice (cols<<4 | rows), 0
+     meaning single-panel — pre-ruling envelopes wrote zeros, which parse
+     identically under the definition. The scope is ONE panel: tiles pool
+     only when they share session32 AND hold a valid slot in that session's
+     grid; separate screens or grids are separate sessions and never tile
+     together by default. */
   function parseEnvelope(env) {
     var F = (typeof module !== "undefined" && module.exports) ? require("./fountain.js") : global.OC.fountain;
     if (!env || env.length !== 20 || env[0] !== 1) return null;
@@ -339,7 +346,8 @@
       session32: ((env[3] << 24) | (env[4] << 16) | (env[5] << 8) | env[6]) >>> 0,
       K: env[7], len: (env[8] << 8) | env[9], pcrc: (env[10] << 8) | env[11],
       capability: env[12], freeze_s: env[13] / 10, loop_s: env[14], tiling: env[15],
-      reserved: [env[16], env[17]]
+      tile: env[16],
+      grid: env[17] === 0 ? { cols: 1, rows: 1 } : { cols: env[17] >> 4, rows: env[17] & 15 }
     };
   }
 
