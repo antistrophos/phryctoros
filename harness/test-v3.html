@@ -459,6 +459,60 @@ async function main() {
            : "no beacon row: " + JSON.stringify(resB).slice(0, 120));
   }
 
+  await tick("T22r: beacon mid-loop join — the control channel frames on itself…");
+  {
+    // (a) Default beacon (M=2, F=4), the short synthetic envelope (7 framed
+    // bytes = 56 symbols = 224 frames per carousel). The capture starts at
+    // emission frame 250 — past the preamble, off the symbol grid (250 = 62·4+2)
+    // — so nothing preamble-locks; the aligner must find the offset AND the
+    // bit phase, and with an unsealed envelope its bar is ≥2 identical frames
+    // (the carousel's own repetition). Frame starts at 32+56·4·k: 256, 480 —
+    // both complete inside [250, 710).
+    const pA = OC.profile.profileV3(undefined, { render: { size_px: 640, scale_px_per_unit: 100 } });
+    const envShortA = new Uint8Array([0xE5, 0x01, 0x02, 0x03]);
+    let seqA = OC.emission.renderSequence(pA, 710, { envBytes: envShortA });
+    let slA = seqA.frames.slice(250);
+    seqA = null;
+    const rA = OC.pipeline.decodeSequence(slA, pA, { beacon: true });
+    slA = null;
+    const rowA = rA.error ? null : rA.emitters[0].annuli.find(a => a.beacon);
+    const okA = !!(rowA && !rowA.error && rowA.alignMethod === "framed" && rowA.envelope === "e5010203" &&
+                   rowA.envelopeFrames >= 2);
+    // (b) A SEALED v1 envelope (session32, preset, K, tiling…) through the
+    // verified path — CRC8 + the envelope's CRC16 accept a single frame. The
+    // beacon runs the negotiable M=4 at F=2 (the paced control-ring variant:
+    // 23 bytes = 92 symbols = 184 frames per carousel) so two complete frames
+    // fit a field-scale render. Frame starts at 16+184k: 200, 384.
+    const pB = OC.profile.profileV3(undefined, {
+      beacon: { rotation: { M: 4, frames_per_symbol: 2 } }, session32: 0xC0FFEE42,
+      render: { size_px: 448, scale_px_per_unit: 70 } });
+    const vB = OC.profile.validate(pB);
+    const infoB = { K: 7, len: 13, pcrc: 0x1234, capability: 1 };
+    const envB = OC.emission.envelopeBytes(pB, infoB);
+    const parsedB = OC.plate.parseEnvelope(envB);
+    const envBad = new Uint8Array(envB); envBad[5] ^= 0x10;           // one session bit → CRC16 must refuse
+    let seqB2 = OC.emission.renderSequence(pB, 580, { payloadInfo: infoB });
+    let slB = seqB2.frames.slice(190);
+    seqB2 = null;
+    const rB = OC.pipeline.decodeSequence(slB, pB, { beacon: true });
+    slB = null;
+    const rowB2 = rB.error ? null : rB.emitters[0].annuli.find(a => a.beacon);
+    const fB = rowB2 && rowB2.envelopeFields;
+    const okB = !!(vB.ok && parsedB && parsedB.session32 === 0xC0FFEE42 && parsedB.K === 7 && parsedB.len === 13 &&
+                   parsedB.pcrc === 0x1234 && parsedB.preset === "resilient" && parsedB.tiling === 1 &&
+                   OC.plate.parseEnvelope(envBad) === null &&
+                   rowB2 && !rowB2.error && rowB2.alignMethod === "framed" && fB &&
+                   fB.session32 === 0xC0FFEE42 && fB.K === 7 && fB.loop_s === pB.countdown.loop_s);
+    record("T22r beacon mid-loop join: a capture that never saw the preamble still frames the control carousel — (a) default M=2/F=4, short unsealed envelope, off-grid start, accepted on ≥2 identical frames; (b) sealed v1 envelope at M=4/F=2, accepted on CRC8+CRC16 from ONE frame, session32/K/len/pcrc/preset/tiling parsed off the air and a flipped session bit refused",
+      okA && okB,
+      "(a) " + (rowA ? "lock " + rowA.alignMethod + " off " + rowA.alignOffset + " phase " + rowA.alignLag + " frames " + rowA.envelopeFrames + " env " + rowA.envelope + (rowA.error ? " ERR " + rowA.error : "")
+                     : "no beacon row: " + JSON.stringify(rA).slice(0, 100)) +
+      " · (b) " + (rowB2 ? "lock " + rowB2.alignMethod + " off " + rowB2.alignOffset + " phase " + rowB2.alignLag + " frames " + rowB2.envelopeFrames +
+                           " fields " + JSON.stringify(fB) + (rowB2.error ? " ERR " + rowB2.error : "")
+                         : "no beacon row: " + JSON.stringify(rB).slice(0, 100)) +
+      " · validate " + vB.ok + " · parse " + JSON.stringify(parsedB));
+  }
+
   await tick("T22j: preset auto-detect — dual-geometry CRC vote on a high-rate emission…");
   {
     const pH = OC.profile.profileV3("high-rate");

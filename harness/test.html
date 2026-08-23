@@ -841,6 +841,44 @@ async function main() {
         " · agree " + JSON.stringify({ added: gotA.added, quar: gotA.quarantined, cons: gotA.lagConsensus }) +
         " · outlier " + JSON.stringify({ added: gotO.added, quar: gotO.quarantined }));
     }
+
+    await tick("TH6: tile-keyed ledger…");
+    {
+      // Tiles carry the SAME blocks under tile-shifted seeds, so a tile-blind
+      // ledger keyed (base seed, c) banks tile 3's slot c as tile 0's and the
+      // peel walks the wrong subsets (the 6-up harvest failure). The key is
+      // now the TILE seed: same (annulus, c) from two tiles lands in two rings,
+      // an unplaceable tile (−1) is skipped and counted, ringsFor hands every
+      // held tile-ring to the peel, and the planner prices a slot as held only
+      // when every tile seen holds it.
+      const pT = OC.profile.defaultProfile({ carriage: { droplet_bits: 24 }, tiling: 2 });
+      const ledT = HV.createLedger(pT, "th6");
+      const a0 = pT.annuli[0], s0 = a0.rotation.seed, s1 = OC.fountain.tileSeed(s0, 1);
+      const fakeT = { emitters: [
+        { tile: 0, annuli: [{ annulus: 0, droplets: [{ c: 1, hex: "beef00" }, { c: 2, hex: "cafe00" }] }] },
+        { tile: 1, annuli: [{ annulus: 0, droplets: [{ c: 1, hex: "beef11" }, { c: 3, hex: "cafe11" }] }] },
+        { tile: -1, annuli: [{ annulus: 0, droplets: [{ c: 1, hex: "dead99" }] }] }
+      ] };
+      const gotT = HV.absorb(ledT, fakeT, pT);
+      const ringsT = HV.ringsFor(ledT, pT);
+      const seeds = ringsT.map(r => r.seed);
+      const lockT = HV.lockFrom({ annulus: 0, alignOffset: 0, alignLag: 0 }, a0, pT, 0);
+      // header slot 0 priced by the banked header so the plan is only about slots 1–3
+      ledT.header = { K: 2, len: null, hex: "a702" };
+      const planT = HV.planSpans(ledT, [lockT], 0, HV.slotSpan(lockT, 4)[0], { minFrames: 1 });
+      const spanOf = c => HV.slotSpan(lockT, c);
+      const covers = c => planT.spans.some(s => s[0] <= spanOf(c)[0] && s[1] >= spanOf(c)[1]);
+      // slot 1 held by BOTH tiles → not planned; slots 2 and 3 each missing on one tile → planned
+      record("TH6 tile-keyed ledger: the same (annulus, c) from two tiles banks under two tile seeds without conflict, an unplaceable tile is skipped and counted, every held tile-ring reaches the peel, and the planner seeks a slot any seen tile still lacks",
+        gotT.added === 4 && gotT.conflicts === 0 && gotT.unplaced === 1 &&
+        ledT.rings[s0] && ledT.rings[s0][1] === "beef00" && ledT.rings[s1] && ledT.rings[s1][1] === "beef11" &&
+        seeds.length === 2 && seeds[0] === s0 && seeds[1] === s1 &&
+        HV.seenTileSeeds(ledT, s0).length === 2 &&
+        !covers(1) && covers(2) && covers(3),
+        "added " + gotT.added + " conflicts " + gotT.conflicts + " unplaced " + gotT.unplaced +
+        " · seeds " + JSON.stringify(seeds) + " (base " + s0 + ", tile1 " + s1 + ")" +
+        " · plan covers slot1 " + covers(1) + " slot2 " + covers(2) + " slot3 " + covers(3));
+    }
   }
 
   // Determinism spot-check: dtrig render of one frame is identical across two runs.

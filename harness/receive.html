@@ -213,7 +213,10 @@ function layerSummary(res) {
       const snr = a.snr_db ? Object.entries(a.snr_db).map(([k, v]) => "k" + k + ":" + v).join(" ") : "—";
       const lock = a.alignMethod ? (a.alignMethod + " lag " + a.alignLag + (a.alignMatchFrac ? " (" + a.alignMatchFrac + ")" : "")) : "—";
       const verdict = !a.present ? "<span class='dim'>unresolved</span>" :
-        a.beacon && a.envelope ? "<span class='ok'>ENVELOPE " + a.envelope + "</span>" :
+        a.beacon && a.envelope ? "<span class='ok'>ENVELOPE " + a.envelope +
+          (a.envelopeFields ? " — " + a.envelopeFields.preset + " session " + a.envelopeFields.session32.toString(16).padStart(8, "0") +
+            " K=" + a.envelopeFields.K + " tiling=" + a.envelopeFields.tiling + " loop=" + a.envelopeFields.loop_s + "s" : "") +
+          (a.envelopeFrames > 1 ? " ×" + a.envelopeFrames : "") + "</span>" :
         a.error ? "<span class='bad'>" + a.error + "</span>" :
         a.dropletsPassed != null ? "<span class='" + (a.dropletsPassed > 0 ? "ok" : "warn") + "'>" + a.dropletsPassed + "/" + a.dropletsTried + " droplets</span>" :
         a.ok ? "<span class='ok'>DECODES</span>" : "<span class='warn'>degraded</span>";
@@ -499,7 +502,11 @@ async function harvestDecode(v, geo, file) {
       // the per-frame solve was wired into the plain path only — the harvest
       // (where angled captures actually live) never got it; field 1-up run
       // showed the cost: k1 SNR +7 dB over the ladder, zero CRC passes
-      plateSolve: isV3h && $("m_solve").checked
+      plateSolve: isV3h && $("m_solve").checked,
+      // the beacon was plain-path only too, and could only preamble-lock — so
+      // the envelope had never been read from a field capture. With the
+      // framing-based aligner it joins mid-loop like everything else.
+      beacon: isV3h && $("m_beacon").checked
     });
     // kick the provisional next window's seeks under the decode
     if (!queue.length && !prefetch) {
@@ -543,8 +550,19 @@ async function harvestDecode(v, geo, file) {
       }
       if (lockedAny) everLocked = true;
       peel = HV.tryPeel(led, profile);
+      // The beacon's envelope, read off the air: the emitter's own statement of
+      // preset / session / K / tiling / loop — the settings string, from the wire.
+      for (const em of res.emitters) for (const a of (em.annuli || [])) {
+        if (!a || !a.beacon || !a.envelope) continue;
+        const f = a.envelopeFields;
+        line += f
+          ? " — <span class='ok'>ENVELOPE " + a.alignMethod + ": " + f.preset + " session " + f.session32.toString(16).padStart(8, "0") +
+            " K=" + f.K + " len=" + f.len + " tiling=" + f.tiling + " loop=" + f.loop_s + "s freeze=" + f.freeze_s + "s</span>"
+          : " — <span class='warn'>beacon frame " + a.envelope + " (unparsed)</span>";
+      }
       line += " — +" + got.added + " droplets (" + got.dup + " dup" +
         (got.quarantined ? ", <span class='warn'>" + got.quarantined + " quarantined</span>" : "") +
+        (got.unplaced ? ", <span class='warn'>" + got.unplaced + " on unplaced tiles (not banked)</span>" : "") +
         (got.conflicts ? ", <span class='bad'>" + got.conflicts + " byte-conflicts</span>" : "") +
         ") — " +
         (peel.ok ? "<span class='ok'>PEEL COMPLETE</span>"

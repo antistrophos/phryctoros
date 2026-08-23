@@ -343,14 +343,18 @@
             // mid-loop sync (fountain.js); reference mode correlates the seeds.
             // opts.alignHints[annulus index] = {min,max} predicted-lag band
             // (harvest hop windows price their own lag from the bootstrap lock).
-            // The beacon has neither fallback (its data is the control
-            // carousel, not the seeded stream, and it carries no droplets):
-            // preamble lock or an honest no-lock row — v0 limitation, mid-
-            // cycle beacon joins wait on a framing-based aligner.
             align = opts.payload
               ? dep("fountain").crcAlign(track, a, profile, syncBase, maxLagSym,
                   opts.alignHints && opts.alignHints[a.index])
               : demap.correlateStream(track, a, profile, maxLagSym, syncBase);
+          }
+          if (!align && a.beacon) {
+            // The beacon's mid-loop join: its data is the control carousel,
+            // not the seeded stream, and it carries no droplets — so it frames
+            // on ITSELF (magic + CRC8 + the envelope's CRC16; plate.beaconAlign).
+            // Until this existed the beacon only read from captures that saw
+            // the preamble, which field captures never do.
+            align = dep("plate").beaconAlign(track, a, profile, syncBase, opts.beaconAlign);
           }
           // CONSENSUS ADMISSION (second chance): sibling rings already agreed a
           // framing, so this ring is not choosing one — it is reading at a given
@@ -389,7 +393,30 @@
           var decoded = demap.decode(track, a, profile, align.offset);
 
           if (a.beacon) {
-            var env = dep("plate").beaconDecode(decoded, align.lag, a.rotation.M);
+            var plateB = dep("plate");
+            var envFrames = plateB.beaconFrames(decoded, align.lag, a.rotation.M);
+            if (!envFrames.length && align.method !== "framed") {
+              // A preamble lock that frames nothing is not a lock. At M=2 the
+              // preamble (1, M−1, 1, …) is ALL ONES, so any run of 1-bits in
+              // the control bytes matches it at some small lag — a mid-loop
+              // capture false-locks routinely (T22r found it). Frame on the
+              // carousel itself instead; the preamble path still wins at the
+              // stream head, where it is genuine and cheaper.
+              var alignF = plateB.beaconAlign(track, a, profile, syncBase, opts.beaconAlign);
+              if (alignF) {
+                align = alignF;
+                decoded = demap.decode(track, a, profile, align.offset);
+                envFrames = plateB.beaconFrames(decoded, align.lag, a.rotation.M);
+              }
+            }
+            // Prefer a frame that parses as a sealed v1 envelope (CRC16);
+            // fall back to the first CRC8-framed one (short synthetic envelopes).
+            var env = null, envFields = null;
+            for (var ef = 0; ef < envFrames.length && !envFields; ef++) {
+              var pf = plateB.parseEnvelope(envFrames[ef].envelope);
+              if (pf) { env = envFrames[ef]; envFields = pf; }
+            }
+            if (!env && envFrames.length) env = envFrames[0];
             return {
               annulus: a.index, layer: a.layer, present: true, beacon: true,
               contrast: round3(meanContrast), validFrames: valid,
@@ -397,6 +424,8 @@
               alignOffset: align.offset, alignLag: align.lag,
               envelope: env ? toHex(env.envelope) : null,
               envelopeAt: env ? env.at : null,
+              envelopeFrames: envFrames.length,
+              envelopeFields: envFields || undefined,
               error: env ? undefined : "beacon locked but no framed envelope in the captured span"
             };
           }
@@ -556,7 +585,11 @@
         if (payload && payload.bytes) payload.hex = toHex(payload.bytes);
         if (payload) delete payload.bytes;
       }
+      // Plate centre in capture pixels (H maps plate units → image): the
+      // spatial identity of this emitter for anything keyed per plate.
+      var cPx = em.H ? dep("geom").applyH(em.H, 0, 0) : null;
       return { fiducialWidthPx: Math.round(em.fiducialWidthPx * 10) / 10, method: em.method || "finder",
+               center: cPx ? [Math.round(cPx[0] * 10) / 10, Math.round(cPx[1] * 10) / 10] : undefined,
                conic: conicBriefs ? conicBriefs[emIdx] : undefined,
                plateSolve: solveBriefs ? solveBriefs[emIdx] : undefined,
                tile: tileOf ? tileOf[emIdx] : undefined,

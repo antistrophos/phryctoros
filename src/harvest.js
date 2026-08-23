@@ -36,9 +36,10 @@
       version: 1,
       profile_version: profile.profile_version,
       droplet_bits: F().geom(profile).dropletBits,
+      tiling: profile.tiling || 1, // tile-keyed rings: rings[tileSeed(seed, t)] (absent on old ledgers = 1)
       session: session || null,
       header: null,               // { K, len, hex } once any header droplet lands
-      rings: {},                  // rings[seed][c] = hex — witnessed droplets only
+      rings: {},                  // rings[seed][c] = hex — witnessed droplets only; seed is the TILE seed
       clips: []                   // provenance: { name, windows: [[t0,t1],…] } per clip harvested
     };
   }
@@ -61,11 +62,18 @@
   }
 
   /* Feed one window's decodeSequence result (payload mode) into the ledger.
-     Every CRC-passed droplet enters under its ring's seed; duplicates are
-     free (the same wire bytes recur every carousel period and across clips —
-     the dedupe key is (ring, c); session identity is the operator's ledger
-     choice pre-v3). The header is banked once: header BYTES are identical at
-     every header slot of every ring (they depend only on K + payload), so
+     Every CRC-passed droplet enters under its ring's TILE seed
+     (fountain.tileSeed(seed, tile) — tile 0 / untiled is the base seed, so
+     1-up ledgers are byte-identical to before); duplicates are free (the
+     same wire bytes recur every carousel period and across clips — the
+     dedupe key is (tile ring, c); session identity is the operator's ledger
+     choice pre-v3). Tiles carry the SAME blocks under DIFFERENT subsets, so
+     a tile-blind key would bank tile 3's slot c as tile 0's and poison the
+     peel — the 6-up harvest failure. An emitter whose tile could not be
+     placed (tile −1) is skipped: its seed cannot be named, so its droplets
+     cannot be banked honestly (the pipeline's own pool skips it the same
+     way). The header is banked once: header BYTES are identical at every
+     header slot of every ring and tile (they depend only on K + payload), so
      one sighting holds them all — the planner prices every header slot as
      held from that moment. A droplet_bits mismatch refuses the absorb
      rather than silently mixing framings. */
@@ -73,11 +81,17 @@
     var g = F().geom(profile);
     if (ledger.droplet_bits !== g.dropletBits)
       return { added: 0, dup: 0, conflicts: 0, quarantined: 0, mismatch: true };
-    var added = 0, dup = 0, conflicts = 0, quarantined = 0, consensus = null;
+    var added = 0, dup = 0, conflicts = 0, quarantined = 0, consensus = null, unplaced = 0;
     if (!res || res.error || !res.emitters)
       return { added: 0, dup: 0, conflicts: 0, quarantined: 0, lagConsensus: null };
     for (var e = 0; e < res.emitters.length; e++) {
       var annuli = res.emitters[e].annuli || [];
+      var tile = res.emitters[e].tile;
+      if (tile === -1) {
+        for (var ui = 0; ui < annuli.length; ui++) if (annuli[ui] && annuli[ui].droplets) unplaced += annuli[ui].droplets.length;
+        continue;
+      }
+      var tileIdx = tile > 0 ? tile : 0;
       // Lag consensus, IN FRAMES. Every ring shares the emission clock and the
       // capture start, so within a window every locked ring must agree about
       // WHEN the window began — but lag counts that ring's own SYMBOLS, and a
@@ -127,7 +141,7 @@
         }
         var pa = annulusByIndex(profile, a.annulus);
         if (!pa) continue;
-        var seed = pa.rotation.seed;
+        var seed = F().tileSeed(pa.rotation.seed, tileIdx);
         var ring = ledger.rings[seed] || (ledger.rings[seed] = {});
         for (var d = 0; d < a.droplets.length; d++) {
           var dr = a.droplets[d]; // { c, hex }
@@ -145,19 +159,45 @@
         }
       }
     }
-    return { added: added, dup: dup, conflicts: conflicts, quarantined: quarantined, lagConsensus: consensus };
+    return { added: added, dup: dup, conflicts: conflicts, quarantined: quarantined, unplaced: unplaced, lagConsensus: consensus };
   }
 
   /* The ledger in fountain.assemble's shape — the peel never knows whether a
-     droplet arrived this window, last window, or from another clip's take. */
+     droplet arrived this window, last window, from another clip's take, or
+     from another TILE: every held tile-ring goes in (tile-distinct seeds make
+     the pool collision-free, exactly as the pipeline's own multi-tile peel),
+     so a 6-up harvest peels across tiles the way a 6-up window does. */
   function ringsFor(ledger, profile) {
-    return profile.annuli.map(function (a) {
-      var seed = a.rotation.seed;
-      var held = ledger.rings[seed] || {};
+    var out = [];
+    for (var seedKey in ledger.rings) {
+      var held = ledger.rings[seedKey];
       var droplets = [];
       for (var c in held) droplets.push({ c: +c, bytes: hexToBytes(held[c]) });
-      return { seed: seed, droplets: droplets };
+      out.push({ seed: +seedKey, droplets: droplets });
+    }
+    // Stable order: the profile's base rings first (tile 0), then the rest
+    // ascending — the peel is order-independent, the receipt is not.
+    var baseSeeds = profile.annuli.map(function (a) { return a.rotation.seed; });
+    out.sort(function (x, y) {
+      var bx = baseSeeds.indexOf(x.seed), by = baseSeeds.indexOf(y.seed);
+      if (bx >= 0 && by >= 0) return bx - by;
+      if (bx >= 0) return -1;
+      if (by >= 0) return 1;
+      return x.seed - y.seed;
     });
+    return out;
+  }
+
+  /* Tile seeds that have banked anything for a given base ring — the tiles
+     the harvest has actually SEEN (a tile never in frame never enters the
+     union, so the planner never waits on what cannot be received). */
+  function seenTileSeeds(ledger, baseSeed) {
+    var tiles = ledger.tiling || 1, out = [];
+    for (var t = 0; t < tiles; t++) {
+      var s = F().tileSeed(baseSeed, t);
+      if (ledger.rings[s]) out.push(s);
+    }
+    return out;
   }
 
   /* EARLY EXIT's question, asked after every window: is the payload in hand?
@@ -287,11 +327,19 @@
     for (var li = 0; li < locks.length; li++) {
       var lock = locks[li];
       if (!lock) continue;
-      var held = ledger.rings[lock.seed] || {};
+      // Tiles share the clock, so slot c is simultaneous on every tile's
+      // ring; it is HELD only when every tile seen so far holds it (one
+      // tile's gap is still worth the seek). Untiled: the base seed alone.
+      var tileRings = seenTileSeeds(ledger, lock.seed).map(function (s) { return ledger.rings[s]; });
+      var heldAll = function (c) {
+        if (!tileRings.length) return false;
+        for (var ti = 0; ti < tileRings.length; ti++) if (tileRings[ti][c] === undefined) return false;
+        return true;
+      };
       var cA = Math.max(0, slotAtFrame(lock, f0));
       var cB = slotAtFrame(lock, f1);
       for (var c = cA; c <= cB; c++) {
-        if (held[c] !== undefined) continue;
+        if (heldAll(c)) continue;
         if (ledger.header && F().isHeaderSlot(c)) continue;
         var s = slotSpan(lock, c);
         var a = Math.max(f0, s[0]), b = Math.min(f1, s[1]);
@@ -379,7 +427,7 @@
 
   var API = {
     createLedger: createLedger, serializeLedger: serializeLedger, parseLedger: parseLedger,
-    counts: counts, absorb: absorb, ringsFor: ringsFor, tryPeel: tryPeel,
+    counts: counts, absorb: absorb, ringsFor: ringsFor, tryPeel: tryPeel, seenTileSeeds: seenTileSeeds,
     lockFrom: lockFrom, frameOfSymbol: frameOfSymbol, symbolAtFrame: symbolAtFrame,
     slotSpan: slotSpan, slotAtFrame: slotAtFrame, predictLag: predictLag,
     maxDropletFrames: maxDropletFrames,

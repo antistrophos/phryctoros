@@ -248,11 +248,15 @@
     };
   }
 
-  /* Decoded beacon symbols → the control carousel's bytes. Framing per the
-     emitter (emission.beaconSymbols): magic 0xB3, len, envelope bytes, CRC8
-     over everything before it; the carousel cycles, so scan every byte offset
-     in the reassembled absolute stream. Erasures poison their byte. */
-  function beaconDecode(decoded, lag, M) {
+  /* Decoded beacon symbols → EVERY CRC8-passing control frame in the window.
+     Framing per the emitter (emission.beaconSymbols): magic 0xB3, len,
+     envelope bytes, CRC8 over everything before it; the carousel cycles, so
+     scan every byte offset in the reassembled absolute stream. Erasures
+     poison their byte. `lag` only matters modulo the byte grid (8 bits at
+     M=2, 4 symbols at M=4) — the magic scan absorbs the rest — which is what
+     lets beaconAlign frame a capture that never saw the preamble. Frames
+     come back in stream order; each is { envelope, at, len }. */
+  function beaconFrames(decoded, lag, M) {
     var F = (typeof module !== "undefined" && module.exports) ? require("./fountain.js") : global.OC.fountain;
     var bitsPer = M === 4 ? 2 : 1;
     var bits = {};
@@ -278,6 +282,7 @@
       }
       bytes[k] = ok ? val : null;
     }
+    var out = [];
     for (var at = 0; at + 2 < nBytes; at++) {
       if (bytes[at] !== 0xB3) continue;
       var len = bytes[at + 1];
@@ -291,13 +296,95 @@
       if (!whole) continue;
       var u8 = new Uint8Array(frame);
       if (F.crc8(u8, u8.length - 1) !== u8[u8.length - 1]) continue;
-      return { envelope: u8.subarray(2, 2 + len), at: at, len: len };
+      out.push({ envelope: u8.subarray(2, 2 + len), at: at, len: len });
     }
-    return null;
+    return out;
+  }
+
+  /* First framed envelope in the window (the original single-frame read). */
+  function beaconDecode(decoded, lag, M) {
+    var fr = beaconFrames(decoded, lag, M);
+    return fr.length ? fr[0] : null;
+  }
+
+  /* §6 envelope, internal format v1 (emission.envelopeBytes is the writer):
+     version · family · flags (bit0 = high-rate) · session32 · K · len ·
+     pcrc16 · capability · freeze (ds) · loop (s) · tiling · 2 reserved ·
+     CRC16 over bytes 0–17. Returns the fields, or null when the bytes are
+     not a sealed v1 envelope (wrong length, version, or CRC). */
+  function parseEnvelope(env) {
+    var F = (typeof module !== "undefined" && module.exports) ? require("./fountain.js") : global.OC.fountain;
+    if (!env || env.length !== 20 || env[0] !== 1) return null;
+    var crc = F.crc16(env.subarray ? env.subarray(0, 18) : Array.prototype.slice.call(env, 0, 18));
+    if (((env[18] << 8) | env[19]) !== crc) return null;
+    return {
+      version: env[0], family: env[1], flags: env[2],
+      preset: (env[2] & 1) ? "high-rate" : "resilient",
+      session32: ((env[3] << 24) | (env[4] << 16) | (env[5] << 8) | env[6]) >>> 0,
+      K: env[7], len: (env[8] << 8) | env[9], pcrc: (env[10] << 8) | env[11],
+      capability: env[12], freeze_s: env[13] / 10, loop_s: env[14], tiling: env[15],
+      reserved: [env[16], env[17]]
+    };
+  }
+
+  /* FRAMING-BASED BEACON ALIGNER — the mid-loop join. The control carousel
+     is periodic and self-delimiting, so a capture that never saw the preamble
+     can still frame it: the data rings' crcAlign applied to a fixed frame.
+     Two unknowns, as always — the sub-symbol frame offset o ∈ [0, F) and the
+     bit phase (the byte grid: 8 phases at M=2, 4 at M=4; any whole-byte lag
+     is absorbed by the magic scan). Decode at each offset, try each phase,
+     collect CRC8-passing frames, and ACCEPT only on evidence stronger than
+     one 16-bit pass (magic + CRC8 is a 1-in-65536 chance PER candidate
+     position and a window tries ~10³ of them): a frame that also passes the
+     envelope's own CRC16 (24 check bits — the v1 envelope carries it), or
+     ≥2 frames with identical bytes (the carousel repeating), or opts.verify
+     saying yes. opts.minFrames = 1 lowers the bar explicitly (tests with
+     synthetic short envelopes). Score = passing frames, verified first;
+     ties break to the lower offset. Returns { offset, lag, score, max,
+     method: "framed", verified } or null — lag is the BIT PHASE, which is all
+     beaconDecode needs, not an emission-symbol count. */
+  function beaconAlign(track, annulus, profile, baseOverride, opts) {
+    var demap = (typeof module !== "undefined" && module.exports) ? require("./demap.js") : global.OC.demap;
+    opts = opts || {};
+    var F = annulus.rotation.frames_per_symbol, M = annulus.rotation.M;
+    var bitsPer = M === 4 ? 2 : 1, phases = 8 / bitsPer;
+    var base = (baseOverride !== undefined && baseOverride !== null) ? baseOverride : (track.firstValid || 0);
+    var verify = opts.verify || function (env) { return !!parseEnvelope(env); };
+    var minFrames = opts.minFrames || 2;
+    var best = null;
+    for (var oi = 0; oi < F; oi++) {
+      var off = base + oi;
+      var decoded = demap.decode(track, annulus, profile, off);
+      if (!decoded.length) continue;
+      for (var ph = 0; ph < phases; ph++) {
+        var frames = beaconFrames(decoded, ph, M);
+        if (!frames.length) continue;
+        var verified = false, agree = 1;
+        for (var q = 0; q < frames.length; q++) {
+          if (verify(frames[q].envelope)) { verified = true; break; }
+        }
+        if (!verified && frames.length >= 2) {
+          // identical bytes across repeats — the carousel's own redundancy
+          var counts = {};
+          for (var r = 0; r < frames.length; r++) {
+            var key = Array.prototype.join.call(frames[r].envelope, ",");
+            counts[key] = (counts[key] || 0) + 1;
+            if (counts[key] > agree) agree = counts[key];
+          }
+        }
+        if (!verified && agree < minFrames) continue;
+        var cand = { offset: off, lag: ph, score: frames.length, max: decoded.length, method: "framed", verified: verified };
+        if (!best || (cand.verified && !best.verified) ||
+            (cand.verified === best.verified && cand.score > best.score))
+          best = cand;
+      }
+    }
+    return best;
   }
 
   var API = { findBullseye: findBullseye, plateSolve: plateSolve, fitCircleEdge: fitCircleEdge,
-              beaconAnnulus: beaconAnnulus, beaconDecode: beaconDecode };
+              beaconAnnulus: beaconAnnulus, beaconDecode: beaconDecode, beaconFrames: beaconFrames,
+              beaconAlign: beaconAlign, parseEnvelope: parseEnvelope };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   global.OC = global.OC || {}; global.OC.plate = API;
 })(typeof window !== "undefined" ? window : globalThis);
