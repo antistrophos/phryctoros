@@ -395,13 +395,19 @@
           if (a.beacon) {
             var plateB = dep("plate");
             var envFrames = plateB.beaconFramesFor(decoded, align, a.rotation.M);
-            if (!envFrames.length && align.method !== "framed") {
-              // A preamble lock that frames nothing is not a lock. At M=2 the
-              // preamble (1, M−1, 1, …) is ALL ONES, so any run of 1-bits in
-              // the control bytes matches it at some small lag — a mid-loop
-              // capture false-locks routinely (T22r found it). Frame on the
-              // carousel itself instead; the preamble path still wins at the
-              // stream head, where it is genuine and cheaper.
+            var envParses = false;
+            for (var ep = 0; ep < envFrames.length && !envParses; ep++)
+              envParses = !!plateB.parseEnvelope(envFrames[ep].envelope);
+            if (align.method !== "framed" && !envParses) {
+              // A preamble lock that yields no PARSED envelope is suspect two
+              // ways: at M=2 the preamble (1, M−1, 1, …) is ALL ONES, so any
+              // run of 1-bits false-locks it at a small lag (T22r found it);
+              // and a genuine preamble lock reads only the v0 frame scan,
+              // which is blind to the chunked framing and can even chance-hit
+              // 0xB3 inside a chunk stream. Refit on the carousel itself —
+              // beaconAlign scans BOTH framings — and keep the original read
+              // if it finds nothing better (short synthetic envelopes parse
+              // as nothing yet still frame legitimately).
               var alignF = plateB.beaconAlign(track, a, profile, syncBase, opts.beaconAlign);
               if (alignF) {
                 align = alignF;
@@ -428,11 +434,18 @@
               contrast: round3(meanContrast), validFrames: valid,
               carrierRatio: carrierRatio, alignMethod: align.method || "preamble",
               alignOffset: align.offset, alignLag: align.lag,
+              framing: align.framing || "frame",
               symbols: decoded.length, erasures: nullSyms,
               erasureRate: decoded.length ? round3(nullSyms / decoded.length) : null,
               folded: align.folded || undefined,
               foldAgree: align.folded ? align.foldAgree : undefined,
               foldCompared: align.folded ? align.foldCompared : undefined,
+              // The fast tag = the envelope's CRC16 seal (ruling 2) — derivable
+              // under either framing once the envelope is in hand; chunked
+              // alignments also report how often the tag chunk itself was seen.
+              tag: env && env.envelope.length === 20 ? toHex(env.envelope.subarray ? env.envelope.subarray(18, 20) : env.envelope.slice(18, 20)) : undefined,
+              tagSightings: align.tagSightings !== undefined ? align.tagSightings : undefined,
+              chunkConflicts: align.chunkConflicts || undefined,
               envelope: env ? toHex(env.envelope) : null,
               envelopeAt: env ? env.at : null,
               envelopeFrames: envFrames.length,

@@ -551,6 +551,63 @@ async function main() {
       " · validate " + vB.ok + " · parse " + JSON.stringify(parsedB));
   }
 
+  await tick("T22s: chunked D-ring framing (ruling 2) — tag chunks, assembly, M=8, framing auto-detect…");
+  {
+    // The one long control frame becomes droplet-shaped chunks: tag chunks
+    // [0xC0][crc16][crc8] (4 B — THE TAG IS THE ENVELOPE'S SEAL) interleaved
+    // with data chunks [0xC0|idx][4 env bytes][crc8] (6 B, idx 1–5), cycle
+    // [T,1,T,2,T,3,T,4,T,5] = 50 B. Chunks assemble from anywhere — chunking
+    // is the fold done at the emitter — and a chunked alignment is accepted
+    // ONLY when the assembled envelope passes its CRC16 (per-chunk checks are
+    // 12 bits, never trusted alone).
+    const mk = (dring, n, slice0, framing) => {
+      const p = OC.profile.profileV3(undefined, { session32: 0x5EED7A61, render: { size_px: 448, scale_px_per_unit: 70 } });
+      OC.profile.applyDring(p, dring);
+      if (framing === "frame") delete p.beacon.framing;   // (c): v0 frame at the trial M/F
+      const v = OC.profile.validate(p);
+      const info = { K: 9, len: 17, pcrc: 0x7E57, capability: 1 };
+      const expTag = (() => { const e = OC.emission.envelopeBytes(p, info); return ((e[18] << 8) | e[19]); })();
+      let seq = OC.emission.renderSequence(p, n, { payloadInfo: info });
+      let sl = seq.frames.slice(slice0);
+      seq = null;
+      const r = OC.pipeline.decodeSequence(sl, p, { beacon: true });
+      sl = null;
+      const row = r.error ? null : r.emitters[0].annuli.find(a => a.beacon);
+      return { v, row, expTag, err: r.error };
+    };
+    // (a) chunked M=4/F=2 mid-loop (cycle = 200 symbols = 400 frames; the
+    //     capture is 1.1 cycles and starts past the 16-frame preamble)
+    const A = mk("c42", 500, 50);
+    const fA = A.row && A.row.envelopeFields;
+    const okA = !!(A.v.ok && A.row && !A.row.error && A.row.alignMethod === "framed" && A.row.framing === "chunked" &&
+                   fA && fA.session32 === 0x5EED7A61 && fA.K === 9 && fA.pcrc === 0x7E57 &&
+                   A.row.tag === A.expTag.toString(16).padStart(4, "0") && A.row.tagSightings >= 2 && !A.row.folded);
+    // (b) chunked M=8/F=2 — the A/B config: 3-bit symbols (cycle 134 symbols
+    //     = 268 frames), validator now admits beacon M=8 for the trial
+    const B = mk("c82", 400, 30);
+    const fB2 = B.row && B.row.envelopeFields;
+    const okB = !!(B.v.ok && B.row && !B.row.error && B.row.framing === "chunked" &&
+                   fB2 && fB2.session32 === 0x5EED7A61 && fB2.K === 9);
+    // (c) framing auto-detect: a v0-FRAMED emission at the trial M=4/F=2,
+    //     decoded by the same receiver (whose profile declares chunked) —
+    //     beaconAlign scans both framings, so the declaration is emit-side only
+    const C = mk("c42", 420, 30, "frame");
+    const fC = C.row && C.row.envelopeFields;
+    const okC = !!(C.row && !C.row.error && C.row.alignMethod === "framed" && C.row.framing === "frame" &&
+                   fC && fC.session32 === 0x5EED7A61);
+    record("T22s chunked D-ring (ruling 2): a mid-loop capture assembles the envelope from tag+data chunks sealed by its CRC16, the tag chunk (= the seal bytes) is sighted repeatedly at 1.07 s a pass, the M=8/F=2 A/B config packs 3-bit symbols and validates, and a v0-framed emission at the same M/F still reads — the receiver scans both framings, so framing is an emitter-side choice only",
+      okA && okB && okC,
+      "(a) " + (A.row ? A.row.alignMethod + "/" + A.row.framing + " tag " + A.row.tag + " ×" + A.row.tagSightings +
+                        " sess " + (fA && fA.session32.toString(16)) + (A.row.error ? " ERR " + A.row.error : "")
+                      : "no row: " + JSON.stringify(A.err).slice(0, 80)) +
+      " · (b) " + (B.row ? B.row.alignMethod + "/" + B.row.framing + " sess " + (fB2 && fB2.session32.toString(16)) +
+                           " validate " + B.v.ok + (B.row.error ? " ERR " + B.row.error : "")
+                         : "no row: " + JSON.stringify(B.err).slice(0, 80)) +
+      " · (c) " + (C.row ? C.row.alignMethod + "/" + C.row.framing + " sess " + (fC && fC.session32.toString(16)) +
+                           (C.row.error ? " ERR " + C.row.error : "")
+                         : "no row: " + JSON.stringify(C.err).slice(0, 80)));
+  }
+
   await tick("T22j: preset auto-detect — dual-geometry CRC vote on a high-rate emission…");
   {
     const pH = OC.profile.profileV3("high-rate");

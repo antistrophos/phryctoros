@@ -165,15 +165,16 @@
     return m;
   }
 
-  /* §5 beacon control carousel v0: the envelope mirror — magic, length, envelope
-     bytes, CRC8 — as M=2 bits (M=4: Gray pairs), cycled by the schedule. */
-  function beaconSymbols(envBytes, M) {
+  /* Pack a control byte stream into beacon symbols: MSB-first bits, log2(M)
+     per symbol (Gray-coded above M=2), zero-padded to a whole symbol. The
+     carousel cycles the SYMBOL array, so the pad is a fixed tail inside the
+     last symbol and the byte grid repeats identically each cycle (at M=8 the
+     3-bit symbols leave up to 2 pad bits per cycle; chunks never straddle
+     the cycle seam, so the phantom bits only poison seam-spanning candidate
+     positions, which fail their CRC8 and cost nothing). */
+  function beaconPack(payload, M) {
     var F = FN();
-    var payload = new Uint8Array(envBytes.length + 3);
-    payload[0] = 0xB3; payload[1] = envBytes.length & 255;
-    payload.set(envBytes, 2);
-    payload[payload.length - 1] = F.crc8(payload, payload.length - 1);
-    var bitsPer = M === 4 ? 2 : 1, nBits = payload.length * 8;
+    var bitsPer = M === 8 ? 3 : (M === 4 ? 2 : 1), nBits = payload.length * 8;
     var syms = new Uint8Array(Math.ceil(nBits / bitsPer));
     for (var s = 0; s < syms.length; s++) {
       var v = 0;
@@ -181,14 +182,58 @@
         var i = s * bitsPer + b;
         v = (v << 1) | (i < nBits ? (payload[i >> 3] >> (7 - (i & 7))) & 1 : 0);
       }
-      syms[s] = M === 4 ? F.toGray(v) : v;
+      syms[s] = M > 2 ? F.toGray(v) : v;
     }
     return syms;
   }
 
+  /* §5 beacon control carousel v0: the envelope mirror — magic, length, envelope
+     bytes, CRC8 — cycled by the schedule. One 23-byte frame under one CRC. */
+  function beaconSymbols(envBytes, M) {
+    var F = FN();
+    var payload = new Uint8Array(envBytes.length + 3);
+    payload[0] = 0xB3; payload[1] = envBytes.length & 255;
+    payload.set(envBytes, 2);
+    payload[payload.length - 1] = F.crc8(payload, payload.length - 1);
+    return beaconPack(payload, M);
+  }
+
+  /* CHUNKED control carousel — D-ring ruling 2 (2026-08-23, trial). The one
+     long frame becomes DROPLET-SHAPED chunks, because a 184-symbol frame
+     under a single CRC loses 84% of frames at 1% symbol error where a short
+     chunk loses 21% — and because the tag must read in ~1 s, not 3+.
+       tag chunk  = [0xC0][crc16 hi][crc16 lo][crc8]            (4 bytes)
+       data chunk = [0xC0|idx][4 envelope bytes][crc8], idx 1–5  (6 bytes)
+     The 20-byte v1 envelope is untouched underneath — chunking is transport
+     framing only, and its internal CRC16 still seals the assembly. THE TAG IS
+     THAT SEAL: envelope bytes 18–19, a digest of session/preset/flags/K/len/
+     pcrc/tiling/tile/grid that changes exactly when anything changes — the
+     content-switch interlock itself, confirmed automatically because the tag
+     and the assembly seal are the same bits. Cadence [T,1,T,2,T,3,T,4,T,5]:
+     50 bytes = 400 bits per cycle; at M=4/F=2 the tag lasts 1.07 s and
+     recurs every 2.67 s, the full envelope every 13.3 s. */
+  function beaconChunkStream(envBytes) {
+    var F = FN();
+    var buf = new Uint8Array(50), o = 0;
+    for (var i = 1; i <= 5; i++) {
+      buf[o] = 0xC0; buf[o + 1] = envBytes[18]; buf[o + 2] = envBytes[19];
+      buf[o + 3] = F.crc8(buf.subarray(o, o + 3), 3);
+      o += 4;
+      buf[o] = 0xC0 | i;
+      for (var j = 0; j < 4; j++) buf[o + 1 + j] = envBytes[4 * (i - 1) + j];
+      buf[o + 5] = F.crc8(buf.subarray(o, o + 5), 5);
+      o += 6;
+    }
+    return buf;
+  }
+
   function buildBeaconSchedule(profile, nFrames, envBytes) {
+    var M = profile.beacon.rotation.M;
+    var syms = profile.beacon.framing === "chunked"
+      ? beaconPack(beaconChunkStream(envBytes), M)
+      : beaconSymbols(envBytes, M);
     return buildSchedule({ rotation: profile.beacon.rotation }, profile.frame_rate_hz, nFrames,
-                         profile.preamble_symbols, beaconSymbols(envBytes, profile.beacon.rotation.M));
+                         profile.preamble_symbols, syms);
   }
 
   /* §6 recurring countdown: wall-clock frame → { freeze, eff }. The emission
@@ -801,7 +846,8 @@
     phaseAt: phaseAt, fiducialModules: fiducialModules, renderFrame: renderFrame,
     renderSequence: renderSequence, toImageData: toImageData, TAU: TAU,
     isV3: isV3, envelopeBytes: envelopeBytes, envelopeModules: envelopeModules,
-    beaconSymbols: beaconSymbols, buildBeaconSchedule: buildBeaconSchedule,
+    beaconSymbols: beaconSymbols, beaconPack: beaconPack, beaconChunkStream: beaconChunkStream,
+    buildBeaconSchedule: buildBeaconSchedule,
     timeline: timeline, renderFrameV3: renderFrameV3, renderFrameV3Tiled: renderFrameV3Tiled,
     tileLayout: tileLayout, centerMeans: centerMeans, bullseyeCov: bullseyeCov, quadrantCov: quadrantCov
   };

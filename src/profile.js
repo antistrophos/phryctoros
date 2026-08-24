@@ -471,8 +471,8 @@
       errors.push("donut budget " + pl.quiet_r + " leaves under 0.15 quiet to the innermost band edge");
 
     // Beacon (§5): M ∈ {2,4}; amplitude bound keeps the ring's quiet gaps.
-    if (p.beacon.rotation.M !== 2 && p.beacon.rotation.M !== 4)
-      errors.push("beacon M must be 2 (default) or 4 (negotiable)");
+    if (p.beacon.rotation.M !== 2 && p.beacon.rotation.M !== 4 && p.beacon.rotation.M !== 8)
+      errors.push("beacon M must be 2 (default), 4 (negotiable), or 8 (D-ring ruling-2 chunked trial)");
     if (p.beacon.harmonics.length !== p.beacon.amplitudes.length ||
         p.beacon.harmonics.length !== p.beacon.phases_deg.length)
       errors.push("beacon harmonics/amplitudes/phases_deg length mismatch");
@@ -522,7 +522,31 @@
     return { ok: errors.length === 0, errors: errors, warnings: warnings, flicker: flicker };
   }
 
-  var API = { defaultProfile: defaultProfile, profileV3: profileV3, isV3: isV3, bandBoundary: bandBoundary, validate: validate, sumAmp: sumAmp, sampleWindow: sampleWindow, deepMerge: deepMerge };
+  /* D-ring ruling-2 trial configs (2026-08-23). code: "f24" = v0 frame at
+     M=2/F=4 (the frozen §5 default), "c42" = chunked M=4/F=2 (the primary
+     trial: tag 1.07 s, envelope 13.3 s), "c82" = chunked M=8/F=2 (the A/B:
+     tag 0.71 s, SNR-risky at the 0.010 amplitude — the filming session
+     decides). Framing is auto-detected on receive, so this only has to be
+     right on the EMIT side; the receive/batch selects exist for the beacon's
+     M/F, which demodulation does need. Mutates and returns the profile;
+     anything unrecognised restores the default. */
+  function applyDring(p, code) {
+    if (!p || !p.beacon) return p;
+    if (code === "c42" || code === "c82") {
+      p.beacon.framing = "chunked";
+      p.beacon.rotation.M = code === "c82" ? 8 : 4;
+      p.beacon.rotation.gray = true;
+      p.beacon.rotation.frames_per_symbol = 2;
+    } else {
+      delete p.beacon.framing;
+      p.beacon.rotation.M = 2;
+      p.beacon.rotation.gray = false;
+      p.beacon.rotation.frames_per_symbol = 4;
+    }
+    return p;
+  }
+
+  var API = { defaultProfile: defaultProfile, profileV3: profileV3, isV3: isV3, bandBoundary: bandBoundary, validate: validate, sumAmp: sumAmp, sampleWindow: sampleWindow, deepMerge: deepMerge, applyDring: applyDring };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   global.OC = global.OC || {}; global.OC.profile = API;
 })(typeof window !== "undefined" ? window : globalThis);

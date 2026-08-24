@@ -107,6 +107,9 @@ async function runClip(name) {
   // quad=1: v3.1 amendment-2 quadrant corners (saddle-first registration +
   // saddle track-solve) — for clips filmed with the quadrant emitter.
   if (qs.get("quad") === "1" && profile.plate) profile.plate.corner_style = "quadrant";
+  // dring=c42|c82: D-ring ruling-2 trial beacon configs (framing auto-detects;
+  // M/F must match the emitter for demodulation).
+  if (qs.get("dring") && profile.beacon) OC.profile.applyDring(profile, qs.get("dring"));
   // capfps: the SEEK cadence — must match the clip's recording rate (a 60 fps
   // clip stepped at 1/30 silently drops every other camera frame). anw: the
   // analysis-crop width cap — raise to 2048 for 4K sources to keep module

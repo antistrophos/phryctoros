@@ -256,15 +256,19 @@
      M=2, 4 symbols at M=4) — the magic scan absorbs the rest — which is what
      lets beaconAlign frame a capture that never saw the preamble. Frames
      come back in stream order; each is { envelope, at, len }. */
-  function beaconFrames(decoded, lag, M) {
+  function beaconBitsPer(M) { return M === 8 ? 3 : (M === 4 ? 2 : 1); }
+
+  /* Reassemble the decoded symbol stream into control BYTES (null where any
+     contributing symbol was erased). `lag` matters modulo the byte grid only. */
+  function beaconBytes(decoded, lag, M) {
     var F = (typeof module !== "undefined" && module.exports) ? require("./fountain.js") : global.OC.fountain;
-    var bitsPer = M === 4 ? 2 : 1;
+    var bitsPer = beaconBitsPer(M);
     var bits = {};
     var maxPos = -1;
     for (var i = 0; i < decoded.length; i++) {
       var s = decoded[i].s;
       if (s === null || s === undefined) continue;
-      var v = M === 4 ? F.fromGray(s) : s;
+      var v = M > 2 ? F.fromGray(s) : s;
       var pos = (i + lag) * bitsPer;
       for (var b = 0; b < bitsPer; b++) {
         bits[pos + b] = (v >> (bitsPer - 1 - b)) & 1;
@@ -282,6 +286,13 @@
       }
       bytes[k] = ok ? val : null;
     }
+    return bytes;
+  }
+
+  function beaconFrames(decoded, lag, M) {
+    var F = (typeof module !== "undefined" && module.exports) ? require("./fountain.js") : global.OC.fountain;
+    var bytes = beaconBytes(decoded, lag, M);
+    var nBytes = bytes.length;
     var out = [];
     for (var at = 0; at + 2 < nBytes; at++) {
       if (bytes[at] !== 0xB3) continue;
@@ -301,6 +312,65 @@
     return out;
   }
 
+  /* CHUNKED framing scan — D-ring ruling 2 (emission.beaconChunkStream is the
+     writer): tag chunks [0xC0][crc16][crc8] and data chunks [0xC0|idx 1–5]
+     [4 envelope bytes][crc8]. Chunks assemble from ANYWHERE in the stream —
+     chunking is the fold done at the emitter — so a window covering one cycle
+     in pieces still yields the envelope. Per-chunk check is only magic nibble
+     + CRC8 (12 bits), so nothing here is trusted alone: the caller accepts a
+     chunked alignment ONLY when the assembled envelope passes its CRC16 seal,
+     and the fast tag is exactly that seal (bytes 18–19), so tag sightings are
+     confirmed the moment assembly succeeds. Same-index chunks that disagree
+     mark the slot conflicted (first-seen kept — assembly then fails the seal
+     unless the first was right; the counters surface it). */
+  function beaconChunkScan(decoded, lag, M) {
+    var F = (typeof module !== "undefined" && module.exports) ? require("./fountain.js") : global.OC.fountain;
+    var bytes = beaconBytes(decoded, lag, M);
+    var nBytes = bytes.length;
+    var data = {}, counts = [0, 0, 0, 0, 0, 0], conflicts = 0, tags = {};
+    for (var at = 0; at < nBytes; at++) {
+      var h = bytes[at];
+      if (h === null || (h & 0xF0) !== 0xC0) continue;
+      var idx = h & 15;
+      if (idx === 0) {
+        if (at + 3 >= nBytes) continue;
+        var t = [bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]];
+        if (t.some(function (x) { return x === null; })) continue;
+        var tu = new Uint8Array(t);
+        if (F.crc8(tu, 3) !== tu[3]) continue;
+        var tagVal = (tu[1] << 8) | tu[2];
+        tags[tagVal] = (tags[tagVal] || 0) + 1;
+        counts[0]++;
+      } else if (idx <= 5) {
+        if (at + 5 >= nBytes) continue;
+        var d = [bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3], bytes[at + 4], bytes[at + 5]];
+        if (d.some(function (x) { return x === null; })) continue;
+        var du = new Uint8Array(d);
+        if (F.crc8(du, 5) !== du[5]) continue;
+        var key = "" + idx;
+        if (data[key]) {
+          var samePayload = true;
+          for (var q = 1; q <= 4; q++) if (data[key][q] !== du[q]) { samePayload = false; break; }
+          if (!samePayload) conflicts++;
+        } else data[key] = du;
+        counts[idx]++;
+      }
+    }
+    var envelope = null, tag = null;
+    if (data["1"] && data["2"] && data["3"] && data["4"] && data["5"]) {
+      var env = new Uint8Array(20);
+      for (var c = 1; c <= 5; c++) for (var j = 0; j < 4; j++) env[4 * (c - 1) + j] = data["" + c][1 + j];
+      var crc = F.crc16(env.subarray(0, 18));
+      if (((env[18] << 8) | env[19]) === crc) { envelope = env; tag = crc; }
+    }
+    var bestTag = null, bestTagN = 0;
+    for (var tv in tags) if (tags[tv] > bestTagN) { bestTagN = tags[tv]; bestTag = +tv; }
+    return { envelope: envelope, tag: tag, sealed: envelope !== null,
+             tagSeen: bestTag, tagSightings: bestTagN,
+             tagMatchesSeal: envelope !== null && bestTag !== null && bestTag === tag,
+             chunkCounts: counts, conflicts: conflicts };
+  }
+
   /* First framed envelope in the window (the original single-frame read). */
   function beaconDecode(decoded, lag, M) {
     var fr = beaconFrames(decoded, lag, M);
@@ -312,6 +382,11 @@
      doubled ring, not in the contiguous stream; anything else reads the
      stream at the alignment's bit phase. */
   function beaconFramesFor(decoded, align, M) {
+    if (align && align.framing === "chunked") {
+      var scan = beaconChunkScan(decoded, align.lag, M);
+      return scan.sealed ? [{ envelope: scan.envelope, at: null, chunked: true,
+                              tag: scan.tag, tagSightings: scan.tagSightings }] : [];
+    }
     if (align && align.folded && align.ring) {
       var P = align.ring.length, doubled = new Array(2 * P);
       for (var j = 0; j < 2 * P; j++) {
@@ -371,7 +446,10 @@
     var demap = (typeof module !== "undefined" && module.exports) ? require("./demap.js") : global.OC.demap;
     opts = opts || {};
     var F = annulus.rotation.frames_per_symbol, M = annulus.rotation.M;
-    var bitsPer = M === 4 ? 2 : 1, phases = 8 / bitsPer;
+    // Bit phases that change the byte grid: 8 at 1 bit/symbol, 4 at 2 (lag
+    // parity beyond that repeats the grid), 8 again at 3 (3 and 8 coprime —
+    // lag 0..7 walks every bit shift).
+    var bitsPer = beaconBitsPer(M), phases = bitsPer === 2 ? 4 : 8;
     var base = (baseOverride !== undefined && baseOverride !== null) ? baseOverride : (track.firstValid || 0);
     var verify = opts.verify || function (env) { return !!parseEnvelope(env); };
     var minFrames = opts.minFrames || 2;
@@ -400,25 +478,36 @@
       if (!decoded.length) continue;
       for (var ph = 0; ph < phases; ph++) {
         var frames = beaconFrames(decoded, ph, M);
-        if (!frames.length) continue;
-        var verified = false, agree = 1;
-        for (var q = 0; q < frames.length; q++) {
-          if (verify(frames[q].envelope)) { verified = true; break; }
-        }
-        if (!verified && frames.length >= 2) {
-          // identical bytes across repeats — the carousel's own redundancy
-          var counts = {};
-          for (var r = 0; r < frames.length; r++) {
-            var key = Array.prototype.join.call(frames[r].envelope, ",");
-            counts[key] = (counts[key] || 0) + 1;
-            if (counts[key] > agree) agree = counts[key];
+        if (frames.length) {
+          var verified = false, agree = 1;
+          for (var q = 0; q < frames.length; q++) {
+            if (verify(frames[q].envelope)) { verified = true; break; }
           }
+          if (!verified && frames.length >= 2) {
+            // identical bytes across repeats — the carousel's own redundancy
+            var counts = {};
+            for (var r = 0; r < frames.length; r++) {
+              var key = Array.prototype.join.call(frames[r].envelope, ",");
+              counts[key] = (counts[key] || 0) + 1;
+              if (counts[key] > agree) agree = counts[key];
+            }
+          }
+          if (verified || agree >= minFrames)
+            consider({ offset: off, lag: ph, score: frames.length, max: decoded.length,
+                       method: "framed", framing: "frame", verified: verified });
         }
-        if (!verified && agree < minFrames) continue;
-        consider({ offset: off, lag: ph, score: frames.length, max: decoded.length, method: "framed", verified: verified });
+        // Chunked framing (ruling 2) — scanned at every candidate alignment
+        // regardless of what the profile declares, so the receiver never has
+        // to know which framing the emitter runs. A chunked alignment is
+        // accepted ONLY sealed (per-chunk checks are 12 bits — never alone).
+        var scan = beaconChunkScan(decoded, ph, M);
+        if (scan.sealed)
+          consider({ offset: off, lag: ph, score: scan.chunkCounts.reduce(function (a, b) { return a + b; }, 0),
+                     max: decoded.length, method: "framed", framing: "chunked", verified: true,
+                     tag: scan.tag, tagSightings: scan.tagSightings, chunkConflicts: scan.conflicts });
       }
       if (best && best.offset === off && !best.folded) continue; // contiguous frame at this offset — no fold needed
-      if (Psym > 0 && decoded.length >= Psym) {
+      if (Psym > 0 && (frameBytes * 8) % bitsPer === 0 && decoded.length >= Psym) {
         var ring = new Array(Psym), seen = 0, compared = 0, agreed = 0;
         for (var di = 0; di < decoded.length; di++) {
           var sv = decoded[di].s;
@@ -437,7 +526,7 @@
           var ff = beaconFrames(doubled, ph2, M);
           for (var fq = 0; fq < ff.length; fq++) {
             if (!verify(ff[fq].envelope)) continue;
-            consider({ offset: off, lag: ph2, score: 1, max: decoded.length, method: "framed", verified: true,
+            consider({ offset: off, lag: ph2, score: 1, max: decoded.length, method: "framed", framing: "frame", verified: true,
                        folded: true, foldAgree: compared ? Math.round(1000 * agreed / compared) / 1000 : null, foldCompared: compared,
                        ring: ring });
             break;
@@ -450,6 +539,7 @@
 
   var API = { findBullseye: findBullseye, plateSolve: plateSolve, fitCircleEdge: fitCircleEdge,
               beaconAnnulus: beaconAnnulus, beaconDecode: beaconDecode, beaconFrames: beaconFrames,
+              beaconBytes: beaconBytes, beaconChunkScan: beaconChunkScan,
               beaconFramesFor: beaconFramesFor, beaconAlign: beaconAlign, parseEnvelope: parseEnvelope };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   global.OC = global.OC || {}; global.OC.plate = API;

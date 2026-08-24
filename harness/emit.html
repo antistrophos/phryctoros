@@ -72,6 +72,11 @@
   <p style="margin:.3rem 0">
     <label><input id="quadChk" type="checkbox"> <b>v3.1: quadrant corner targets</b> (amendment 2 — saddle registration)</label>
     <label style="margin-left:.8rem"><input id="qrPersChk" type="checkbox"> diagnostic: persistent center QR (off-contract)</label>
+    <label style="margin-left:.8rem">D-ring <select id="dringSel">
+      <option value="f24">v0 frame — M=2/F=4 (envelope 24.5 s)</option>
+      <option value="c42">chunked M=4/F=2 (ruling-2 trial: tag 1.07 s, envelope 13.3 s)</option>
+      <option value="c82">chunked M=8/F=2 (the A/B: tag 0.71 s — SNR-risky at 0.010 amp)</option>
+    </select></label>
   </p>
   <p style="margin:.4rem 0 .1rem">
     <label>settings string <input id="settingsStr" readonly></label>
@@ -115,6 +120,10 @@ $("rateSel").onchange = () => {
     : OC.profile.defaultProfile();   // "15" — the v2 rate variants were pruned 2026-08-21
   $("profileTxt").value = JSON.stringify(profile, null, 2);
 };
+// D-ring ruling-2 trial select → the profile's beacon config (framing + M/F).
+// Applied at prepareV3 like the other toggles; the receiver auto-detects the
+// framing and gets M/F from the settings string's dring= key.
+function ocApplyDring(p) { return OC.profile.applyDring(p, $("dringSel") ? $("dringSel").value : "f24"); }
 let running = false, schedules = null, loopFrames = 0, t0 = 0, lastF = -1, fidCanvas = null;
 let drawn = 0, fpsWindow = [], ticker = null;
 let beaconSchedule = null, qrCanvas = null, effLoopFrames = 0, schedulesT = null; // v3 state
@@ -582,6 +591,7 @@ function prepareV3() {
   profile.tiling = +$("tileSel").value || 1;
   profile.qr_persistent = $("qrPersChk").checked;
   profile.plate.corner_style = $("quadChk").checked ? "quadrant" : "bullseye";
+  ocApplyDring(profile);
   profile.session32 = (Math.random() * 4294967296) >>> 0;
   const layout = OC.emission.tileLayout(profile);
   let carousels = null, envInfo = null, payloadBytes = null;
@@ -812,6 +822,7 @@ function ocSettingsString() {
     "tiling=" + $("tileSel").value,
     "quad=" + ($("quadChk").checked ? 1 : 0),
     "qrp=" + ($("qrPersChk").checked ? 1 : 0),
+    "dring=" + ($("dringSel") ? $("dringSel").value : "f24"),
     "loop=" + (+$("loopSecs").value || 60),
     "freeze=" + (+$("cdSecs").value || 3),
     "capfps=" + (rate === "15" ? 30 : 60)].join(" ");
@@ -896,6 +907,8 @@ function ocRefreshMode() {
     $("tileSel").value + "-up"];
   if ($("quadChk").checked) bits.push("quadrant corners");
   if ($("qrPersChk").checked) bits.push("persistent QR");
+  const dr = $("dringSel") ? $("dringSel").value : "f24";
+  if (dr !== "f24") bits.push("D-ring " + (dr === "c82" ? "chunked M=8/F=2 (A/B)" : "chunked M=4/F=2 (trial)"));
   bits.push("film at " + (rate === "15" ? "30" : "60") + " fps");
   const el = $("modeSummary");
   el.textContent = bits.join("  ·  ") +
@@ -904,7 +917,7 @@ function ocRefreshMode() {
   $("settingsStr").value = ocSettingsString();
   ocCarouselInfo();
 }
-for (const id of ["payloadChk", "rateSel", "tileSel", "quadChk", "qrPersChk", "loopSecs", "cdSecs", "freezeChk"])
+for (const id of ["payloadChk", "rateSel", "tileSel", "quadChk", "qrPersChk", "dringSel", "loopSecs", "cdSecs", "freezeChk"])
   $(id).addEventListener("change", ocRefreshMode);
 // K tracks the message length, so the coverage moves as you type.
 $("payloadTxt").addEventListener("input", ocCarouselInfo);
