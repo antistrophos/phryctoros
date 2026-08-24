@@ -388,9 +388,16 @@
     // EVERY face — the finder path then registers angled captures
     // continuously (the interim lock until saddle-first lands). Suppresses
     // the center bullseye and the beacon.
+    //
+    // D-ring ruling 1b: with beacon.placement "a-inner" the control betas
+    // ride band A's inner boundary instead of the breaker pair — the breaker
+    // renders STATIC (the derived-identity degrade rung) — and since the ring
+    // no longer shares the donut with the QR, it keeps its (frozen) contour
+    // through the countdown face too.
+    var dringAt = profile.beacon.placement === "a-inner";
     var centerQR = !!(opts.countdown || profile.qr_persistent);
     var beacon = null;
-    if (!centerQR) {
+    if (!centerQR || dringAt) {
       var bs = opts.beaconSchedule;
       if (bs === undefined) bs = buildBeaconSchedule(profile, f + 1, opts.envBytes || envelopeBytes(profile, opts.payloadInfo || null));
       var phiB = bs ? phaseAt({ rotation: profile.beacon.rotation }, bs, fps, f) : 0;
@@ -402,6 +409,12 @@
           return { k: k, a: profile.beacon.amplitudes[j], beta: profile.beacon.phases_deg[j] * Math.PI / 180 - k * phiB };
         })
       };
+    }
+    var brBeacon = dringAt ? null : beacon; // what the breaker pair carries
+    if (dringAt && beacon) {
+      bands[0].lo.betas = beacon.betas;
+      bands[0].lo.sum = beacon.sum;
+      bands[0].rMin = bands[0].lo.r0 - beacon.sum - pad;
     }
     var qrm = null, qrHalf = 0, qrModU = 0, qrN = 0;
     if (centerQR) {
@@ -418,7 +431,7 @@
       tMap = angleMap(size);
       loT = bands.map(function (B) { return contourTable(B.lo.r0, B.lo.betas); });
       hiT = bands.map(function (B) { return contourTable(B.hi.r0, B.hi.betas); });
-      if (beacon) bconT = contourTable(0, beacon.betas);
+      if (brBeacon) bconT = contourTable(0, brBeacon.betas);
     }
 
     // Loop invariants hoisted out of the ~1M-pixel body: every one of these
@@ -428,7 +441,7 @@
     var quietLim = pl.quiet_r + pad;
     var centerRout = pl.center.r_out;
     var brIn = pl.breaker.r_in, brOut = pl.breaker.r_out;
-    var reach = beacon ? beacon.sum : 0;
+    var reach = brBeacon ? brBeacon.sum : 0;
     var brLoLim = brIn - reach - pad, brHiLim = brOut + reach + pad;
     var qrDark = centerQR ? profile.qr.dark : 0;
     var nb = bands.length;
@@ -468,7 +481,7 @@
               if (fast) {
                 var bt = tMap[rowOff + px], bj = bt | 0, bfr = bt - bj;
                 dlt = bconT ? bconT[bj] + (bconT[bj + 1] - bconT[bj]) * bfr : 0;
-              } else dlt = beacon ? evalBetas(beacon.betas, atan2(y, x)) : 0;
+              } else dlt = brBeacon ? evalBetas(brBeacon.betas, atan2(y, x)) : 0;
               var covB = clamp01((r - (loB + dlt)) * scale / soft + 0.5) * clamp01(((hiBk + dlt) - r) * scale / soft + 0.5);
               if (covB > cov) cov = covB;
             }
@@ -577,20 +590,43 @@
       return s;
     }
 
+    var dringAt = profile.beacon.placement === "a-inner";
     var centerQR = !!(opts.countdown || profile.qr_persistent);
-    var beacon = null;
-    if (!centerQR) {
-      var bs = opts.beaconSchedule;
-      if (bs === undefined) bs = buildBeaconSchedule(profile, f + 1, opts.envBytes || envelopeBytes(profile, opts.payloadInfo || null));
-      var phiB = bs ? phaseAt({ rotation: profile.beacon.rotation }, bs, fps, f) : 0;
+    var mkBetas = function (phiB) {
       var bSum = 0;
       for (var q = 0; q < profile.beacon.amplitudes.length; q++) bSum += profile.beacon.amplitudes[q];
-      beacon = {
+      return {
         sum: bSum,
         betas: profile.beacon.harmonics.map(function (k, j) {
           return { k: k, a: profile.beacon.amplitudes[j], beta: profile.beacon.phases_deg[j] * Math.PI / 180 - k * phiB };
         })
       };
+    };
+    var beacon = null;      // breaker placement: tile 0's ring pair
+    var beaconT = null;     // a-inner placement: one control contour PER TILE
+    if (dringAt) {
+      // Ruling 1b: every tile carries the D-ring at band A's inner boundary,
+      // each modulated by ITS OWN envelope (b[16] = the carrying tile), so the
+      // schedules differ per tile. The ring is outside the donut, so it keeps
+      // its contour through the countdown face too.
+      var bsT = opts.beaconSchedulesT;
+      if (!bsT) {
+        bsT = [];
+        for (var bt0 = 0; bt0 < layout.n; bt0++)
+          bsT.push(buildBeaconSchedule(profile, f + 1, envelopeBytes(profile, opts.payloadInfo || null, bt0)));
+      }
+      beaconT = [];
+      for (var bt1 = 0; bt1 < layout.n; bt1++) {
+        var bItem = mkBetas(bsT[bt1] ? phaseAt({ rotation: profile.beacon.rotation }, bsT[bt1], fps, f) : 0);
+        beaconT.push(bItem);
+        bandsT[bt1][0].lo.betas = bItem.betas;
+        bandsT[bt1][0].lo.sum = bItem.sum;
+        bandsT[bt1][0].rMin = bandsT[bt1][0].lo.r0 - bItem.sum - pad;
+      }
+    } else if (!centerQR) {
+      var bs = opts.beaconSchedule;
+      if (bs === undefined) bs = buildBeaconSchedule(profile, f + 1, opts.envBytes || envelopeBytes(profile, opts.payloadInfo || null));
+      beacon = mkBetas(bs ? phaseAt({ rotation: profile.beacon.rotation }, bs, fps, f) : 0);
     }
     var qrm = null, qrHalf = 0, qrModU = 0, qrN = 0;
     if (centerQR) {
@@ -795,7 +831,15 @@
       // timeline(). One beacon schedule and one envelope serve every frame.
       var envB = opts.envBytes || envelopeBytes(profile, opts.payloadInfo || null);
       var beaconSchedule = opts.beaconSchedule !== undefined ? opts.beaconSchedule : buildBeaconSchedule(profile, n, envB);
+      // Ruling 1b: at a-inner every tile modulates its own envelope (b[16]),
+      // so the tiled path carries one beacon schedule PER TILE.
+      var beaconSchedulesT = opts.beaconSchedulesT;
       var layout = tileLayout(profile);
+      if (layout.n > 1 && profile.beacon.placement === "a-inner" && !beaconSchedulesT) {
+        beaconSchedulesT = [];
+        for (var bst = 0; bst < layout.n; bst++)
+          beaconSchedulesT.push(buildBeaconSchedule(profile, n, envelopeBytes(profile, opts.payloadInfo || null, bst)));
+      }
       if (layout.n > 1) {
         // Per-tile carousels (tile-shifted seeds; same payload blocks) and
         // per-tile schedules. opts.payloadBytes triggers payload mode; a
@@ -810,8 +854,8 @@
         }
         var framesT = [];
         for (var ft = 0; ft < n; ft++)
-          framesT.push({ f: ft, img: renderFrameV3Tiled(profile, ft, { trig: opts.trig, schedulesT: schedulesT, beaconSchedule: beaconSchedule, envBytes: envB }) });
-        return { frames: framesT, schedulesT: schedulesT, beaconSchedule: beaconSchedule };
+          framesT.push({ f: ft, img: renderFrameV3Tiled(profile, ft, { trig: opts.trig, schedulesT: schedulesT, beaconSchedule: beaconSchedule, beaconSchedulesT: beaconSchedulesT, envBytes: envB }) });
+        return { frames: framesT, schedulesT: schedulesT, beaconSchedule: beaconSchedule, beaconSchedulesT: beaconSchedulesT };
       }
       // opts.payloadBytes triggers payload mode here exactly as in the tiled
       // branch (it used to be tiled-only — an untiled payloadBytes sequence

@@ -384,10 +384,16 @@
 
   function isV3(p) { return !!(p && p.bands && p.plate); }
 
-  /* Resolve a band boundary ref to { r0, sum, edge } (sum = worst excursion). */
+  /* Resolve a band boundary ref to { r0, sum, edge } (sum = worst excursion).
+     D-ring ruling 1b (2026-08-23): with beacon.placement "a-inner", band A's
+     fixed inner boundary CARRIES the control betas, so its worst excursion is
+     the beacon amplitude sum — the pinch and quiet arithmetic see the wiggle. */
   function bandBoundary(p, ref) {
     if (ref.edge !== undefined) { var a = p.annuli[ref.edge]; return { r0: a.r0, sum: sumAmp(a), edge: a }; }
-    return { r0: ref.fixed, sum: 0, edge: null };
+    var s = 0;
+    if (p.beacon && p.beacon.placement === "a-inner" && p.bands && ref === p.bands[0].lo)
+      for (var q = 0; q < p.beacon.amplitudes.length; q++) s += p.beacon.amplitudes[q];
+    return { r0: ref.fixed, sum: s, edge: null };
   }
 
   /* The v3 validator. Geometry rules derive from the ACTUAL numbers (a probe
@@ -462,23 +468,39 @@
       errors.push("plate.corner_style must be \"bullseye\" (frozen v3) or \"quadrant\" (v3.1 amendment 2)");
     if (cstyle === "quadrant")
       warnings.push("corner_style quadrant is the v3.1 amendment-2 mark — pending the full v3.1 freeze; the frozen v3 contract's corners are bullseyes");
-    if (pl.center.r_out + 0.02 > pl.breaker.r_in - beaconSum)
+    // D-ring ruling 1b: with placement "a-inner" the control betas ride band
+    // A's inner boundary and the BREAKER RENDERS STATIC (it stays one
+    // generation as the derived-identity degrade rung, retiring at v4) — so
+    // the breaker-gap checks see no excursion, and the donut-quiet floor
+    // amends 0.15 → 0.125 (the v3.1 draft's own arithmetic: 1.05 − 0.025 −
+    // 0.90). At the frozen default everything reads exactly as before.
+    var dringAt = p.beacon.placement === "a-inner";
+    var brExc = dringAt ? 0 : beaconSum;
+    if (pl.center.r_out + 0.02 > pl.breaker.r_in - brExc)
       errors.push("beacon excursion erodes the center-bullseye/breaker gap (0.60→0.70 must hold at worst wiggle)");
-    if (pl.breaker.r_out + beaconSum > pl.quiet_r)
-      errors.push("breaker + beacon excursion " + (pl.breaker.r_out + beaconSum).toFixed(3) + " exceeds the donut budget " + pl.quiet_r);
+    if (pl.breaker.r_out + brExc > pl.quiet_r)
+      errors.push("breaker + beacon excursion " + (pl.breaker.r_out + brExc).toFixed(3) + " exceeds the donut budget " + pl.quiet_r);
     var innermostLo = bandBoundary(p, p.bands[0].lo);
-    if (pl.quiet_r + 0.15 > innermostLo.r0 - innermostLo.sum + 1e-9)
-      errors.push("donut budget " + pl.quiet_r + " leaves under 0.15 quiet to the innermost band edge");
+    var quietFloor = dringAt ? 0.125 : 0.15;
+    if (pl.quiet_r + quietFloor > innermostLo.r0 - innermostLo.sum + 1e-9)
+      errors.push("donut budget " + pl.quiet_r + " leaves under " + quietFloor + " quiet to the innermost band edge" +
+                  (dringAt ? " (a-inner D-ring: 1.05 − excursion " + innermostLo.sum.toFixed(3) + ")" : ""));
 
     // Beacon (§5): M ∈ {2,4}; amplitude bound keeps the ring's quiet gaps.
+    // At a-inner the bound is the CONTROL CLASS itself: 0.025 is what the
+    // pinch + donut budgets price (a full data edge breaks both).
     if (p.beacon.rotation.M !== 2 && p.beacon.rotation.M !== 4 && p.beacon.rotation.M !== 8)
       errors.push("beacon M must be 2 (default), 4 (negotiable), or 8 (D-ring ruling-2 chunked trial)");
+    if (p.beacon.placement !== undefined && p.beacon.placement !== "a-inner")
+      errors.push("beacon.placement must be absent (breaker — frozen §5) or \"a-inner\" (D-ring ruling 1b)");
     if (p.beacon.harmonics.length !== p.beacon.amplitudes.length ||
         p.beacon.harmonics.length !== p.beacon.phases_deg.length)
       errors.push("beacon harmonics/amplitudes/phases_deg length mismatch");
-    if (beaconSum > 0.045 + 1e-9)
+    if (dringAt && beaconSum > 0.025 + 1e-9)
+      errors.push("D-ring amplitude sum " + beaconSum.toFixed(3) + " exceeds the 0.025 control class (ruling 1b)");
+    else if (beaconSum > 0.045 + 1e-9)
       errors.push("beacon amplitude sum " + beaconSum.toFixed(3) + " exceeds the ring-gap bound 0.045");
-    else if (beaconSum > 0.030 + 1e-9)
+    else if (!dringAt && beaconSum > 0.030 + 1e-9)
       warnings.push("beacon amplitude sum " + beaconSum.toFixed(3) + " above 0.030 — quiet-zone margin thins");
 
     if (p.qr_persistent)
@@ -532,13 +554,19 @@
      anything unrecognised restores the default. */
   function applyDring(p, code) {
     if (!p || !p.beacon) return p;
-    if (code === "c42" || code === "c82") {
+    if (code === "c42" || code === "c82" || code === "a42" || code === "a82") {
       p.beacon.framing = "chunked";
-      p.beacon.rotation.M = code === "c82" ? 8 : 4;
+      p.beacon.rotation.M = (code === "c82" || code === "a82") ? 8 : 4;
       p.beacon.rotation.gray = true;
       p.beacon.rotation.frames_per_symbol = 2;
+      // a42/a82 — ruling 1b: the control ring RELOCATES to band A's inner
+      // boundary on every tile (per-tile envelopes, announced identity); the
+      // breaker renders static and stays the derived-identity degrade rung.
+      if (code === "a42" || code === "a82") p.beacon.placement = "a-inner";
+      else delete p.beacon.placement;
     } else {
       delete p.beacon.framing;
+      delete p.beacon.placement;
       p.beacon.rotation.M = 2;
       p.beacon.rotation.gray = false;
       p.beacon.rotation.frames_per_symbol = 4;

@@ -31,10 +31,19 @@ function setup(m) {
       schedulesT.push(OC.emission.buildSchedules(P, m.effLoopFrames, carT));
     }
   }
+  var beaconSchedulesT = null;
+  if (P.beacon.placement === "a-inner" && layout.n > 1) {
+    // ruling 1b: per-tile envelopes (b[16]) → per-tile beacon schedules
+    beaconSchedulesT = [];
+    for (var bt = 0; bt < layout.n; bt++)
+      beaconSchedulesT.push(OC.emission.buildBeaconSchedule(P, m.effLoopFrames,
+        OC.emission.envelopeBytes(P, m.envInfo || null, bt)));
+  }
   S = {
     schedules: OC.emission.buildSchedules(P, m.effLoopFrames, carousels),
     schedulesT: schedulesT,
     beaconSchedule: OC.emission.buildBeaconSchedule(P, m.effLoopFrames, envBytes),
+    beaconSchedulesT: beaconSchedulesT,
     envBytes: envBytes,
     qrModules: OC.emission.envelopeModules(P.qr, envBytes),
     effLoopFrames: m.effLoopFrames
@@ -49,6 +58,7 @@ onmessage = function (e) {
     var eff = tl.eff % S.effLoopFrames;
     var img = OC.emission.renderFrame(P, eff, {
       schedules: S.schedules, schedulesT: S.schedulesT, beaconSchedule: S.beaconSchedule,
+      beaconSchedulesT: S.beaconSchedulesT,
       envBytes: S.envBytes, countdown: !!tl.freeze, qrModules: S.qrModules, fast: true
     });
     var n = img.w * img.h, src = img.data;

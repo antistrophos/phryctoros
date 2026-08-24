@@ -73,9 +73,11 @@
     <label><input id="quadChk" type="checkbox"> <b>v3.1: quadrant corner targets</b> (amendment 2 — saddle registration)</label>
     <label style="margin-left:.8rem"><input id="qrPersChk" type="checkbox"> diagnostic: persistent center QR (off-contract)</label>
     <label style="margin-left:.8rem">D-ring <select id="dringSel">
-      <option value="f24">v0 frame — M=2/F=4 (envelope 24.5 s)</option>
-      <option value="c42">chunked M=4/F=2 (ruling-2 trial: tag 1.07 s, envelope 13.3 s)</option>
-      <option value="c82">chunked M=8/F=2 (the A/B: tag 0.71 s — SNR-risky at 0.010 amp)</option>
+      <option value="f24">v0 frame — M=2/F=4 @ breaker (envelope 24.5 s)</option>
+      <option value="c42">chunked M=4/F=2 @ breaker (ruling-2 trial: tag 1.07 s, envelope 13.3 s)</option>
+      <option value="c82">chunked M=8/F=2 @ breaker (the A/B: tag 0.71 s — SNR-risky at 0.010 amp)</option>
+      <option value="a42">THE D-RING: chunked M=4/F=2 @ A-inner, per tile (ruling 1b — breaker goes static)</option>
+      <option value="a82">D-ring @ A-inner, M=8/F=2 (1b + the rate A/B)</option>
     </select></label>
   </p>
   <p style="margin:.4rem 0 .1rem">
@@ -127,6 +129,7 @@ function ocApplyDring(p) { return OC.profile.applyDring(p, $("dringSel") ? $("dr
 let running = false, schedules = null, loopFrames = 0, t0 = 0, lastF = -1, fidCanvas = null;
 let drawn = 0, fpsWindow = [], ticker = null;
 let beaconSchedule = null, qrCanvas = null, effLoopFrames = 0, schedulesT = null; // v3 state
+let beaconSchedulesT = null; // ruling 1b: per-tile beacon schedules at a-inner placement
 let skippedF = 0;   // whole emission frames never displayed (the per-take health receipt)
 let thTab = null;   // theta tables for the live contour math (built at Start)
 
@@ -322,15 +325,30 @@ function plateMarkLive(ctx, cx, cy, Rpx, shade, bg, flip) {
     bullseyeLive(ctx, cx, cy, Rpx, shade, bg);
 }
 
-function v3PlateBase(ctx, f, cx, cy, sched) {
+function v3PlateBase(ctx, f, cx, cy, sched, bsched) {
   // one tile's bands + corners at (cx, cy); center face differs by caller.
   // Contours run on the theta tables: per edge, each harmonic's phase folds
   // into two coefficients (r(θ) = r0 + Σ C·cos(kθ) + S·sin(kθ)) — no
   // per-point trig. N=256 keeps chord sag under 0.04 px at these radii.
+  // bsched (ruling 1b): with beacon.placement "a-inner", THIS tile's beacon
+  // schedule — band A's inner boundary then carries the control contour.
   const R = profile.render, scale = R.scale_px_per_unit;
   const pl = profile.plate, shade = pl.shade !== undefined ? pl.shade : R.fill;
   if (!thTab) buildThetaTables();
   const N = thTab.N, ct = thTab.ct, st = thTab.st;
+  const dringR = () => {
+    const phiB = OC.emission.phaseAt({ rotation: profile.beacon.rotation }, bsched, profile.frame_rate_hz, f);
+    const out = new Float64Array(N + 1);
+    out.fill(profile.bands[0].lo.fixed);
+    for (let j = 0; j < profile.beacon.harmonics.length; j++) {
+      const k = profile.beacon.harmonics[j];
+      const b = k * phiB - profile.beacon.phases_deg[j] * Math.PI / 180;
+      const C = profile.beacon.amplitudes[j] * Math.cos(b), S = profile.beacon.amplitudes[j] * Math.sin(b);
+      const ck = ct[k], sk = st[k];
+      for (let i = 0; i <= N; i++) out[i] += C * ck[i] + S * sk[i];
+    }
+    return out;
+  };
   const edgeR = (edgeIdx) => {
     const a = profile.annuli[edgeIdx];
     const phi = OC.emission.phaseAt(a, sched[edgeIdx], profile.frame_rate_hz, f);
@@ -353,13 +371,18 @@ function v3PlateBase(ctx, f, cx, cy, sched) {
     }
     path.closePath();
   };
-  profile.bands.forEach(band => {
+  const dringHere = profile.beacon && profile.beacon.placement === "a-inner" && bsched;
+  profile.bands.forEach((band, bi) => {
     const path = new Path2D();
     if (band.hi.edge !== undefined) tracePath(path, edgeR(band.hi.edge));
     else path.arc(cx, cy, band.hi.fixed * scale, 0, 2 * Math.PI); // the flat gauge: a true circle
     if (band.lo.edge !== undefined) {
       const p2 = new Path2D();
       tracePath(p2, edgeR(band.lo.edge));
+      path.addPath(p2);
+    } else if (bi === 0 && dringHere) {
+      const p2 = new Path2D();
+      tracePath(p2, dringR());        // ruling 1b: the D-ring rides band A's floor
       path.addPath(p2);
     } else path.arc(cx, cy, band.lo.fixed * scale, 0, 2 * Math.PI);
     ctx.fillStyle = gray(R.fill);
@@ -393,9 +416,11 @@ function drawFrameV3(f) {
   const R = profile.render, scale = R.scale_px_per_unit;
   ctx.fillStyle = gray(R.background); ctx.fillRect(0, 0, $("cv").width, $("cv").height);
   let pl0 = null, shade0 = null;
+  const dringAt = profile.beacon && profile.beacon.placement === "a-inner";
   centers.forEach((c, t) => {
     const sched = layout.n > 1 ? schedulesT[t] : schedules;
-    const { pl, shade } = v3PlateBase(ctx, f, c.cx, c.cy, sched);
+    const bsched = dringAt ? (layout.n > 1 && beaconSchedulesT ? beaconSchedulesT[t] : beaconSchedule) : null;
+    const { pl, shade } = v3PlateBase(ctx, f, c.cx, c.cy, sched, bsched);
     pl0 = pl; shade0 = shade;
     if (profile.qr_persistent) {
       // diagnostic lock: the QR owns the center on every face; no bullseye, no beacon
@@ -403,7 +428,16 @@ function drawFrameV3(f) {
       return;
     }
     bullseyeLive(ctx, c.cx, c.cy, pl.center.r_out * scale, shade, R.background);
-    if (t === 0) {
+    if (t === 0 && dringAt) {
+      // ruling 1b: the control contour lives at band A's floor now (drawn in
+      // v3PlateBase); the breaker pair renders STATIC — the derived-identity
+      // degrade rung, kept one generation.
+      const bp = new Path2D();
+      bp.arc(c.cx, c.cy, pl.breaker.r_out * scale, 0, 2 * Math.PI);
+      bp.arc(c.cx, c.cy, pl.breaker.r_in * scale, 0, 2 * Math.PI);
+      ctx.fillStyle = gray(shade);
+      ctx.fill(bp, "evenodd");
+    } else if (t === 0) {
       // the beacon ring pair, designated tile only: both edges share one δ
       const bphi = OC.emission.phaseAt({ rotation: profile.beacon.rotation }, beaconSchedule, profile.frame_rate_hz, f);
       if (!thTab) buildThetaTables();
@@ -447,9 +481,13 @@ function drawCountdownV3(f, secsLeft) {
   const R = profile.render, scale = R.scale_px_per_unit;
   ctx.fillStyle = gray(R.background); ctx.fillRect(0, 0, $("cv").width, $("cv").height);
   let pl0 = null, shade0 = null;
+  const dringAtC = profile.beacon && profile.beacon.placement === "a-inner";
   centers.forEach((c, t) => {
     const sched = layout.n > 1 ? schedulesT[t] : schedules;
-    const base = v3PlateBase(ctx, f, c.cx, c.cy, sched); // bands frozen at f, corners kept
+    // ruling 1b: the D-ring is outside the donut the QR owns, so its (frozen)
+    // contour holds through the countdown face like every band edge.
+    const bsched = dringAtC ? (layout.n > 1 && beaconSchedulesT ? beaconSchedulesT[t] : beaconSchedule) : null;
+    const base = v3PlateBase(ctx, f, c.cx, c.cy, sched, bsched); // bands frozen at f, corners kept
     pl0 = base.pl; shade0 = base.shade;
     ctx.drawImage(qrCanvas, c.cx - qrCanvas.width / 2, c.cy - qrCanvas.height / 2);
   });
@@ -620,8 +658,17 @@ function prepareV3() {
     }
   }
   beaconSchedule = OC.emission.buildBeaconSchedule(profile, effLoopFrames, envBytes);
+  beaconSchedulesT = null;
+  if (profile.beacon.placement === "a-inner" && layout.n > 1) {
+    // ruling 1b: per-tile envelopes (b[16] = the carrying tile) → per-tile
+    // beacon schedules. The QR keeps tile 0's envelope.
+    beaconSchedulesT = [];
+    for (let bt = 0; bt < layout.n; bt++)
+      beaconSchedulesT.push(OC.emission.buildBeaconSchedule(profile, effLoopFrames,
+        OC.emission.envelopeBytes(profile, envInfo, bt)));
+  }
   qrCanvas = buildQrCanvas(envBytes);
-  return { fps, layout, carousels, payloadBytes, envInfo, envBytes, freezeF, effLoopFrames, schedules, schedulesT, beaconSchedule };
+  return { fps, layout, carousels, payloadBytes, envInfo, envBytes, freezeF, effLoopFrames, schedules, schedulesT, beaconSchedule, beaconSchedulesT };
 }
 
 /* Export the emission loop as a VIDEO FILE. Frames come from the ANALYTIC
@@ -684,6 +731,7 @@ async function exportLoopVideo() {
     const eff = tl.eff % prep.effLoopFrames;
     const img = OC.emission.renderFrame(profile, eff, {
       schedules: prep.schedules, schedulesT: prep.schedulesT, beaconSchedule: prep.beaconSchedule,
+      beaconSchedulesT: prep.beaconSchedulesT,
       envBytes: prep.envBytes, countdown: !!tl.freeze, qrModules: qrm, fast: true });
     OC.emission.toImageData(img, imgData);
     return null; // imgData already holds the frame
@@ -908,7 +956,9 @@ function ocRefreshMode() {
   if ($("quadChk").checked) bits.push("quadrant corners");
   if ($("qrPersChk").checked) bits.push("persistent QR");
   const dr = $("dringSel") ? $("dringSel").value : "f24";
-  if (dr !== "f24") bits.push("D-ring " + (dr === "c82" ? "chunked M=8/F=2 (A/B)" : "chunked M=4/F=2 (trial)"));
+  if (dr !== "f24") bits.push("D-ring " +
+    (dr === "a42" ? "A-INNER chunked M=4/F=2 (1b)" : dr === "a82" ? "A-INNER chunked M=8/F=2 (1b+A/B)" :
+     dr === "c82" ? "chunked M=8/F=2 (A/B)" : "chunked M=4/F=2 (trial)"));
   bits.push("film at " + (rate === "15" ? "30" : "60") + " fps");
   const el = $("modeSummary");
   el.textContent = bits.join("  ·  ") +

@@ -39,7 +39,7 @@
   <label>handheld <input id="m_hand" type="checkbox" checked></label>
   <label>emitter loop (s) <input id="m_loop" type="number" value="60" style="width:4rem"></label>
   <label>profile <select id="m_prof"><option value="v2">v2 (current)</option><option value="v2p">v2 + payload (Phase 1)</option><option value="v3">v3.1 resilient (paced standard; payload; film at 60 fps)</option><option value="v3hr">v3.1 high-rate (paced; payload; film at 60 fps)</option><option value="v3f">V3 FLAT (legacy: flat F, pre-ruling clips)</option><option value="v3hrf">V3 high-rate FLAT (legacy)</option><option value="v3c">V3 CLASSIC ladder (legacy: base outermost, pre-2026-08-21 clips)</option><option value="v3a">V3 auto-detect preset (payload)</option></select></label>
-  <label id="v3opts" style="display:none"><input id="m_solve" type="checkbox" checked> plate solve <input id="m_beacon" type="checkbox" checked> beacon <input id="m_quad" type="checkbox"> quadrant corners (v3.1) <input id="m_qrp" type="checkbox"> persistent QR (diagnostic) D-ring <select id="m_dring"><option value="f24">v0 M=2/F=4</option><option value="c42">chunked M=4/F=2 (trial)</option><option value="c82">chunked M=8/F=2 (A/B)</option></select></label>
+  <label id="v3opts" style="display:none"><input id="m_solve" type="checkbox" checked> plate solve <input id="m_beacon" type="checkbox" checked> beacon <input id="m_quad" type="checkbox"> quadrant corners (v3.1) <input id="m_qrp" type="checkbox"> persistent QR (diagnostic) D-ring <select id="m_dring"><option value="f24">v0 M=2/F=4</option><option value="c42">chunked M=4/F=2 (trial)</option><option value="c82">chunked M=8/F=2 (A/B)</option><option value="a42">A-inner M=4/F=2 (1b)</option><option value="a82">A-inner M=8/F=2 (1b+A/B)</option></select></label>
   <label>capture fps <select id="m_capfps"><option value="30">30</option><option value="60">60</option></select></label>
   <label>notes <input id="m_notes" style="width:12rem"></label>
 </fieldset>
@@ -947,11 +947,12 @@ function ocApplySettings(str) {
   if (kv.loop) $("m_loop").value = kv.loop;
   if ($("m_quad")) $("m_quad").checked = kv.quad === "1";
   if ($("m_qrp")) $("m_qrp").checked = kv.qrp === "1";
-  if ($("m_dring")) $("m_dring").value = (kv.dring === "c42" || kv.dring === "c82") ? kv.dring : "f24";
+  if ($("m_dring")) $("m_dring").value = ["c42", "c82", "a42", "a82"].indexOf(kv.dring) >= 0 ? kv.dring : "f24";
   const bits = [target, "capture " + (kv.capfps || "?") + " fps", (kv.tiling || "1") + "-up emitter"];
   if (kv.quad === "1") bits.push("quadrant corners");
   if (kv.qrp === "1") bits.push("persistent QR");
-  if (kv.dring === "c42" || kv.dring === "c82") bits.push("D-ring chunked " + (kv.dring === "c82" ? "M=8/F=2" : "M=4/F=2"));
+  if (["c42", "c82", "a42", "a82"].indexOf(kv.dring) >= 0)
+    bits.push("D-ring " + (kv.dring[0] === "a" ? "A-INNER " : "") + "chunked " + (kv.dring[1] === "8" ? "M=8/F=2" : "M=4/F=2"));
   const v3fam = kv.prof === "v3" || kv.prof === "v3hr" || kv.prof === "v3i" || kv.prof === "v3c" ||
                 kv.prof === "v3p" || kv.prof === "v3hrp" || kv.prof === "v3f";
   const warn = v3fam && !pay;

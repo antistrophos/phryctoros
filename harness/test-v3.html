@@ -608,6 +608,67 @@ async function main() {
                          : "no row: " + JSON.stringify(C.err).slice(0, 80)));
   }
 
+  await tick("T22t: the D-ring at A-inner (ruling 1b) — relocation, per-tile identity, static breaker…");
+  {
+    // Ruling 1b: the control betas move from the breaker pair (designated
+    // tile only) to band A's inner boundary on EVERY tile — identity is
+    // announced (b[16] per tile), the breaker renders STATIC and stays one
+    // generation as the derived-identity degrade rung. Budget: 0.025 control
+    // class, pinch 0.255, donut quiet exactly 0.125 (the validator's amended
+    // floor). The decoder side is the same chain with a relocated descriptor
+    // (r0 1.05, crossing "down" — the flipped sampler).
+    const msgT = "DRING";
+    // (a) 1-up: payload AND control channel in one mid-loop capture — the
+    //     wiggling band floor must not disturb registration or the data rings.
+    const pA = OC.profile.profileV3(undefined, { session32: 0xD41A6001, render: { size_px: 448, scale_px_per_unit: 70 } });
+    OC.profile.applyDring(pA, "a42");
+    const vA = OC.profile.validate(pA);
+    let seqA = OC.emission.renderSequence(pA, 500, { payloadBytes: OC.fountain.textToBytes(msgT) });
+    let slA = seqA.frames.slice(50);
+    seqA = null;
+    const rA = OC.pipeline.decodeSequence(slA, pA, { payload: true, beacon: true });
+    slA = null;
+    const emA = rA.error ? null : rA.emitters[0];
+    const bA = emA && emA.annuli.find(a => a.beacon);
+    const fA = bA && bA.envelopeFields;
+    const okA = !!(vA.ok && emA && emA.payload && emA.payload.ok === true && emA.payload.text === msgT &&
+                   bA && !bA.error && bA.alignMethod === "framed" && bA.framing === "chunked" &&
+                   fA && fA.session32 === 0xD41A6001 && fA.tile === 0);
+    // (b) 2-up: EVERY tile carries the ring, each announcing ITS OWN index —
+    //     announced identity must agree with the breaker-derived tile, and the
+    //     pooled peel must still complete on the static-breaker lattice.
+    const pB = OC.profile.profileV3(undefined, { tiling: 2, session32: 0xD41A6002, render: { scale_px_per_unit: 70 } });
+    OC.profile.applyDring(pB, "a42");
+    const vB2 = OC.profile.validate(pB);
+    let seqB = OC.emission.renderSequence(pB, 500, { payloadBytes: OC.fountain.textToBytes(msgT) });
+    let slB = seqB.frames.slice(50);
+    seqB = null;
+    const rB2 = OC.pipeline.decodeSequence(slB, pB, { payload: true, beacon: true });
+    slB = null;
+    const emsB = rB2.error ? [] : rB2.emitters;
+    const beaconRows = emsB.map(em => ({ derived: em.tile, row: em.annuli.find(a => a.beacon) }))
+                           .filter(x => x.row && x.row.envelopeFields);
+    const announced = beaconRows.map(x => x.row.envelopeFields.tile).sort().join(",");
+    const agreeB = beaconRows.every(x => x.row.envelopeFields.tile === x.derived &&
+                                         x.row.envelopeFields.session32 === 0xD41A6002 &&
+                                         x.row.framing === "chunked");
+    const okB = !!(vB2.ok && emsB.length === 2 && beaconRows.length === 2 && announced === "0,1" && agreeB &&
+                   rB2.pooled && rB2.pooled.ok === true && rB2.pooled.text === msgT);
+    // (c) the class bound: one hair over 0.025 at A-inner must refuse
+    const pC = OC.profile.profileV3(undefined, {});
+    OC.profile.applyDring(pC, "a42");
+    pC.beacon.amplitudes = [0.011, 0.008, 0.007];
+    const vC = OC.profile.validate(pC);
+    const okC = !!(vC.ok === false && vC.errors.some(e => /control class/.test(e)));
+    record("T22t D-ring at A-inner (ruling 1b): the control contour rides band A's floor on every tile with the breaker static, a 1-up mid-loop capture carries payload AND the chunked envelope together, a 2-up's tiles each ANNOUNCE their own index (b[16]) agreeing with breaker-derived identity while the pooled peel completes, the amended budget validates at exactly 0.125 quiet, and 0.001 over the 0.025 control class refuses",
+      okA && okB && okC,
+      "(a) validate " + vA.ok + " payload " + JSON.stringify(emA && emA.payload && emA.payload.text) +
+      " beacon " + (bA ? bA.alignMethod + "/" + bA.framing + " tile " + (fA && fA.tile) + " sess " + (fA && fA.session32.toString(16)) + (bA.error ? " ERR " + bA.error : "") : "none") +
+      " · (b) validate " + vB2.ok + " emitters " + emsB.length + " announced [" + announced + "] agree " + agreeB +
+      " pooled " + JSON.stringify(rB2.pooled && { ok: rB2.pooled.ok, text: rB2.pooled.text }) +
+      " · (c) refused " + okC + (vC.errors.length ? " (" + vC.errors[0].slice(0, 60) + "…)" : ""));
+  }
+
   await tick("T22j: preset auto-detect — dual-geometry CRC vote on a high-rate emission…");
   {
     const pH = OC.profile.profileV3("high-rate");

@@ -240,6 +240,18 @@
      "up", DFT, trackPhase, findAlignment on the all-flips preamble, demap at
      M=2/4) runs it unmodified. layer −1 keeps it out of every layer lookup. */
   function beaconAnnulus(profile) {
+    // D-ring ruling 1b: at placement "a-inner" the control channel is band
+    // A's inner boundary (r0 1.05, light→dark walking outward = crossing
+    // "down", per tile); the frozen default stays the breaker pair's outer
+    // edge on the designated tile. Same chain either way — only the geometry
+    // descriptor moves.
+    if (profile.beacon.placement === "a-inner")
+      return {
+        index: "beacon", layer: -1, beacon: true, edge: "beacon", crossing: "down",
+        r0: profile.bands[0].lo.fixed,
+        rotation: profile.beacon.rotation,
+        boundary: { harmonics: profile.beacon.harmonics, amplitudes: profile.beacon.amplitudes, phases_deg: profile.beacon.phases_deg }
+      };
     return {
       index: "beacon", layer: -1, beacon: true, edge: "beacon", crossing: "up",
       r0: profile.plate.breaker.r_out,
