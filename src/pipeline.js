@@ -442,15 +442,18 @@
               foldCompared: align.folded ? align.foldCompared : undefined,
               // The fast tag = the envelope's CRC16 seal (ruling 2) — derivable
               // under either framing once the envelope is in hand; chunked
-              // alignments also report how often the tag chunk itself was seen.
-              tag: env && env.envelope.length === 20 ? toHex(env.envelope.subarray ? env.envelope.subarray(18, 20) : env.envelope.slice(18, 20)) : undefined,
+              // alignments also report how often the tag chunk itself was
+              // seen, and a tagConfirmed row re-verified a KNOWN tag without
+              // a full seal (the lease's identity heartbeat).
+              tag: env && env.envelope.length === 20 ? toHex(env.envelope.subarray ? env.envelope.subarray(18, 20) : env.envelope.slice(18, 20)) : (align.tag || undefined),
+              tagConfirmed: align.tagConfirmed || undefined,
               tagSightings: align.tagSightings !== undefined ? align.tagSightings : undefined,
               chunkConflicts: align.chunkConflicts || undefined,
               envelope: env ? toHex(env.envelope) : null,
               envelopeAt: env ? env.at : null,
               envelopeFrames: envFrames.length,
               envelopeFields: envFields || undefined,
-              error: env ? undefined : "beacon locked but no framed envelope in the captured span (" + nullSyms + "/" + decoded.length + " symbols erased)"
+              error: (env || align.tagConfirmed) ? undefined : "beacon locked but no framed envelope in the captured span (" + nullSyms + "/" + decoded.length + " symbols erased)"
             };
           }
 

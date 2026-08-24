@@ -511,12 +511,26 @@
         // Chunked framing (ruling 2) — scanned at every candidate alignment
         // regardless of what the profile declares, so the receiver never has
         // to know which framing the emitter runs. A chunked alignment is
-        // accepted ONLY sealed (per-chunk checks are 12 bits — never alone).
+        // accepted sealed (per-chunk checks are 12 bits — never alone) — OR,
+        // for the lease's hold matrix, on a tag chunk CONFIRMING a tag the
+        // caller already knows (opts.expectTag): matching a known 16-bit
+        // value through the chunk's CRC8 is ~2^-24 per candidate position,
+        // and confirmation is what keeps a bound context bound between
+        // envelope seals (identity re-verified every tag interval, not every
+        // 13 s). Tag DISCOVERY still requires the seal.
         var scan = beaconChunkScan(decoded, ph, M);
+        var expect = opts.expectTag == null ? null
+          : (typeof opts.expectTag === "string" ? parseInt(opts.expectTag, 16) : opts.expectTag);
         if (scan.sealed)
           consider({ offset: off, lag: ph, score: scan.chunkCounts.reduce(function (a, b) { return a + b; }, 0),
                      max: decoded.length, method: "framed", framing: "chunked", verified: true,
-                     tag: scan.tag, tagSightings: scan.tagSightings, chunkConflicts: scan.conflicts });
+                     tag: ("0000" + (scan.tag >>> 0).toString(16)).slice(-4),
+                     tagSightings: scan.tagSightings, chunkConflicts: scan.conflicts });
+        else if (expect != null && scan.tagSeen === expect && scan.tagSightings >= 1)
+          consider({ offset: off, lag: ph, score: scan.tagSightings,
+                     max: decoded.length, method: "framed", framing: "chunked", verified: true,
+                     tagConfirmed: true, tag: ("0000" + (expect >>> 0).toString(16)).slice(-4),
+                     tagSightings: scan.tagSightings });
       }
       if (best && best.offset === off && !best.folded) continue; // contiguous frame at this offset — no fold needed
       if (Psym > 0 && (frameBytes * 8) % bitsPer === 0 && decoded.length >= Psym) {

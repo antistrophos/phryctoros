@@ -829,7 +829,19 @@
     if (isV3(profile)) {
       // Steady-state sequence; countdown weaving is the emit page's job via
       // timeline(). One beacon schedule and one envelope serve every frame.
-      var envB = opts.envBytes || envelopeBytes(profile, opts.payloadInfo || null);
+      // Self-description defaults TRUE (T22u's catch): a payload emission
+      // whose envelope still said identity-only carried no content
+      // fingerprint, so a content switch was invisible to the fast tag. When
+      // the caller supplies payloadBytes but no payloadInfo, derive it
+      // exactly as the emit page does — the envelope must describe what the
+      // rings actually carry.
+      var pInfo = opts.payloadInfo || null;
+      if (!pInfo && opts.payloadBytes !== undefined && opts.payloadBytes !== null) {
+        var wireI = FN().selfFrame(opts.payloadBytes);
+        pInfo = { K: FN().encodeCarousels(profile, opts.payloadBytes).K,
+                  len: wireI.length, pcrc: FN().crc16(wireI), capability: 1 };
+      }
+      var envB = opts.envBytes || envelopeBytes(profile, pInfo);
       var beaconSchedule = opts.beaconSchedule !== undefined ? opts.beaconSchedule : buildBeaconSchedule(profile, n, envB);
       // Ruling 1b: at a-inner every tile modulates its own envelope (b[16]),
       // so the tiled path carries one beacon schedule PER TILE.
@@ -838,7 +850,7 @@
       if (layout.n > 1 && profile.beacon.placement === "a-inner" && !beaconSchedulesT) {
         beaconSchedulesT = [];
         for (var bst = 0; bst < layout.n; bst++)
-          beaconSchedulesT.push(buildBeaconSchedule(profile, n, envelopeBytes(profile, opts.payloadInfo || null, bst)));
+          beaconSchedulesT.push(buildBeaconSchedule(profile, n, envelopeBytes(profile, pInfo, bst)));
       }
       if (layout.n > 1) {
         // Per-tile carousels (tile-shifted seeds; same payload blocks) and

@@ -1790,7 +1790,19 @@
     if (isV3(profile)) {
       // Steady-state sequence; countdown weaving is the emit page's job via
       // timeline(). One beacon schedule and one envelope serve every frame.
-      var envB = opts.envBytes || envelopeBytes(profile, opts.payloadInfo || null);
+      // Self-description defaults TRUE (T22u's catch): a payload emission
+      // whose envelope still said identity-only carried no content
+      // fingerprint, so a content switch was invisible to the fast tag. When
+      // the caller supplies payloadBytes but no payloadInfo, derive it
+      // exactly as the emit page does — the envelope must describe what the
+      // rings actually carry.
+      var pInfo = opts.payloadInfo || null;
+      if (!pInfo && opts.payloadBytes !== undefined && opts.payloadBytes !== null) {
+        var wireI = FN().selfFrame(opts.payloadBytes);
+        pInfo = { K: FN().encodeCarousels(profile, opts.payloadBytes).K,
+                  len: wireI.length, pcrc: FN().crc16(wireI), capability: 1 };
+      }
+      var envB = opts.envBytes || envelopeBytes(profile, pInfo);
       var beaconSchedule = opts.beaconSchedule !== undefined ? opts.beaconSchedule : buildBeaconSchedule(profile, n, envB);
       // Ruling 1b: at a-inner every tile modulates its own envelope (b[16]),
       // so the tiled path carries one beacon schedule PER TILE.
@@ -1799,7 +1811,7 @@
       if (layout.n > 1 && profile.beacon.placement === "a-inner" && !beaconSchedulesT) {
         beaconSchedulesT = [];
         for (var bst = 0; bst < layout.n; bst++)
-          beaconSchedulesT.push(buildBeaconSchedule(profile, n, envelopeBytes(profile, opts.payloadInfo || null, bst)));
+          beaconSchedulesT.push(buildBeaconSchedule(profile, n, envelopeBytes(profile, pInfo, bst)));
       }
       if (layout.n > 1) {
         // Per-tile carousels (tile-shifted seeds; same payload blocks) and
@@ -2953,12 +2965,26 @@
         // Chunked framing (ruling 2) — scanned at every candidate alignment
         // regardless of what the profile declares, so the receiver never has
         // to know which framing the emitter runs. A chunked alignment is
-        // accepted ONLY sealed (per-chunk checks are 12 bits — never alone).
+        // accepted sealed (per-chunk checks are 12 bits — never alone) — OR,
+        // for the lease's hold matrix, on a tag chunk CONFIRMING a tag the
+        // caller already knows (opts.expectTag): matching a known 16-bit
+        // value through the chunk's CRC8 is ~2^-24 per candidate position,
+        // and confirmation is what keeps a bound context bound between
+        // envelope seals (identity re-verified every tag interval, not every
+        // 13 s). Tag DISCOVERY still requires the seal.
         var scan = beaconChunkScan(decoded, ph, M);
+        var expect = opts.expectTag == null ? null
+          : (typeof opts.expectTag === "string" ? parseInt(opts.expectTag, 16) : opts.expectTag);
         if (scan.sealed)
           consider({ offset: off, lag: ph, score: scan.chunkCounts.reduce(function (a, b) { return a + b; }, 0),
                      max: decoded.length, method: "framed", framing: "chunked", verified: true,
-                     tag: scan.tag, tagSightings: scan.tagSightings, chunkConflicts: scan.conflicts });
+                     tag: ("0000" + (scan.tag >>> 0).toString(16)).slice(-4),
+                     tagSightings: scan.tagSightings, chunkConflicts: scan.conflicts });
+        else if (expect != null && scan.tagSeen === expect && scan.tagSightings >= 1)
+          consider({ offset: off, lag: ph, score: scan.tagSightings,
+                     max: decoded.length, method: "framed", framing: "chunked", verified: true,
+                     tagConfirmed: true, tag: ("0000" + (expect >>> 0).toString(16)).slice(-4),
+                     tagSightings: scan.tagSightings });
       }
       if (best && best.offset === off && !best.folded) continue; // contiguous frame at this offset — no fold needed
       if (Psym > 0 && (frameBytes * 8) % bitsPer === 0 && decoded.length >= Psym) {
@@ -5725,6 +5751,370 @@
     return null;
   }
 
+  /* ---------- THE LEASE (D-ring lease build, 2026-08-23) ----------
+
+     Two identities, split the way the identity principle says to:
+
+     CONTENT-ADDRESSED LEDGERS. Droplets are a pure function of config +
+     payload — session32 never enters the fountain — so the ledger keys by
+     the content fingerprint the envelope carries: (droplet_bits, K, len,
+     pcrc16). Two emitters, two sessions, or two clips carrying the same
+     content pool into ONE ledger (the choir's redundancy falling out of the
+     keying); a restart re-stamps the session and changes nothing here. A
+     16-bit pcrc collision is caught where every wrong-rule case is caught:
+     the peel's own validation.
+
+     TAG-ADDRESSED LEASES. A context = one announced identity, keyed by THE
+     TAG (the envelope's CRC16 seal — the ASID). Not by session32: a
+     same-session content switch changes the tag and must split. The context
+     holds trust and continuity — state, plates, grace — and points at the
+     content ledger it feeds.
+
+     The hold matrix (practitioner's ruling, 2026-08-23):
+       bound    — tag detecting (sealed envelope, or a tag chunk confirming
+                  the KNOWN tag). Data-ring flapping is forgiven
+                  indefinitely; droplets bank direct whenever a lock holds.
+                  The edge-of-detection emitter stays bound and accumulates.
+       coasting — tag lost, data held. Tenuous by design: the FIRST
+                  zero-lock window ends the hold (framing cannot see a
+                  content switch, so the binding must not coast far).
+       grace    — nothing locks. Banking has already stopped (no locks, no
+                  droplets, no risk); the context survives graceWindows
+                  windows so an occlusion or focus hunt is not a cold start.
+                  Resumption inside grace routes through a PROVISIONAL
+                  ledger and is adopted when the next seal/confirmation
+                  matches the tag — nothing enters a content ledger
+                  un-attributed, ever.
+       clipped  — grace expired. Any later appearance is a fresh bind.
+
+     PROVISIONAL ledgers (the degrade rung's bottom): plates with data locks
+     but no announced identity bank into per-plate spatial ledgers (nearest-
+     centre matching within a clip, never exported). Adoption is peel-time
+     UNION, validate-gated: a completed-but-invalid peel retries without the
+     provisionals and reports them rejected — the auto-fallback pattern.
+
+     Locks stay OUT of the store (an alignment is a fact about one clip's
+     time axis); the driver keys them per context. */
+
+  function contentKeyOf(fields, dropletBits) {
+    return dropletBits + ":" + fields.K + ":" + fields.len + ":" + (fields.pcrc >>> 0).toString(16);
+  }
+
+  function createStore(profile) {
+    return {
+      version: 2,
+      profile_version: profile.profile_version,
+      droplet_bits: F().geom(profile).dropletBits,
+      tiling: profile.tiling || 1,
+      ledgers: {},    // contentKey → ledger (createLedger shape) + .fields (envelope copy)
+      contexts: {},   // tag (hex string) → context
+      clips: []
+    };
+  }
+
+  function serializeStore(store) {
+    // provisionals are clip-scoped and never travel
+    return JSON.stringify(store, function (k, v) { return k === "provisionals" ? undefined : v; });
+  }
+
+  function parseStore(text) {
+    var s = JSON.parse(text);
+    if (s.version !== 2 || !s.ledgers || !s.contexts)
+      throw new Error("not a v2 harvest store (version " + s.version + ") — v1 ledgers predate the lease and do not import");
+    return s;
+  }
+
+  function storeCounts(store) {
+    var ledgers = 0, droplets = 0, contexts = 0;
+    for (var k in store.ledgers) { ledgers++; var c = counts(store.ledgers[k]); droplets += c.droplets; }
+    for (var t in store.contexts) contexts++; // eslint-disable-line no-unused-vars
+    return { ledgers: ledgers, droplets: droplets, contexts: contexts };
+  }
+
+  /* A ledger shell inside a store — same shape createLedger builds, without
+     needing a profile (the store already fixed droplet_bits and tiling). */
+  function bareLedger(store) {
+    return { version: 1, profile_version: store.profile_version, droplet_bits: store.droplet_bits,
+             tiling: store.tiling, session: null, header: null, rings: {}, clips: [] };
+  }
+
+  function leaseCreate(opts) {
+    opts = opts || {};
+    return {
+      graceWindows: opts.graceWindows !== undefined ? opts.graceWindows : 2,
+      matchFidFrac: opts.matchFidFrac !== undefined ? opts.matchFidFrac : 0.75,
+      // The degrade ladder's TOP rung: with no announced context live, the
+      // operator's own declaration (the profile they selected) is the
+      // identity — the primary emitter (and every tile of a declared
+      // lattice) banks into the "operator" ledger exactly as the pre-lease
+      // harvest did. The first SEAL adopts that ledger into the announced
+      // content ledger: in operator mode there is one emission by
+      // declaration, and the seal came from the very plate the operator
+      // pointed at.
+      operatorKey: opts.operator ? "operator" : null,
+      provisionals: {},   // pid → { center, fid, ledger, lastSeen, forTag, adopted, rejected }
+      nextProv: 1
+    };
+  }
+
+  /* First-seen-wins ring merge (conflicts surfaced, headers carried). */
+  function mergeLedger(dst, src) {
+    var moved = 0, conflicts = 0;
+    for (var seed in src.rings) {
+      var d = dst.rings[seed] || (dst.rings[seed] = {});
+      for (var c in src.rings[seed]) {
+        if (d[c] === undefined) { d[c] = src.rings[seed][c]; moved++; }
+        else if (d[c] !== src.rings[seed][c]) conflicts++;
+      }
+    }
+    if (!dst.header && src.header) dst.header = src.header;
+    return { moved: moved, conflicts: conflicts };
+  }
+
+  /* A new clip is a clip (the ruling's sense): plates, locks and holds are
+     facts about one clip's time axis. Contexts survive as IDENTITY MEMORY —
+     the same tag re-binding on its first seal is exactly the cross-clip
+     resumption the lease exists to make safe — but nothing banks to them
+     until that seal. */
+  function leaseNewClip(store) {
+    for (var t in store.contexts) {
+      var ctx = store.contexts[t];
+      ctx.plates = [];
+      ctx.state = "clipped";
+    }
+  }
+
+  function nearPlate(center, fid, cand, frac) {
+    if (!center || !cand.center) return false;
+    var tol = frac * Math.max(fid || 0, cand.fid || 0, 1);
+    var dx = center[0] - cand.center[0], dy = center[1] - cand.center[1];
+    return dx * dx + dy * dy <= tol * tol;
+  }
+
+  /* One window's decode result → the store, through the lease. Returns the
+     window's events (the receipt stream) and which content ledgers banked.
+     `w` = the window ordinal (grace accounting). Pure over (store, lease). */
+  function leaseObserve(store, lease, res, profile, w) {
+    var events = [], bankedKeys = {};
+    var emitters = (!res || res.error || !res.emitters) ? [] : res.emitters;
+
+    // ——— classify each emitter ———
+    var obs = emitters.map(function (em, ei) {
+      var beacon = null, dataLocked = false;
+      for (var i = 0; i < (em.annuli || []).length; i++) {
+        var a = em.annuli[i];
+        if (!a) continue;
+        if (a.beacon) beacon = a;
+        else if (a.alignLag != null) dataLocked = true;
+      }
+      var fields = beacon && beacon.envelopeFields;
+      // the pipeline's tag field (the seal, hex) is authoritative; the seal
+      // bytes at the envelope hex's tail are the derivation fallback
+      var sealedTag = fields ? (beacon.tag ||
+        (beacon.envelope && beacon.envelope.length === 40 ? beacon.envelope.slice(36, 40) : null)) : null;
+      var confirmedTag = (!fields && beacon && beacon.tagConfirmed && beacon.tag) ? beacon.tag : null;
+      return { em: em, index: ei, beacon: beacon, fields: fields || null, sealedTag: sealedTag,
+               confirmedTag: confirmedTag, dataLocked: dataLocked,
+               center: em.center || null, fid: em.fiducialWidthPx || 0 };
+    });
+
+    // ——— route seals: create/refresh contexts ———
+    obs.forEach(function (o) {
+      if (!o.fields || !o.sealedTag) return;
+      var tag = o.sealedTag;
+      var ctx = store.contexts[tag];
+      if (!ctx) {
+        ctx = store.contexts[tag] = {
+          tag: tag, session32: o.fields.session32, fields: o.fields,
+          contentKey: contentKeyOf(o.fields, store.droplet_bits),
+          state: "bound", graceLeft: lease.graceWindows,
+          plates: [], boundAt: w, lastSeen: w
+        };
+        if (!store.ledgers[ctx.contentKey]) {
+          store.ledgers[ctx.contentKey] = bareLedger(store);
+          store.ledgers[ctx.contentKey].fields = o.fields;
+          events.push({ ev: "ledger", key: ctx.contentKey });
+        }
+        events.push({ ev: "bind", tag: tag, session: o.fields.session32, key: ctx.contentKey });
+        // The operator ledger predates this seal: by declaration it is this
+        // very emission, so its droplets adopt into the announced content
+        // ledger (first-seen kept, conflicts surfaced — and the peel's own
+        // validation stands behind the merge as everywhere else).
+        if (lease.operatorKey && store.ledgers[lease.operatorKey] &&
+            counts(store.ledgers[lease.operatorKey]).droplets > 0) {
+          var mg = mergeLedger(store.ledgers[ctx.contentKey], store.ledgers[lease.operatorKey]);
+          delete store.ledgers[lease.operatorKey];
+          events.push({ ev: "operator-merge", tag: tag, key: ctx.contentKey,
+                        moved: mg.moved, conflicts: mg.conflicts });
+        }
+      } else if (ctx.state === "clipped") {
+        ctx.state = "grace"; // the matrix below re-binds on this window's tag
+        events.push({ ev: "rebind", tag: tag });
+      }
+      // plate bookkeeping (announced tile; centre track)
+      var plate = null;
+      for (var p = 0; p < ctx.plates.length; p++)
+        if (nearPlate(o.center, o.fid, ctx.plates[p], lease.matchFidFrac)) { plate = ctx.plates[p]; break; }
+      if (!plate) { plate = { }; ctx.plates.push(plate); }
+      plate.center = o.center; plate.fid = o.fid;
+      plate.tile = o.fields.tile; plate.lastSeen = w;
+      o.ctx = ctx; o.viaSeal = true;
+      // a provisional track at this plate is claimed by the seal
+      for (var pid in lease.provisionals) {
+        var pr = lease.provisionals[pid];
+        if (!pr.adopted && !pr.rejected && nearPlate(o.center, o.fid, pr, lease.matchFidFrac)) {
+          pr.adopted = true; pr.forTag = tag;
+          events.push({ ev: "adopt", tag: tag, provisional: pid, droplets: counts(pr.ledger).droplets });
+        }
+      }
+    });
+
+    // ——— route unsealed emitters: context plates first, else provisional ———
+    obs.forEach(function (o) {
+      if (o.ctx || !o.dataLocked) return;
+      var tags = Object.keys(store.contexts);
+      for (var t = 0; t < tags.length; t++) {
+        var ctx = store.contexts[tags[t]];
+        if (ctx.state === "clipped") continue;
+        for (var p = 0; p < ctx.plates.length; p++) {
+          if (nearPlate(o.center, o.fid, ctx.plates[p], lease.matchFidFrac)) {
+            if (o.confirmedTag && o.confirmedTag !== ctx.tag) break; // confirmed a DIFFERENT tag — not this context
+            if (ctx.state === "grace" && !o.confirmedTag) break;      // grace: no direct banking without the tag
+            o.ctx = ctx; o.plate = ctx.plates[p];
+            ctx.plates[p].center = o.center; ctx.plates[p].fid = o.fid; ctx.plates[p].lastSeen = w;
+            return;
+          }
+        }
+      }
+      // no announced context claims it → the operator rung, when it applies:
+      // no live announced context, and this is the primary emitter or a tile
+      // of the operator's declared lattice
+      if (lease.operatorKey) {
+        var live = false;
+        for (var lt in store.contexts) if (store.contexts[lt].state !== "clipped") { live = true; break; }
+        if (!live && (o.index === 0 || store.tiling > 1)) { o.operator = true; return; }
+      }
+      // otherwise provisional (create or extend by proximity)
+      var provId = null;
+      for (var pid in lease.provisionals) {
+        var pr = lease.provisionals[pid];
+        if (!pr.adopted && !pr.rejected && nearPlate(o.center, o.fid, pr, lease.matchFidFrac)) { provId = pid; break; }
+      }
+      if (!provId) {
+        provId = "p" + lease.nextProv++;
+        lease.provisionals[provId] = { center: o.center, fid: o.fid, ledger: bareLedger(store),
+          lastSeen: w, adopted: false, rejected: false };
+        events.push({ ev: "provisional", id: provId, center: o.center });
+      }
+      var prv = lease.provisionals[provId];
+      prv.center = o.center; prv.fid = o.fid; prv.lastSeen = w;
+      o.prov = prv; o.provId = provId;
+    });
+
+    // ——— bank ———
+    obs.forEach(function (o) {
+      var target = null, tileForBank;
+      if (o.ctx) {
+        // announced tile when the plate carries one; derived as fallback;
+        // disagreement quarantines the emitter for this window.
+        var announced = o.plate && o.plate.tile !== undefined ? o.plate.tile
+                       : (o.fields ? o.fields.tile : undefined);
+        var derived = o.em.tile;
+        if (announced !== undefined && derived !== undefined && derived >= 0 && announced !== derived) {
+          events.push({ ev: "tile-disagree", tag: o.ctx.tag, announced: announced, derived: derived });
+          return;
+        }
+        tileForBank = announced !== undefined ? announced : derived;
+        target = store.ledgers[o.ctx.contentKey];
+      } else if (o.operator) {
+        tileForBank = o.em.tile;
+        target = store.ledgers[lease.operatorKey] || (store.ledgers[lease.operatorKey] = bareLedger(store));
+      } else if (o.prov) {
+        tileForBank = o.em.tile;
+        target = o.prov.ledger;
+      }
+      if (!target) return;
+      var emB = tileForBank === o.em.tile ? o.em : Object.assign({}, o.em, { tile: tileForBank });
+      var got = absorb(target, { emitters: [emB] }, profile);
+      if (got.added || got.dup || got.conflicts || got.quarantined) {
+        events.push({ ev: "bank", tag: o.ctx ? o.ctx.tag : null,
+                      operator: o.operator || undefined, provisional: o.provId || null,
+                      added: got.added, dup: got.dup, conflicts: got.conflicts, quarantined: got.quarantined });
+        if (o.ctx && got.added) bankedKeys[o.ctx.contentKey] = true;
+        if (o.operator && got.added) bankedKeys[lease.operatorKey] = true;
+      }
+      o.lagConsensus = got.lagConsensus;
+    });
+
+    // ——— the hold matrix, per context ———
+    for (var tg in store.contexts) {
+      var ctx = store.contexts[tg];
+      if (ctx.state === "clipped") continue;
+      var sawTag = false, sawData = false;
+      obs.forEach(function (o) {
+        if (o.ctx !== ctx) return;
+        if (o.viaSeal || (o.confirmedTag && o.confirmedTag === ctx.tag)) sawTag = true;
+        if (o.dataLocked) sawData = true;
+      });
+      var was = ctx.state;
+      if (sawTag) { ctx.state = "bound"; ctx.graceLeft = lease.graceWindows; ctx.lastSeen = w; }
+      else if (sawData) {
+        if (ctx.state !== "grace") ctx.state = "coasting";   // grace needs the tag to resume — handled in routing
+        ctx.lastSeen = w;
+      } else {
+        if (ctx.state === "grace") {
+          if (--ctx.graceLeft <= 0) { ctx.state = "clipped"; events.push({ ev: "clip", tag: ctx.tag }); }
+        } else {
+          ctx.state = "grace"; ctx.graceLeft = lease.graceWindows;
+          events.push({ ev: was === "coasting" ? "hold-end" : "all-lost", tag: ctx.tag });
+        }
+      }
+      if (was !== ctx.state)
+        events.push({ ev: "state", tag: ctx.tag, from: was, to: ctx.state });
+    }
+
+    return { events: events, banked: Object.keys(bankedKeys), obs: obs };
+  }
+
+  /* Peel a content ledger with its adopted provisionals UNIONED in,
+     validate-gated: a completed-but-invalid union retries bare, and if the
+     bare peel is no worse the provisionals are marked rejected (the poison
+     was theirs). Ranking mirrors the subsetFor fallback: validated >
+     honestly-incomplete > completed-but-invalid. */
+  function tryPeelStore(store, lease, contentKey, profile) {
+    var ledger = store.ledgers[contentKey];
+    if (!ledger) return { ok: false, reason: "no such ledger" };
+    var base = ringsFor(ledger, profile);
+    var adoptedIds = [];
+    for (var pid in lease.provisionals) {
+      var pr = lease.provisionals[pid];
+      if (pr.adopted && !pr.rejected && store.contexts[pr.forTag] &&
+          store.contexts[pr.forTag].contentKey === contentKey) adoptedIds.push(pid);
+    }
+    if (!adoptedIds.length) return F().assemble(base, profile);
+    var bySeed = {};
+    base.forEach(function (r) { bySeed[r.seed] = { seed: r.seed, droplets: r.droplets.slice(), have: {} };
+      r.droplets.forEach(function (d) { bySeed[r.seed].have[d.c] = true; }); });
+    adoptedIds.forEach(function (pid) {
+      ringsFor(lease.provisionals[pid].ledger, profile).forEach(function (r) {
+        var slot = bySeed[r.seed] || (bySeed[r.seed] = { seed: r.seed, droplets: [], have: {} });
+        r.droplets.forEach(function (d) { if (!slot.have[d.c]) { slot.have[d.c] = true; slot.droplets.push(d); } });
+      });
+    });
+    var union = [];
+    for (var s in bySeed) union.push({ seed: bySeed[s].seed, droplets: bySeed[s].droplets });
+    var withProv = F().assemble(union, profile);
+    if (withProv.ok === true || withProv.recovered == null || withProv.recovered !== withProv.K) return withProv;
+    // completed but did not validate — the union is suspect; try bare
+    var bare = F().assemble(base, profile);
+    if (bare.ok === true || (bare.recovered != null && bare.recovered !== bare.K)) {
+      adoptedIds.forEach(function (pid) { lease.provisionals[pid].rejected = true; });
+      bare.provisionalsRejected = adoptedIds.length;
+      return bare;
+    }
+    return withProv;
+  }
+
   /* ---------- locks: the capture-time→carousel-slot mapping ---------- */
 
   /* A lock binds one ring's carousel to the clip's absolute emission-frame
@@ -5941,6 +6331,10 @@
   var API = {
     createLedger: createLedger, serializeLedger: serializeLedger, parseLedger: parseLedger,
     counts: counts, absorb: absorb, ringsFor: ringsFor, tryPeel: tryPeel, seenTileSeeds: seenTileSeeds,
+    contentKeyOf: contentKeyOf, createStore: createStore, serializeStore: serializeStore,
+    parseStore: parseStore, storeCounts: storeCounts, leaseCreate: leaseCreate,
+    leaseNewClip: leaseNewClip, mergeLedger: mergeLedger,
+    leaseObserve: leaseObserve, tryPeelStore: tryPeelStore,
     lockFrom: lockFrom, frameOfSymbol: frameOfSymbol, symbolAtFrame: symbolAtFrame,
     slotSpan: slotSpan, slotAtFrame: slotAtFrame, predictLag: predictLag,
     maxDropletFrames: maxDropletFrames,
@@ -6617,15 +7011,18 @@
               foldCompared: align.folded ? align.foldCompared : undefined,
               // The fast tag = the envelope's CRC16 seal (ruling 2) — derivable
               // under either framing once the envelope is in hand; chunked
-              // alignments also report how often the tag chunk itself was seen.
-              tag: env && env.envelope.length === 20 ? toHex(env.envelope.subarray ? env.envelope.subarray(18, 20) : env.envelope.slice(18, 20)) : undefined,
+              // alignments also report how often the tag chunk itself was
+              // seen, and a tagConfirmed row re-verified a KNOWN tag without
+              // a full seal (the lease's identity heartbeat).
+              tag: env && env.envelope.length === 20 ? toHex(env.envelope.subarray ? env.envelope.subarray(18, 20) : env.envelope.slice(18, 20)) : (align.tag || undefined),
+              tagConfirmed: align.tagConfirmed || undefined,
               tagSightings: align.tagSightings !== undefined ? align.tagSightings : undefined,
               chunkConflicts: align.chunkConflicts || undefined,
               envelope: env ? toHex(env.envelope) : null,
               envelopeAt: env ? env.at : null,
               envelopeFrames: envFrames.length,
               envelopeFields: envFields || undefined,
-              error: env ? undefined : "beacon locked but no framed envelope in the captured span (" + nullSyms + "/" + decoded.length + " symbols erased)"
+              error: (env || align.tagConfirmed) ? undefined : "beacon locked but no framed envelope in the captured span (" + nullSyms + "/" + decoded.length + " symbols erased)"
             };
           }
 
@@ -7143,35 +7540,44 @@ $("capBtn").onclick = () => {
   else requestAnimationFrame(grab);
 };
 
-/* ---------- the harvest ledger (cross-clip: it outlives the clip) ---------- */
-let ledger = null;
-function ensureLedger() {
-  if (!ledger) ledger = OC.harvest.createLedger(currentProfile(), $("m_notes").value || null);
-  return ledger;
+/* ---------- the harvest STORE (cross-clip: it outlives the clip) ----------
+   v2, the lease build: CONTENT-addressed ledgers (droplets are session-
+   independent, so same content pools across sessions, restarts and clips)
+   under TAG-addressed contexts (the lease — bind/coast/grace/clip). The
+   operator's declared profile is the top degrade rung; provisionals are
+   clip-scoped and never exported. */
+let store = null;
+function ensureStore() {
+  if (!store) store = OC.harvest.createStore(currentProfile());
+  return store;
 }
 function ledgerInfo() {
-  if (!ledger) { $("ledInfo").textContent = "ledger: empty"; return; }
-  const cn = OC.harvest.counts(ledger);
-  $("ledInfo").textContent = "ledger: " + cn.droplets + " droplets / " + cn.rings + " rings" +
-    (cn.header ? " / header K=" + ledger.header.K : " / no header") +
-    (ledger.session ? " / session “" + ledger.session + "”" : "");
+  if (!store) { $("ledInfo").textContent = "store: empty"; return; }
+  const cn = OC.harvest.storeCounts(store);
+  const ctxBits = Object.keys(store.contexts).map(t => {
+    const c = store.contexts[t];
+    return t + ":" + c.state + (c.session32 ? "/" + (c.session32 >>> 0).toString(16) : "");
+  });
+  $("ledInfo").textContent = "store: " + cn.droplets + " droplets / " + cn.ledgers + " content ledger" +
+    (cn.ledgers === 1 ? "" : "s") + " / " + cn.contexts + " context" + (cn.contexts === 1 ? "" : "s") +
+    (ctxBits.length ? " [" + ctxBits.join(" · ") + "]" : "");
 }
 $("ledSaveBtn").onclick = () => {
-  if (!ledger) { setStatus("nothing to export — the ledger is empty", "warn"); return; }
+  if (!store) { setStatus("nothing to export — the store is empty", "warn"); return; }
   const a = document.createElement("a");
-  a.href = URL.createObjectURL(new Blob([OC.harvest.serializeLedger(ledger)], { type: "application/json" }));
-  a.download = "phryctoros-ledger-" + (ledger.session || "session") + ".json";
+  a.href = URL.createObjectURL(new Blob([OC.harvest.serializeStore(store)], { type: "application/json" }));
+  a.download = "phryctoros-store-" + Date.now() + ".json";
   a.click();
 };
-$("ledClearBtn").onclick = () => { ledger = null; ledgerInfo(); $("harvest").innerHTML = ""; };
+$("ledClearBtn").onclick = () => { store = null; ledgerInfo(); $("harvest").innerHTML = ""; };
 $("ledIn").onchange = async () => {
   const f = $("ledIn").files[0];
   if (!f) return;
   try {
-    ledger = OC.harvest.parseLedger(await f.text());
+    store = OC.harvest.parseStore(await f.text());
     ledgerInfo();
-    setStatus("ledger loaded — the next harvest mines only what it lacks", "ok");
-  } catch (e) { setStatus("ledger load failed: " + e.message, "bad"); }
+    setStatus("store loaded — the next harvest mines only what it lacks", "ok");
+  } catch (e) { setStatus("store load failed: " + e.message, "bad"); }
 };
 
 /* Seek-capture one time-window [tA, tB) of the loaded clip at the capture
@@ -7224,11 +7630,35 @@ async function seekWindow(v, geo, tA, tB, capFps, emitFps, onStep) {
 async function harvestDecode(v, geo, file) {
   const profile = currentProfile(), R = profile.frame_rate_hz, capFps = captureFps();
   const HV = OC.harvest;
-  const led = ensureLedger();
-  if (led.droplet_bits !== OC.fountain.geom(profile).dropletBits) {
-    setStatus("ledger droplet_bits " + led.droplet_bits + " ≠ profile's " + OC.fountain.geom(profile).dropletBits + " — export or clear it first", "bad");
+  const st = ensureStore();
+  if (st.droplet_bits !== OC.fountain.geom(profile).dropletBits) {
+    setStatus("store droplet_bits " + st.droplet_bits + " ≠ profile's " + OC.fountain.geom(profile).dropletBits + " — export or clear it first", "bad");
     return;
   }
+  // THE LEASE (2026-08-23): a new clip clips every carried context (plates and
+  // holds are clip-scoped facts; the same tag REBINDS on its first seal), the
+  // operator's declared profile is the top degrade rung, provisionals are
+  // clip-scoped. Contexts are tag-addressed; ledgers are content-addressed.
+  HV.leaseNewClip(st);
+  const lease = HV.leaseCreate({ operator: true });
+  const peelAll = () => {
+    const out = { list: [], allOk: true, any: false, best: null };
+    for (const key in st.ledgers) {
+      const p = HV.tryPeelStore(st, lease, key, profile);
+      out.list.push({ key, p });
+      if (p.ok === true) { out.any = true; if (!out.best) out.best = { key, p }; }
+      else out.allOk = false;
+    }
+    if (!out.list.length) out.allOk = false;
+    return out;
+  };
+  const peelBrief = (pa) => pa.list.map(({ key, p }) =>
+    (key === "operator" ? "operator" : key) + " " +
+    (p.ok === true ? "<span class='ok'>PEEL COMPLETE</span>"
+      : p.K ? (p.recovered || 0) + "/" + p.K
+      : "no header") +
+    (p.provisionalsRejected ? " <span class='warn'>(" + p.provisionalsRejected + " provisional rejected)</span>" : "")
+  ).join(" · ") || "no ledgers yet";
   const durS = v.duration, durF = Math.floor((durS - 0.06) * R);
   const baseline = Math.ceil(durS * capFps);
   // Window floor scales with the SLOWEST ring's droplet span. crcAlign needs
@@ -7250,18 +7680,36 @@ async function harvestDecode(v, geo, file) {
   const overlapF = HV.maxDropletFrames(profile);
   const bootF = Math.min(Math.max(minWinF, Math.round((+$("m_boot").value || 10) * R)), durF);
   const t0Wall = performance.now();
-  const visited = [], locks = {}, grown = {};
-  let seeks = 0, wrun = 0, peel = HV.tryPeel(led, profile);
+  const visited = [], ctxLocks = {}, grown = {};
+  let seeks = 0, wrun = 0, pa = peelAll();
+  // Windows worth seeking, planned per (context locks × its content ledger),
+  // earliest first; contexts whose ledger already peels plan nothing.
+  const nextPlanned = (visitedArr) => {
+    let bestW = null;
+    const okKeys = {};
+    pa.list.forEach(({ key, p }) => { if (p.ok === true) okKeys[key] = true; });
+    for (const key in ctxLocks) {
+      const lk = Object.values(ctxLocks[key]);
+      if (!lk.length) continue;
+      const ledKey = key === "operator" ? "operator" : (st.contexts[key] && st.contexts[key].contentKey);
+      const led2 = ledKey && st.ledgers[ledKey];
+      if (!led2 || okKeys[ledKey]) continue;
+      const pl = HV.planSpans(led2, lk, 0, durF,
+        { visited: visitedArr, minFrames: minWinF, joinGap: joinGapF, maxFrames: maxWinF, overlap: overlapF });
+      if (pl.windows.length && (!bestW || pl.windows[0][0] < bestW[0])) bestW = pl.windows[0];
+    }
+    return bestW;
+  };
   const clipLog = { name: file.name, windows: [] };
-  led.clips.push(clipLog);
+  st.clips.push(clipLog);
   $("harvest").innerHTML = "<b>harvest: " + file.name + "</b> — " + durS.toFixed(1) + " s, baseline " + baseline +
     " seeks, overlap " + (overlapF / R).toFixed(1) + " s, window floor " + (minWinF / R).toFixed(1) + " s" +
     (minWinF > userMinF ? " <span class='warn'>(raised from " + (userMinF / R).toFixed(1) +
       " s — the slowest ring needs " + (dropletF / R).toFixed(1) + " s per droplet)</span>" : "") + "<br>";
-  // Already in hand? Then nothing is seeked at all — the carried ledger
+  // Already in hand? Then nothing is seeked at all — the carried store
   // completes before the clip is touched (never pay twice for the same drop).
-  const queue = peel.ok ? [] : [[0, bootF]];
-  if (peel.ok) $("harvest").innerHTML += "<span class='ok'>carried ledger already peels — the clip is not needed</span><br>";
+  const queue = (pa.any && pa.allOk) ? [] : [[0, bootF]];
+  if (pa.any && pa.allOk) $("harvest").innerHTML += "<span class='ok'>carried store already peels — the clip is not needed</span><br>";
   // Tier-1 seek∥decode overlap (parallel-harvest design note): the video
   // element is idle while the worker decodes, so the PROVISIONAL next window
   // seeks underneath the current decode. Any unvisited span is safe to decode
@@ -7286,8 +7734,20 @@ async function harvestDecode(v, geo, file) {
     }
     seeks += cap.seeks;
     clipLog.windows.push([Math.round(wf0 / R * 10) / 10, Math.round(wf1 / R * 10) / 10]);
+    // Hints only when exactly ONE clock is live (the deferral): with several
+    // independent contexts one hint map would be wrong for all but one, and a
+    // wrong hint costs a wasted narrow scan before the full one anyway.
+    const liveLockKeys = Object.keys(ctxLocks).filter(k => Object.keys(ctxLocks[k]).length);
     const hints = {};
-    for (const k in locks) { const h = HV.predictLag(locks[k], cap.fBase); if (h) hints[k] = h; }
+    if (liveLockKeys.length === 1)
+      for (const k in ctxLocks[liveLockKeys[0]]) {
+        const h = HV.predictLag(ctxLocks[liveLockKeys[0]][k], cap.fBase);
+        if (h) hints[k] = h;
+      }
+    // Tag confirmation (the hold matrix's identity heartbeat): with exactly
+    // one live announced context, ask the beacon channel to confirm its tag
+    // between envelope seals.
+    const liveTags = Object.keys(st.contexts).filter(t => st.contexts[t].state !== "clipped");
     setStatus("harvest w" + wrun + ": decoding " + cap.frames.length + " frames" +
       (getWorker() ? " (off-thread)" : "") + "…", "warn");
     const isV3h = !!(profile.bands && profile.plate);
@@ -7304,16 +7764,14 @@ async function harvestDecode(v, geo, file) {
       // the beacon was plain-path only too, and could only preamble-lock — so
       // the envelope had never been read from a field capture. With the
       // framing-based aligner it joins mid-loop like everything else.
-      beacon: isV3h && $("m_beacon").checked
+      beacon: isV3h && $("m_beacon").checked,
+      beaconAlign: liveTags.length === 1 ? { expectTag: liveTags[0] } : undefined
     });
     // kick the provisional next window's seeks under the decode
     if (!queue.length && !prefetch) {
       const visProv = visited.map(s => s.slice());
       HV.markVisited(visProv, wf0, wf1);
-      const planProv = HV.planSpans(led, Object.values(locks), 0, durF,
-        { visited: visProv, minFrames: minWinF, joinGap: joinGapF, maxFrames: maxWinF, overlap: overlapF });
-      const nxt = planProv.windows.length ? planProv.windows[0]
-        : HV.nextUnvisited(visProv, 0, durF, chunkF, overlapF);
+      const nxt = nextPlanned(visProv) || HV.nextUnvisited(visProv, 0, durF, chunkF, overlapF);
       if (nxt && nxt[1] - nxt[0] >= Math.round(2 * R)) {
         const pw = wrun;
         prefetch = {
@@ -7329,47 +7787,66 @@ async function harvestDecode(v, geo, file) {
     let lockedAny = false;
     if (res.error) line += " — <span class='bad'>" + res.error + "</span>";
     else {
-      const got = HV.absorb(led, res, profile);
-      totalAdded += got.added;
-      for (const em of res.emitters) for (const a of (em.annuli || [])) {
-        if (a && a.alignLag != null) lockedAny = true;
-        // A ring outvoted on lag is quarantined — no droplets banked above,
-        // and no lock taken here (a false lock would poison the plan too).
-        // Compared in FRAMES (lag × frames_per_symbol): lag counts each ring's
-        // own symbols, so raw lags are only comparable while every ring shares
-        // F. absorb() reports lagConsensus in frames for the same reason.
-        const paF = profile.annuli.find(x => x.index === a.annulus);
-        const Fa = (paF && paF.rotation.frames_per_symbol) || 4;
-        if (got.lagConsensus != null && a.alignLag != null &&
-            Math.abs(a.alignLag * Fa - got.lagConsensus) > Fa) continue;
-        const pa = paF;
-        const lk = pa && HV.lockFrom(a, pa, profile, cap.fBase);
-        if (lk) locks[a.annulus] = lk;
-      }
+      const got = HV.leaseObserve(st, lease, res, profile, wrun);
+      let added = 0, dup = 0, quarantined = 0, conflicts = 0;
+      got.events.forEach(e => {
+        if (e.ev === "bank") { added += e.added || 0; dup += e.dup || 0; quarantined += e.quarantined || 0; conflicts += e.conflicts || 0; }
+      });
+      totalAdded += added;
+      // Locks per context/operator clock (the routing already knows whose
+      // emitter each row belongs to); the lag-consensus quarantine still
+      // gates each lock, per emitter, in FRAMES.
+      got.obs.forEach(o => {
+        const key = o.ctx ? o.ctx.tag : (o.operator ? "operator" : null);
+        for (const a of (o.em.annuli || [])) {
+          if (!a || a.beacon || a.alignLag == null) continue;
+          lockedAny = true;
+          if (!key) continue;
+          const paF = profile.annuli.find(x => x.index === a.annulus);
+          const Fa = (paF && paF.rotation.frames_per_symbol) || 4;
+          if (o.lagConsensus != null && Math.abs(a.alignLag * Fa - o.lagConsensus) > Fa) continue;
+          const lk = paF && HV.lockFrom(a, paF, profile, cap.fBase);
+          if (lk) (ctxLocks[key] || (ctxLocks[key] = {}))[a.annulus] = lk;
+        }
+      });
       if (lockedAny) everLocked = true;
-      peel = HV.tryPeel(led, profile);
+      pa = peelAll();
       // The beacon's envelope, read off the air: the emitter's own statement of
       // preset / session / K / tiling / loop — the settings string, from the wire.
       for (const em of res.emitters) for (const a of (em.annuli || [])) {
-        if (!a || !a.beacon || !a.envelope) continue;
+        if (!a || !a.beacon) continue;
         const f = a.envelopeFields;
-        line += f
-          ? " — <span class='ok'>ENVELOPE " + a.alignMethod + (a.framing === "chunked" ? " CHUNKED tag " + a.tag + (a.tagSightings ? " ×" + a.tagSightings : "") : "") +
+        if (f && a.envelope)
+          line += " — <span class='ok'>ENVELOPE " + a.alignMethod + (a.framing === "chunked" ? " CHUNKED tag " + a.tag + (a.tagSightings ? " ×" + a.tagSightings : "") : "") +
             (a.folded ? " (folded, repeats agree " + Math.round((a.foldAgree || 0) * 100) + "% of " + a.foldCompared + ")" : "") +
             ": " + f.preset + " session " + f.session32.toString(16).padStart(8, "0") +
             " K=" + f.K + " len=" + f.len + " tiling=" + f.tiling +
             (f.tiling > 1 ? " (grid " + f.grid.cols + "×" + f.grid.rows + ", carried by tile " + f.tile + ")" : "") +
-            " loop=" + f.loop_s + "s freeze=" + f.freeze_s + "s</span>"
-          : " — <span class='warn'>beacon frame " + a.envelope + " (unparsed)</span>";
+            " loop=" + f.loop_s + "s freeze=" + f.freeze_s + "s</span>";
+        else if (a.tagConfirmed)
+          line += " — <span class='ok'>TAG " + a.tag + " confirmed ×" + (a.tagSightings || 1) + "</span>";
+        else if (a.envelope)
+          line += " — <span class='warn'>beacon frame " + a.envelope + " (unparsed)</span>";
       }
-      line += " — +" + got.added + " droplets (" + got.dup + " dup" +
-        (got.quarantined ? ", <span class='warn'>" + got.quarantined + " quarantined</span>" : "") +
-        (got.unplaced ? ", <span class='warn'>" + got.unplaced + " on unplaced tiles (not banked)</span>" : "") +
-        (got.conflicts ? ", <span class='bad'>" + got.conflicts + " byte-conflicts</span>" : "") +
-        ") — " +
-        (peel.ok ? "<span class='ok'>PEEL COMPLETE</span>"
-                 : peel.K ? (peel.recovered || 0) + "/" + peel.K + " blocks"
-                 : "no header yet");
+      // The lease's receipt stream: binds, adoptions, holds ending, clips.
+      const leaseBits = got.events.filter(e => e.ev !== "bank" && e.ev !== "ledger" && e.ev !== "state")
+        .map(e => {
+          if (e.ev === "bind") return "<span class='ok'>BIND " + e.tag + " (session " + (e.session >>> 0).toString(16) + " → " + e.key + ")</span>";
+          if (e.ev === "rebind") return "<span class='ok'>REBIND " + e.tag + "</span>";
+          if (e.ev === "operator-merge") return "<span class='ok'>operator ledger adopted → " + e.key + " (" + e.moved + " moved" + (e.conflicts ? ", " + e.conflicts + " conflicts" : "") + ")</span>";
+          if (e.ev === "adopt") return "<span class='ok'>provisional " + e.provisional + " adopted by " + e.tag + " (" + e.droplets + " droplets)</span>";
+          if (e.ev === "provisional") return "<span class='warn'>un-announced plate → provisional " + e.id + "</span>";
+          if (e.ev === "hold-end") return "<span class='warn'>hold ends (" + e.tag + ": tag lost, then a zero-lock window)</span>";
+          if (e.ev === "all-lost") return "<span class='warn'>" + e.tag + " lost everything — grace</span>";
+          if (e.ev === "clip") return "<span class='warn'>CLIP " + e.tag + " (grace expired)</span>";
+          if (e.ev === "tile-disagree") return "<span class='bad'>tile disagree on " + e.tag + " (announced " + e.announced + " vs derived " + e.derived + ") — not banked</span>";
+          return null;
+        }).filter(Boolean);
+      if (leaseBits.length) line += " — " + leaseBits.join(" · ");
+      line += " — +" + added + " droplets (" + dup + " dup" +
+        (quarantined ? ", <span class='warn'>" + quarantined + " quarantined</span>" : "") +
+        (conflicts ? ", <span class='bad'>" + conflicts + " byte-conflicts</span>" : "") +
+        ") — " + peelBrief(pa);
       $("results").innerHTML = layerSummary(res);
     }
     // Adaptive growth (run-1's lock-failure lesson): a window that locks
@@ -7377,7 +7854,7 @@ async function harvestDecode(v, geo, file) {
     // short windows can't accumulate CRC evidence on marginal footage where
     // a long segment locks fine. The failed window is NOT marked visited
     // (the grown window re-covers it and marks for both).
-    if (!lockedAny && !peel.ok && !grown[wf0] && wf1 < durF) {
+    if (!lockedAny && !(pa.any && pa.allOk) && !grown[wf0] && wf1 < durF) {
       grown[wf0] = 1;
       const gw1 = Math.min(wf0 + 2 * (wf1 - wf0), durF);
       queue.unshift([wf0, gw1]);
@@ -7387,7 +7864,9 @@ async function harvestDecode(v, geo, file) {
     }
     $("harvest").innerHTML += line + "<br>";
     ledgerInfo();
-    if (peel && peel.ok) break;
+    // Early exit: every content ledger any live context (or the operator)
+    // feeds has peeled and validated.
+    if (pa.any && pa.allOk) break;
     // Dead-clip guard: bootstrap + its growth + a second stretch all silent
     // on an empty take = stop burning seeks (the 29-minute exhaustion of a
     // clip where nothing ever locked). Anything carried in stays banked.
@@ -7397,13 +7876,8 @@ async function harvestDecode(v, geo, file) {
       break;
     }
     if (!queue.length) {
-      const plan = HV.planSpans(led, Object.values(locks), 0, durF,
-        { visited, minFrames: minWinF, joinGap: joinGapF, maxFrames: maxWinF, overlap: overlapF });
-      if (plan.windows.length) queue.push(plan.windows[0]);
-      else {
-        const nx = HV.nextUnvisited(visited, 0, durF, chunkF, overlapF);
-        if (nx && nx[1] - nx[0] >= Math.round(2 * R)) queue.push(nx);
-      }
+      const nxt2 = nextPlanned(visited) || HV.nextUnvisited(visited, 0, durF, chunkF, overlapF);
+      if (nxt2 && (nxt2[1] - nxt2[0] >= Math.round(2 * R) || nxt2[1] - nxt2[0] >= minWinF)) queue.push(nxt2);
     }
   }
   if (prefetch) { // in-flight prefetch at exit — cancel, count its seeks honestly
@@ -7414,15 +7888,19 @@ async function harvestDecode(v, geo, file) {
   const wall = ((performance.now() - t0Wall) / 1000).toFixed(1);
   const saved = Math.max(0, Math.round(100 * (1 - seeks / baseline)));
   const visitedS = visited.reduce((s, sp) => s + (sp[1] - sp[0]), 0) / R;
-  const receipt = peel && peel.ok
-    ? "<b class='ok'>EARLY EXIT — payload in hand after " + visitedS.toFixed(1) + " s of " + durS.toFixed(1) + " s</b>" +
-      " — " + seeks + " seeks of " + baseline + " baseline (" + saved + "% skipped), wall " + wall + " s<br>" +
-      "<span class='ok' style='font-size:15px'><b>PAYLOAD:</b> “" + peel.text + "”</span> (" + peel.recovered + "/" + peel.K + " blocks, " + peel.droplets + " droplets)"
-    : "<b class='warn'>clip exhausted — payload incomplete</b> (" +
-      (peel && peel.K ? (peel.recovered || 0) + "/" + peel.K + " blocks" : "no header yet") +
-      ") — " + seeks + " seeks of " + baseline + " (" + saved + "% skipped), wall " + wall + " s — export the ledger and film another take: the next harvest mines only what this one lacked";
+  pa = peelAll();
+  const done = pa.any && pa.allOk;
+  const payloads = pa.list.filter(({ p }) => p.ok === true).map(({ key, p }) =>
+    "<span class='ok' style='font-size:15px'><b>PAYLOAD" + (pa.list.length > 1 ? " [" + (key === "operator" ? "operator" : key) + "]" : "") +
+    ":</b> “" + p.text + "”</span> (" + p.recovered + "/" + p.K + " blocks, " + p.droplets + " droplets)").join("<br>");
+  const receipt = done
+    ? "<b class='ok'>EARLY EXIT — every live ledger in hand after " + visitedS.toFixed(1) + " s of " + durS.toFixed(1) + " s</b>" +
+      " — " + seeks + " seeks of " + baseline + " baseline (" + saved + "% skipped), wall " + wall + " s<br>" + payloads
+    : "<b class='warn'>clip exhausted — incomplete</b> (" + peelBrief(pa) +
+      ") — " + seeks + " seeks of " + baseline + " (" + saved + "% skipped), wall " + wall + " s — export the store and film another take: the next harvest mines only what this one lacked" +
+      (payloads ? "<br>" + payloads : "");
   $("harvest").innerHTML += receipt + "<br>";
-  setStatus(peel && peel.ok ? "harvest complete — early exit" : "harvest exhausted — ledger holds the progress", peel && peel.ok ? "ok" : "warn");
+  setStatus(done ? "harvest complete — early exit" : "harvest exhausted — the store holds the progress", done ? "ok" : "warn");
 }
 
 /* ---------- recorded input (§9.1 — first-class, works without camera/secure ctx) ----------
@@ -7442,8 +7920,8 @@ $("fileIn").onchange = async () => {
   // profile is always a mistake — refuse before any seeking. Bare harvest-on
   // just warns and falls through to the classic pass (acuity work is normal).
   if ($("m_harvest").checked && !payloadMode()) {
-    if (ledger && OC.harvest.counts(ledger).droplets > 0) {
-      setStatus("a ledger is loaded but the profile is not a payload mode — pick a “+ payload” profile, then re-choose the clip", "bad");
+    if (store && OC.harvest.storeCounts(store).droplets > 0) {
+      setStatus("a store is loaded but the profile is not a payload mode — pick a “+ payload” profile, then re-choose the clip", "bad");
       $("fileIn").value = "";
       return;
     }

@@ -212,6 +212,370 @@
     return null;
   }
 
+  /* ---------- THE LEASE (D-ring lease build, 2026-08-23) ----------
+
+     Two identities, split the way the identity principle says to:
+
+     CONTENT-ADDRESSED LEDGERS. Droplets are a pure function of config +
+     payload — session32 never enters the fountain — so the ledger keys by
+     the content fingerprint the envelope carries: (droplet_bits, K, len,
+     pcrc16). Two emitters, two sessions, or two clips carrying the same
+     content pool into ONE ledger (the choir's redundancy falling out of the
+     keying); a restart re-stamps the session and changes nothing here. A
+     16-bit pcrc collision is caught where every wrong-rule case is caught:
+     the peel's own validation.
+
+     TAG-ADDRESSED LEASES. A context = one announced identity, keyed by THE
+     TAG (the envelope's CRC16 seal — the ASID). Not by session32: a
+     same-session content switch changes the tag and must split. The context
+     holds trust and continuity — state, plates, grace — and points at the
+     content ledger it feeds.
+
+     The hold matrix (practitioner's ruling, 2026-08-23):
+       bound    — tag detecting (sealed envelope, or a tag chunk confirming
+                  the KNOWN tag). Data-ring flapping is forgiven
+                  indefinitely; droplets bank direct whenever a lock holds.
+                  The edge-of-detection emitter stays bound and accumulates.
+       coasting — tag lost, data held. Tenuous by design: the FIRST
+                  zero-lock window ends the hold (framing cannot see a
+                  content switch, so the binding must not coast far).
+       grace    — nothing locks. Banking has already stopped (no locks, no
+                  droplets, no risk); the context survives graceWindows
+                  windows so an occlusion or focus hunt is not a cold start.
+                  Resumption inside grace routes through a PROVISIONAL
+                  ledger and is adopted when the next seal/confirmation
+                  matches the tag — nothing enters a content ledger
+                  un-attributed, ever.
+       clipped  — grace expired. Any later appearance is a fresh bind.
+
+     PROVISIONAL ledgers (the degrade rung's bottom): plates with data locks
+     but no announced identity bank into per-plate spatial ledgers (nearest-
+     centre matching within a clip, never exported). Adoption is peel-time
+     UNION, validate-gated: a completed-but-invalid peel retries without the
+     provisionals and reports them rejected — the auto-fallback pattern.
+
+     Locks stay OUT of the store (an alignment is a fact about one clip's
+     time axis); the driver keys them per context. */
+
+  function contentKeyOf(fields, dropletBits) {
+    return dropletBits + ":" + fields.K + ":" + fields.len + ":" + (fields.pcrc >>> 0).toString(16);
+  }
+
+  function createStore(profile) {
+    return {
+      version: 2,
+      profile_version: profile.profile_version,
+      droplet_bits: F().geom(profile).dropletBits,
+      tiling: profile.tiling || 1,
+      ledgers: {},    // contentKey → ledger (createLedger shape) + .fields (envelope copy)
+      contexts: {},   // tag (hex string) → context
+      clips: []
+    };
+  }
+
+  function serializeStore(store) {
+    // provisionals are clip-scoped and never travel
+    return JSON.stringify(store, function (k, v) { return k === "provisionals" ? undefined : v; });
+  }
+
+  function parseStore(text) {
+    var s = JSON.parse(text);
+    if (s.version !== 2 || !s.ledgers || !s.contexts)
+      throw new Error("not a v2 harvest store (version " + s.version + ") — v1 ledgers predate the lease and do not import");
+    return s;
+  }
+
+  function storeCounts(store) {
+    var ledgers = 0, droplets = 0, contexts = 0;
+    for (var k in store.ledgers) { ledgers++; var c = counts(store.ledgers[k]); droplets += c.droplets; }
+    for (var t in store.contexts) contexts++; // eslint-disable-line no-unused-vars
+    return { ledgers: ledgers, droplets: droplets, contexts: contexts };
+  }
+
+  /* A ledger shell inside a store — same shape createLedger builds, without
+     needing a profile (the store already fixed droplet_bits and tiling). */
+  function bareLedger(store) {
+    return { version: 1, profile_version: store.profile_version, droplet_bits: store.droplet_bits,
+             tiling: store.tiling, session: null, header: null, rings: {}, clips: [] };
+  }
+
+  function leaseCreate(opts) {
+    opts = opts || {};
+    return {
+      graceWindows: opts.graceWindows !== undefined ? opts.graceWindows : 2,
+      matchFidFrac: opts.matchFidFrac !== undefined ? opts.matchFidFrac : 0.75,
+      // The degrade ladder's TOP rung: with no announced context live, the
+      // operator's own declaration (the profile they selected) is the
+      // identity — the primary emitter (and every tile of a declared
+      // lattice) banks into the "operator" ledger exactly as the pre-lease
+      // harvest did. The first SEAL adopts that ledger into the announced
+      // content ledger: in operator mode there is one emission by
+      // declaration, and the seal came from the very plate the operator
+      // pointed at.
+      operatorKey: opts.operator ? "operator" : null,
+      provisionals: {},   // pid → { center, fid, ledger, lastSeen, forTag, adopted, rejected }
+      nextProv: 1
+    };
+  }
+
+  /* First-seen-wins ring merge (conflicts surfaced, headers carried). */
+  function mergeLedger(dst, src) {
+    var moved = 0, conflicts = 0;
+    for (var seed in src.rings) {
+      var d = dst.rings[seed] || (dst.rings[seed] = {});
+      for (var c in src.rings[seed]) {
+        if (d[c] === undefined) { d[c] = src.rings[seed][c]; moved++; }
+        else if (d[c] !== src.rings[seed][c]) conflicts++;
+      }
+    }
+    if (!dst.header && src.header) dst.header = src.header;
+    return { moved: moved, conflicts: conflicts };
+  }
+
+  /* A new clip is a clip (the ruling's sense): plates, locks and holds are
+     facts about one clip's time axis. Contexts survive as IDENTITY MEMORY —
+     the same tag re-binding on its first seal is exactly the cross-clip
+     resumption the lease exists to make safe — but nothing banks to them
+     until that seal. */
+  function leaseNewClip(store) {
+    for (var t in store.contexts) {
+      var ctx = store.contexts[t];
+      ctx.plates = [];
+      ctx.state = "clipped";
+    }
+  }
+
+  function nearPlate(center, fid, cand, frac) {
+    if (!center || !cand.center) return false;
+    var tol = frac * Math.max(fid || 0, cand.fid || 0, 1);
+    var dx = center[0] - cand.center[0], dy = center[1] - cand.center[1];
+    return dx * dx + dy * dy <= tol * tol;
+  }
+
+  /* One window's decode result → the store, through the lease. Returns the
+     window's events (the receipt stream) and which content ledgers banked.
+     `w` = the window ordinal (grace accounting). Pure over (store, lease). */
+  function leaseObserve(store, lease, res, profile, w) {
+    var events = [], bankedKeys = {};
+    var emitters = (!res || res.error || !res.emitters) ? [] : res.emitters;
+
+    // ——— classify each emitter ———
+    var obs = emitters.map(function (em, ei) {
+      var beacon = null, dataLocked = false;
+      for (var i = 0; i < (em.annuli || []).length; i++) {
+        var a = em.annuli[i];
+        if (!a) continue;
+        if (a.beacon) beacon = a;
+        else if (a.alignLag != null) dataLocked = true;
+      }
+      var fields = beacon && beacon.envelopeFields;
+      // the pipeline's tag field (the seal, hex) is authoritative; the seal
+      // bytes at the envelope hex's tail are the derivation fallback
+      var sealedTag = fields ? (beacon.tag ||
+        (beacon.envelope && beacon.envelope.length === 40 ? beacon.envelope.slice(36, 40) : null)) : null;
+      var confirmedTag = (!fields && beacon && beacon.tagConfirmed && beacon.tag) ? beacon.tag : null;
+      return { em: em, index: ei, beacon: beacon, fields: fields || null, sealedTag: sealedTag,
+               confirmedTag: confirmedTag, dataLocked: dataLocked,
+               center: em.center || null, fid: em.fiducialWidthPx || 0 };
+    });
+
+    // ——— route seals: create/refresh contexts ———
+    obs.forEach(function (o) {
+      if (!o.fields || !o.sealedTag) return;
+      var tag = o.sealedTag;
+      var ctx = store.contexts[tag];
+      if (!ctx) {
+        ctx = store.contexts[tag] = {
+          tag: tag, session32: o.fields.session32, fields: o.fields,
+          contentKey: contentKeyOf(o.fields, store.droplet_bits),
+          state: "bound", graceLeft: lease.graceWindows,
+          plates: [], boundAt: w, lastSeen: w
+        };
+        if (!store.ledgers[ctx.contentKey]) {
+          store.ledgers[ctx.contentKey] = bareLedger(store);
+          store.ledgers[ctx.contentKey].fields = o.fields;
+          events.push({ ev: "ledger", key: ctx.contentKey });
+        }
+        events.push({ ev: "bind", tag: tag, session: o.fields.session32, key: ctx.contentKey });
+        // The operator ledger predates this seal: by declaration it is this
+        // very emission, so its droplets adopt into the announced content
+        // ledger (first-seen kept, conflicts surfaced — and the peel's own
+        // validation stands behind the merge as everywhere else).
+        if (lease.operatorKey && store.ledgers[lease.operatorKey] &&
+            counts(store.ledgers[lease.operatorKey]).droplets > 0) {
+          var mg = mergeLedger(store.ledgers[ctx.contentKey], store.ledgers[lease.operatorKey]);
+          delete store.ledgers[lease.operatorKey];
+          events.push({ ev: "operator-merge", tag: tag, key: ctx.contentKey,
+                        moved: mg.moved, conflicts: mg.conflicts });
+        }
+      } else if (ctx.state === "clipped") {
+        ctx.state = "grace"; // the matrix below re-binds on this window's tag
+        events.push({ ev: "rebind", tag: tag });
+      }
+      // plate bookkeeping (announced tile; centre track)
+      var plate = null;
+      for (var p = 0; p < ctx.plates.length; p++)
+        if (nearPlate(o.center, o.fid, ctx.plates[p], lease.matchFidFrac)) { plate = ctx.plates[p]; break; }
+      if (!plate) { plate = { }; ctx.plates.push(plate); }
+      plate.center = o.center; plate.fid = o.fid;
+      plate.tile = o.fields.tile; plate.lastSeen = w;
+      o.ctx = ctx; o.viaSeal = true;
+      // a provisional track at this plate is claimed by the seal
+      for (var pid in lease.provisionals) {
+        var pr = lease.provisionals[pid];
+        if (!pr.adopted && !pr.rejected && nearPlate(o.center, o.fid, pr, lease.matchFidFrac)) {
+          pr.adopted = true; pr.forTag = tag;
+          events.push({ ev: "adopt", tag: tag, provisional: pid, droplets: counts(pr.ledger).droplets });
+        }
+      }
+    });
+
+    // ——— route unsealed emitters: context plates first, else provisional ———
+    obs.forEach(function (o) {
+      if (o.ctx || !o.dataLocked) return;
+      var tags = Object.keys(store.contexts);
+      for (var t = 0; t < tags.length; t++) {
+        var ctx = store.contexts[tags[t]];
+        if (ctx.state === "clipped") continue;
+        for (var p = 0; p < ctx.plates.length; p++) {
+          if (nearPlate(o.center, o.fid, ctx.plates[p], lease.matchFidFrac)) {
+            if (o.confirmedTag && o.confirmedTag !== ctx.tag) break; // confirmed a DIFFERENT tag — not this context
+            if (ctx.state === "grace" && !o.confirmedTag) break;      // grace: no direct banking without the tag
+            o.ctx = ctx; o.plate = ctx.plates[p];
+            ctx.plates[p].center = o.center; ctx.plates[p].fid = o.fid; ctx.plates[p].lastSeen = w;
+            return;
+          }
+        }
+      }
+      // no announced context claims it → the operator rung, when it applies:
+      // no live announced context, and this is the primary emitter or a tile
+      // of the operator's declared lattice
+      if (lease.operatorKey) {
+        var live = false;
+        for (var lt in store.contexts) if (store.contexts[lt].state !== "clipped") { live = true; break; }
+        if (!live && (o.index === 0 || store.tiling > 1)) { o.operator = true; return; }
+      }
+      // otherwise provisional (create or extend by proximity)
+      var provId = null;
+      for (var pid in lease.provisionals) {
+        var pr = lease.provisionals[pid];
+        if (!pr.adopted && !pr.rejected && nearPlate(o.center, o.fid, pr, lease.matchFidFrac)) { provId = pid; break; }
+      }
+      if (!provId) {
+        provId = "p" + lease.nextProv++;
+        lease.provisionals[provId] = { center: o.center, fid: o.fid, ledger: bareLedger(store),
+          lastSeen: w, adopted: false, rejected: false };
+        events.push({ ev: "provisional", id: provId, center: o.center });
+      }
+      var prv = lease.provisionals[provId];
+      prv.center = o.center; prv.fid = o.fid; prv.lastSeen = w;
+      o.prov = prv; o.provId = provId;
+    });
+
+    // ——— bank ———
+    obs.forEach(function (o) {
+      var target = null, tileForBank;
+      if (o.ctx) {
+        // announced tile when the plate carries one; derived as fallback;
+        // disagreement quarantines the emitter for this window.
+        var announced = o.plate && o.plate.tile !== undefined ? o.plate.tile
+                       : (o.fields ? o.fields.tile : undefined);
+        var derived = o.em.tile;
+        if (announced !== undefined && derived !== undefined && derived >= 0 && announced !== derived) {
+          events.push({ ev: "tile-disagree", tag: o.ctx.tag, announced: announced, derived: derived });
+          return;
+        }
+        tileForBank = announced !== undefined ? announced : derived;
+        target = store.ledgers[o.ctx.contentKey];
+      } else if (o.operator) {
+        tileForBank = o.em.tile;
+        target = store.ledgers[lease.operatorKey] || (store.ledgers[lease.operatorKey] = bareLedger(store));
+      } else if (o.prov) {
+        tileForBank = o.em.tile;
+        target = o.prov.ledger;
+      }
+      if (!target) return;
+      var emB = tileForBank === o.em.tile ? o.em : Object.assign({}, o.em, { tile: tileForBank });
+      var got = absorb(target, { emitters: [emB] }, profile);
+      if (got.added || got.dup || got.conflicts || got.quarantined) {
+        events.push({ ev: "bank", tag: o.ctx ? o.ctx.tag : null,
+                      operator: o.operator || undefined, provisional: o.provId || null,
+                      added: got.added, dup: got.dup, conflicts: got.conflicts, quarantined: got.quarantined });
+        if (o.ctx && got.added) bankedKeys[o.ctx.contentKey] = true;
+        if (o.operator && got.added) bankedKeys[lease.operatorKey] = true;
+      }
+      o.lagConsensus = got.lagConsensus;
+    });
+
+    // ——— the hold matrix, per context ———
+    for (var tg in store.contexts) {
+      var ctx = store.contexts[tg];
+      if (ctx.state === "clipped") continue;
+      var sawTag = false, sawData = false;
+      obs.forEach(function (o) {
+        if (o.ctx !== ctx) return;
+        if (o.viaSeal || (o.confirmedTag && o.confirmedTag === ctx.tag)) sawTag = true;
+        if (o.dataLocked) sawData = true;
+      });
+      var was = ctx.state;
+      if (sawTag) { ctx.state = "bound"; ctx.graceLeft = lease.graceWindows; ctx.lastSeen = w; }
+      else if (sawData) {
+        if (ctx.state !== "grace") ctx.state = "coasting";   // grace needs the tag to resume — handled in routing
+        ctx.lastSeen = w;
+      } else {
+        if (ctx.state === "grace") {
+          if (--ctx.graceLeft <= 0) { ctx.state = "clipped"; events.push({ ev: "clip", tag: ctx.tag }); }
+        } else {
+          ctx.state = "grace"; ctx.graceLeft = lease.graceWindows;
+          events.push({ ev: was === "coasting" ? "hold-end" : "all-lost", tag: ctx.tag });
+        }
+      }
+      if (was !== ctx.state)
+        events.push({ ev: "state", tag: ctx.tag, from: was, to: ctx.state });
+    }
+
+    return { events: events, banked: Object.keys(bankedKeys), obs: obs };
+  }
+
+  /* Peel a content ledger with its adopted provisionals UNIONED in,
+     validate-gated: a completed-but-invalid union retries bare, and if the
+     bare peel is no worse the provisionals are marked rejected (the poison
+     was theirs). Ranking mirrors the subsetFor fallback: validated >
+     honestly-incomplete > completed-but-invalid. */
+  function tryPeelStore(store, lease, contentKey, profile) {
+    var ledger = store.ledgers[contentKey];
+    if (!ledger) return { ok: false, reason: "no such ledger" };
+    var base = ringsFor(ledger, profile);
+    var adoptedIds = [];
+    for (var pid in lease.provisionals) {
+      var pr = lease.provisionals[pid];
+      if (pr.adopted && !pr.rejected && store.contexts[pr.forTag] &&
+          store.contexts[pr.forTag].contentKey === contentKey) adoptedIds.push(pid);
+    }
+    if (!adoptedIds.length) return F().assemble(base, profile);
+    var bySeed = {};
+    base.forEach(function (r) { bySeed[r.seed] = { seed: r.seed, droplets: r.droplets.slice(), have: {} };
+      r.droplets.forEach(function (d) { bySeed[r.seed].have[d.c] = true; }); });
+    adoptedIds.forEach(function (pid) {
+      ringsFor(lease.provisionals[pid].ledger, profile).forEach(function (r) {
+        var slot = bySeed[r.seed] || (bySeed[r.seed] = { seed: r.seed, droplets: [], have: {} });
+        r.droplets.forEach(function (d) { if (!slot.have[d.c]) { slot.have[d.c] = true; slot.droplets.push(d); } });
+      });
+    });
+    var union = [];
+    for (var s in bySeed) union.push({ seed: bySeed[s].seed, droplets: bySeed[s].droplets });
+    var withProv = F().assemble(union, profile);
+    if (withProv.ok === true || withProv.recovered == null || withProv.recovered !== withProv.K) return withProv;
+    // completed but did not validate — the union is suspect; try bare
+    var bare = F().assemble(base, profile);
+    if (bare.ok === true || (bare.recovered != null && bare.recovered !== bare.K)) {
+      adoptedIds.forEach(function (pid) { lease.provisionals[pid].rejected = true; });
+      bare.provisionalsRejected = adoptedIds.length;
+      return bare;
+    }
+    return withProv;
+  }
+
   /* ---------- locks: the capture-time→carousel-slot mapping ---------- */
 
   /* A lock binds one ring's carousel to the clip's absolute emission-frame
@@ -428,6 +792,10 @@
   var API = {
     createLedger: createLedger, serializeLedger: serializeLedger, parseLedger: parseLedger,
     counts: counts, absorb: absorb, ringsFor: ringsFor, tryPeel: tryPeel, seenTileSeeds: seenTileSeeds,
+    contentKeyOf: contentKeyOf, createStore: createStore, serializeStore: serializeStore,
+    parseStore: parseStore, storeCounts: storeCounts, leaseCreate: leaseCreate,
+    leaseNewClip: leaseNewClip, mergeLedger: mergeLedger,
+    leaseObserve: leaseObserve, tryPeelStore: tryPeelStore,
     lockFrom: lockFrom, frameOfSymbol: frameOfSymbol, symbolAtFrame: symbolAtFrame,
     slotSpan: slotSpan, slotAtFrame: slotAtFrame, predictLag: predictLag,
     maxDropletFrames: maxDropletFrames,

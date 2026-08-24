@@ -879,6 +879,148 @@ async function main() {
         " · seeds " + JSON.stringify(seeds) + " (base " + s0 + ", tile1 " + s1 + ")" +
         " · plan covers slot1 " + covers(1) + " slot2 " + covers(2) + " slot3 " + covers(3));
     }
+
+    await tick("TH7: the lease — hold matrix, content-addressed ledgers, validate-gated adoption…");
+    {
+      // The D-ring lease (2026-08-23 ruling): contexts keyed by THE TAG (the
+      // envelope's seal — a same-session content switch changes it and must
+      // split), ledgers keyed by CONTENT (droplets are session-independent).
+      // The hold matrix: tag detecting → bound, data flapping forgiven;
+      // tag lost + data held → coasting, ONE zero-lock window ends the hold;
+      // all lost → grace (generous), resumption via provisional + adoption.
+      // self_framing ON: without it a completed peel validates unconditionally
+      // (pre-framing v2 semantics) and the validate-gate has nothing to gate
+      const pL = OC.profile.defaultProfile({ carriage: { droplet_bits: 24, self_framing: true } });
+      const fieldsA = { session32: 0x11111111, K: 3, len: 5, pcrc: 0x77, tile: 0 };
+      const fieldsB = { session32: 0x22222222, K: 3, len: 5, pcrc: 0x77, tile: 0 };  // same CONTENT, new session
+      const fieldsC = { session32: 0x11111111, K: 4, len: 7, pcrc: 0x99, tile: 0 };  // same session, NEW content
+      const dRow = (c) => ({ annulus: 0, alignLag: 4, alignOffset: 0, droplets: [{ c, hex: "beef" }] });
+      const em = (center, o) => Object.assign({ center, fiducialWidthPx: 100, annuli: [] }, o);
+      const sealed = (center, fields, tag, extra) => em(center, { annuli: [
+        Object.assign({ annulus: "beacon", beacon: true, alignLag: 0, tag, envelopeFields: fields }, extra || {}),
+        dRow(1)] });
+      const confirmed = (center, tag, c) => em(center, { annuli: [
+        { annulus: "beacon", beacon: true, alignLag: 0, tag, tagConfirmed: true }, dRow(c)] });
+      const dataOnly = (center, c) => em(center, { annuli: [dRow(c)] });
+
+      // TH7a — operator rung first, then the seal adopts the operator ledger
+      const store = HV.createStore(pL), lease = HV.leaseCreate({ operator: true, graceWindows: 2 });
+      const r1 = HV.leaseObserve(store, lease, { emitters: [dataOnly([100, 100], 1)] }, pL, 1);
+      const opBanked = store.ledgers.operator && HV.counts(store.ledgers.operator).droplets === 1;
+      const r2 = HV.leaseObserve(store, lease, { emitters: [sealed([100, 100], fieldsA, "0aaa")] }, pL, 2);
+      const ctxA = store.contexts["0aaa"];
+      const keyA = HV.contentKeyOf(fieldsA, 24);
+      const mergedOk = !store.ledgers.operator && store.ledgers[keyA] &&
+        HV.counts(store.ledgers[keyA]).droplets === 1 && // c=1 from w1 merged; w2's c=1 is a dup
+        r2.events.some(e => e.ev === "operator-merge");
+      record("TH7a lease: the operator rung banks pre-seal, and the first seal ADOPTS the operator ledger into the announced content ledger (bind + merge, dup-free)",
+        !!(r1.events.some(e => e.ev === "bank" && e.operator) && opBanked &&
+           ctxA && ctxA.state === "bound" && ctxA.contentKey === keyA && mergedOk),
+        "w1 " + JSON.stringify(r1.events) + " · w2 " + JSON.stringify(r2.events));
+
+      // TH7b — the matrix walk: confirmed hold → coasting → hold-end → grace
+      // → provisional resumption → re-seal adopts → bound
+      const r3 = HV.leaseObserve(store, lease, { emitters: [confirmed([100, 100], "0aaa", 2)] }, pL, 3);
+      const bound3 = ctxA.state === "bound" && HV.counts(store.ledgers[keyA]).droplets === 2;
+      const r4 = HV.leaseObserve(store, lease, { emitters: [dataOnly([100, 100], 3)] }, pL, 4);
+      const coast4 = ctxA.state === "coasting" && HV.counts(store.ledgers[keyA]).droplets === 3;
+      const r5 = HV.leaseObserve(store, lease, { emitters: [] }, pL, 5);
+      const grace5 = ctxA.state === "grace" && r5.events.some(e => e.ev === "hold-end");
+      const r6 = HV.leaseObserve(store, lease, { emitters: [dataOnly([100, 100], 4)] }, pL, 6);
+      const prov6 = Object.keys(lease.provisionals).length === 1 && ctxA.state === "grace" &&
+        HV.counts(store.ledgers[keyA]).droplets === 3; // c=4 went provisional, NOT to the ledger
+      const r7 = HV.leaseObserve(store, lease, { emitters: [sealed([100, 100], fieldsA, "0aaa")] }, pL, 7);
+      const pid = Object.keys(lease.provisionals)[0];
+      const adopt7 = ctxA.state === "bound" && lease.provisionals[pid].adopted &&
+        r7.events.some(e => e.ev === "adopt");
+      record("TH7b hold matrix: tagConfirmed holds bound · tag lost + data → coasting · first zero-lock window ends the hold (grace) · grace resumption goes PROVISIONAL, banks nothing direct · the matching re-seal adopts and re-binds",
+        bound3 && coast4 && grace5 && prov6 && adopt7,
+        "states bound/" + (coast4 ? "coasting" : ctxA.state) + "/" + (grace5 ? "grace" : "?") +
+        " · prov " + JSON.stringify(Object.keys(lease.provisionals)) + " adopted " + adopt7);
+
+      // TH7c — content addressing: a new session with the SAME fingerprint
+      // shares the ledger; the SAME session with NEW content is a new context
+      // and the old ledger is untouched
+      const r8 = HV.leaseObserve(store, lease, { emitters: [sealed([400, 100], fieldsB, "0bbb")] }, pL, 8);
+      const shareOk = store.contexts["0bbb"] && store.contexts["0bbb"].contentKey === keyA &&
+        !r8.events.some(e => e.ev === "ledger"); // no NEW ledger — pooled
+      const before = HV.counts(store.ledgers[keyA]).droplets;
+      const r9 = HV.leaseObserve(store, lease, { emitters: [sealed([100, 100], fieldsC, "0ccc")] }, pL, 9);
+      const keyC = HV.contentKeyOf(fieldsC, 24);
+      const splitOk = store.contexts["0ccc"] && store.contexts["0ccc"].contentKey === keyC && keyC !== keyA &&
+        HV.counts(store.ledgers[keyA]).droplets === before && store.ledgers[keyC];
+      record("TH7c content addressing: same content + new session pools into ONE ledger (the choir / the restart); same session + new content splits to a NEW context and ledger, the old peel unpoisoned",
+        shareOk && splitOk,
+        "0bbb→" + (store.contexts["0bbb"] && store.contexts["0bbb"].contentKey) +
+        " · 0ccc→" + keyC + " · ledgers " + JSON.stringify(Object.keys(store.ledgers)));
+
+      // TH7d — validate-gated adoption with REAL droplets: a poisoned
+      // provisional completes the peel INVALID → rejected, bare returned;
+      // the correct droplet validates through the union
+      const msgL = "LEASE";
+      const encL = OC.fountain.encodeCarousels(pL, OC.fountain.textToBytes(msgL));
+      const KL = encL.K, ver = OC.fountain.geom(pL).subsetVersion;
+      const ringDrops = pL.annuli.map((a, ri) => {
+        const dec = Array.from(encL.carousels[ri], (s, i) => ({ i, s, resid: 0 }));
+        // raw carousel symbols are the DATA stream — collect's j = i + lag is
+        // emission-absolute, so the lag is the preamble the stream never had
+        return { seed: a.rotation.seed, passed: OC.fountain.collect(dec, pL.preamble_symbols, a, pL).passed };
+      });
+      const touches0 = (seed, c) => !OC.fountain.isHeaderSlot(c) &&
+        OC.fountain.subsetFor(seed, c, KL, ver).indexOf(0) >= 0;
+      const mkStore = (provHexFlip) => {
+        const st = HV.createStore(pL), ls = HV.leaseCreate({ graceWindows: 2 });
+        const fields = { session32: 0x33, K: KL, len: 9, pcrc: 0x55, tile: 0 };
+        // ledger: everything NOT touching block 0 → block 0 unrecoverable alone
+        const rows = ringDrops.map((r, ri) => ({ annulus: pL.annuli[ri].index,
+          alignLag: 4, alignOffset: 0,
+          droplets: r.passed.filter(d => !touches0(r.seed, d.c)).map(d => ({ c: d.c, hex: HV.bytesToHex(d.bytes) })) }));
+        HV.leaseObserve(st, ls, { emitters: [em([50, 50], { annuli:
+          [{ annulus: "beacon", beacon: true, alignLag: 0, tag: "0ddd", envelopeFields: fields }].concat(rows) })] }, pL, 1);
+        // provisional at another plate: ONE degree-1 block-0 droplet (c=1)
+        const d1 = ringDrops[0].passed.find(d => d.c === 1);
+        let hx = HV.bytesToHex(d1.bytes);
+        if (provHexFlip) hx = (d1.bytes[0] ^ 0xFF).toString(16).padStart(2, "0") + hx.slice(2);
+        HV.leaseObserve(st, ls, { emitters: [em([500, 50], { annuli:
+          [{ annulus: pL.annuli[0].index, alignLag: 4, alignOffset: 0, droplets: [{ c: 1, hex: hx }] }] })] }, pL, 2);
+        // the provisional's plate later seals the SAME tag → adopted
+        HV.leaseObserve(st, ls, { emitters: [em([500, 50], { annuli:
+          [{ annulus: "beacon", beacon: true, alignLag: 0, tag: "0ddd", envelopeFields: fields }] })] }, pL, 3);
+        return { st, ls, key: HV.contentKeyOf(fields, 24) };
+      };
+      const good = mkStore(false);
+      const peelGood = HV.tryPeelStore(good.st, good.ls, good.key, pL);
+      const bad = mkStore(true);
+      const peelBad = HV.tryPeelStore(bad.st, bad.ls, bad.key, pL);
+      const badPid = Object.keys(bad.ls.provisionals)[0];
+      record("TH7d validate-gated adoption: the correct provisional droplet completes the peel VALID through the union; the poisoned one completes it INVALID → provisionals rejected, the honest bare peel returned",
+        !!(peelGood.ok === true && peelGood.text === msgL &&
+           peelBad.ok !== true && peelBad.provisionalsRejected === 1 &&
+           bad.ls.provisionals[badPid].rejected === true),
+        "good " + JSON.stringify({ ok: peelGood.ok, text: peelGood.text }) +
+        " · bad " + JSON.stringify({ ok: peelBad.ok, recovered: peelBad.recovered, K: peelBad.K,
+                                     rejected: peelBad.provisionalsRejected }));
+
+      // TH7e — grace expiry finalizes; new-clip reset clips everything but a
+      // re-seal REBINDS the remembered context; serialization drops
+      // provisionals; v1 text refuses
+      const rA = HV.leaseObserve(store, lease, { emitters: [] }, pL, 10);
+      const rB = HV.leaseObserve(store, lease, { emitters: [] }, pL, 11);
+      const rCq = HV.leaseObserve(store, lease, { emitters: [] }, pL, 12);
+      const clippedOk = store.contexts["0ccc"].state === "clipped" &&
+        (rA.events.concat(rB.events, rCq.events)).some(e => e.ev === "clip");
+      HV.leaseNewClip(store);
+      const allClipped = Object.keys(store.contexts).every(t => store.contexts[t].state === "clipped");
+      const rReb = HV.leaseObserve(store, lease, { emitters: [sealed([700, 700], fieldsA, "0aaa")] }, pL, 13);
+      const rebindOk = store.contexts["0aaa"].state === "bound" && rReb.events.some(e => e.ev === "rebind");
+      const rt = HV.parseStore(HV.serializeStore(store));
+      const serOk = rt.version === 2 && Object.keys(rt.contexts).length === Object.keys(store.contexts).length;
+      let v1Refused = false;
+      try { HV.parseStore(JSON.stringify({ version: 1, rings: {} })); } catch (e) { v1Refused = /v2|version/.test(String(e.message)); }
+      record("TH7e lifecycle: grace expiry clips · a new clip clips every context but the same tag REBINDS · the store serializes without provisionals and round-trips · v1 ledgers refuse with a clear message",
+        clippedOk && allClipped && rebindOk && serOk && v1Refused,
+        "clip " + clippedOk + " rebind " + rebindOk + " ser " + serOk + " v1refuse " + v1Refused);
+    }
   }
 
   // Determinism spot-check: dtrig render of one frame is identical across two runs.

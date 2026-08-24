@@ -669,6 +669,71 @@ async function main() {
       " · (c) refused " + okC + (vC.errors.length ? " (" + vC.errors[0].slice(0, 60) + "…)" : ""));
   }
 
+  await tick("T22u: the lease, optically — bind, restart-pooling, content switch, the tag heartbeat…");
+  {
+    // End-to-end through real renders: (a) a sealed emission BINDS and banks;
+    // a second emission with a NEW session and the SAME payload pools into
+    // the SAME content ledger (droplets are session-independent — the
+    // restart/choir case); (b) the SAME session with NEW content is a new
+    // tag, a new context and a new ledger, the old one untouched; (c) a
+    // capture too short to seal (under one envelope cycle) still holds the
+    // lease through TAG CONFIRMATION — grace resumes to bound and banks.
+    const HVu = OC.harvest;
+    const mkP = (sess) => { const p = OC.profile.profileV3(undefined, { session32: sess,
+      render: { size_px: 448, scale_px_per_unit: 70 } }); OC.profile.applyDring(p, "a42"); return p; };
+    const p1 = mkP(0x1EA5E001), p2 = mkP(0x1EA5E002), p3 = mkP(0x1EA5E001);
+    const st = HVu.createStore(p1), lease = HVu.leaseCreate({ operator: true });
+    const dec = (p, frames, expectTag) => OC.pipeline.decodeSequence(frames, p,
+      { payload: true, beacon: true, beaconAlign: expectTag ? { expectTag } : undefined });
+    let seq1 = OC.emission.renderSequence(p1, 700, { payloadBytes: OC.fountain.textToBytes("LEASE") });
+    const r1 = dec(p1, seq1.frames.slice(50, 500));
+    const shortSl = seq1.frames.slice(500, 690);   // 190 frames < the 400-frame envelope cycle
+    seq1 = null;
+    const o1 = HVu.leaseObserve(st, lease, r1, p1, 1);
+    const tag1 = Object.keys(st.contexts)[0];
+    const key1 = tag1 && st.contexts[tag1].contentKey;
+    const peel1 = tag1 && HVu.tryPeelStore(st, lease, key1, p1);
+    const okA1 = !!(tag1 && o1.events.some(e => e.ev === "bind") && st.contexts[tag1].state === "bound" &&
+                    peel1 && peel1.ok === true && peel1.text === "LEASE");
+    let seq2 = OC.emission.renderSequence(p2, 500, { payloadBytes: OC.fountain.textToBytes("LEASE") });
+    const r2 = dec(p2, seq2.frames.slice(50));
+    seq2 = null;
+    HVu.leaseObserve(st, lease, r2, p2, 2);
+    const tags2 = Object.keys(st.contexts);
+    const tag2 = tags2.find(t => t !== tag1);
+    const okA2 = !!(tags2.length === 2 && tag2 && st.contexts[tag2].contentKey === key1 &&
+                    Object.keys(st.ledgers).length === 1);
+    // (b) same session, new content
+    const beforeB = HVu.counts(st.ledgers[key1]).droplets;
+    let seq3 = OC.emission.renderSequence(p3, 500, { payloadBytes: OC.fountain.textToBytes("SWITCHED") });
+    const r3 = dec(p3, seq3.frames.slice(50));
+    seq3 = null;
+    HVu.leaseObserve(st, lease, r3, p3, 3);
+    const tag3 = Object.keys(st.contexts).find(t => t !== tag1 && t !== tag2);
+    const key3 = tag3 && st.contexts[tag3].contentKey;
+    const peel3 = tag3 && HVu.tryPeelStore(st, lease, key3, p3);
+    const okB = !!(tag3 && key3 !== key1 && Object.keys(st.ledgers).length === 2 &&
+                   HVu.counts(st.ledgers[key1]).droplets === beforeB &&
+                   peel3 && peel3.ok === true && peel3.text === "SWITCHED" &&
+                   st.contexts[tag1].state === "grace"); // its plate sealed a different tag that window
+    // (c) the heartbeat: too short to seal, but the KNOWN tag confirms —
+    // grace resumes to bound and the window banks direct
+    const r4 = dec(p1, shortSl, tag1);
+    const row4 = r4.error ? null : r4.emitters[0].annuli.find(a => a.beacon);
+    const o4 = HVu.leaseObserve(st, lease, r4, p1, 4);
+    const okC = !!(row4 && row4.tagConfirmed === true && row4.tag === tag1 && !row4.envelopeFields &&
+                   st.contexts[tag1].state === "bound" &&
+                   o4.events.some(e => e.ev === "bank" && e.tag === tag1));
+    record("T22u the lease optically: a sealed a42 emission binds and its ledger peels; a NEW session with the same payload pools into the SAME content ledger (restart/choir); the SAME session with new content splits tag, context and ledger with the old peel untouched (the old context drops to grace); and a capture too short to seal holds the lease by CONFIRMING the known tag — grace resumes to bound and banks direct",
+      okA1 && okA2 && okB && okC,
+      "(a) bind " + tag1 + " peel " + JSON.stringify(peel1 && { ok: peel1.ok, text: peel1.text }) +
+      " · pool " + tag2 + "→" + (tag2 && st.contexts[tag2].contentKey) + " ledgers " + Object.keys(st.ledgers).length +
+      " · (b) " + tag3 + "→" + key3 + " old " + beforeB + "=" + HVu.counts(st.ledgers[key1]).droplets +
+      " peel " + JSON.stringify(peel3 && { ok: peel3.ok, text: peel3.text }) + " ctx1 " + st.contexts[tag1].state +
+      " · (c) " + (row4 ? "confirmed " + row4.tagConfirmed + " tag " + row4.tag + " ×" + row4.tagSightings + " ctx1 " + st.contexts[tag1].state
+                        : "no beacon row"));
+  }
+
   await tick("T22j: preset auto-detect — dual-geometry CRC vote on a high-rate emission…");
   {
     const pH = OC.profile.profileV3("high-rate");
