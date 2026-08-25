@@ -377,10 +377,16 @@
     }
     var bestTag = null, bestTagN = 0;
     for (var tv in tags) if (tags[tv] > bestTagN) { bestTagN = tags[tv]; bestTag = +tv; }
+    var chunkBytesHex = {};
+    for (var ck in data) {
+      var hx = "";
+      for (var cb = 1; cb <= 4; cb++) hx += (data[ck][cb] < 16 ? "0" : "") + data[ck][cb].toString(16);
+      chunkBytesHex[ck] = hx;
+    }
     return { envelope: envelope, tag: tag, sealed: envelope !== null,
              tagSeen: bestTag, tagSightings: bestTagN,
              tagMatchesSeal: envelope !== null && bestTag !== null && bestTag === tag,
-             chunkCounts: counts, conflicts: conflicts };
+             chunkCounts: counts, conflicts: conflicts, chunkBytesHex: chunkBytesHex };
   }
 
   /* First framed envelope in the window (the original single-frame read). */
@@ -563,9 +569,44 @@
     return best;
   }
 
+  /* BEST-EFFORT CHUNK SWEEP — for windows SHORTER than the envelope cycle
+     (the first a42 field clip: 13.3 s cycle against 8–12 s harvest windows,
+     so no single window could ever seal). Chunks are droplets of the control
+     plane: each is self-labeled (idx + CRC8), so they can bank ACROSS
+     windows and assemble when the set completes — this scan finds the one
+     (offset, phase) with the most CRC8-passing chunks and reports them for
+     the bank. Sub-seal evidence only (12 bits per chunk): the caller's bank
+     keeps per-(idx, bytes) sighting counts, assembly takes the majority per
+     idx, and the envelope CRC16 remains the only thing that ever BINDS.
+     Junk from a wrong-alignment window pollutes one sighting, never the
+     seal. Returns null when nothing passes anywhere. */
+  function beaconChunkSweep(track, annulus, profile, baseOverride) {
+    var demap = (typeof module !== "undefined" && module.exports) ? require("./demap.js") : global.OC.demap;
+    var F = annulus.rotation.frames_per_symbol, M = annulus.rotation.M;
+    var bitsPer = beaconBitsPer(M), phases = bitsPer === 2 ? 4 : 8;
+    var base = (baseOverride !== undefined && baseOverride !== null) ? baseOverride : (track.firstValid || 0);
+    var best = null;
+    for (var oi = 0; oi < F; oi++) {
+      var off = base + oi;
+      var decoded = demap.decode(track, annulus, profile, off);
+      if (!decoded.length) continue;
+      for (var ph = 0; ph < phases; ph++) {
+        var scan = beaconChunkScan(decoded, ph, M);
+        var passes = scan.chunkCounts.reduce(function (a, b) { return a + b; }, 0);
+        if (passes > 0 && (!best || passes > best.passes))
+          best = { offset: off, phase: ph, passes: passes, scan: scan };
+      }
+    }
+    if (!best) return null;
+    var chunks = {};
+    for (var idx in best.scan.chunkBytesHex) chunks[idx] = best.scan.chunkBytesHex[idx];
+    return { offset: best.offset, phase: best.phase, passes: best.passes,
+             chunks: chunks, tagSeen: best.scan.tagSeen, tagSightings: best.scan.tagSightings };
+  }
+
   var API = { findBullseye: findBullseye, plateSolve: plateSolve, fitCircleEdge: fitCircleEdge,
               beaconAnnulus: beaconAnnulus, beaconDecode: beaconDecode, beaconFrames: beaconFrames,
-              beaconBytes: beaconBytes, beaconChunkScan: beaconChunkScan,
+              beaconBytes: beaconBytes, beaconChunkScan: beaconChunkScan, beaconChunkSweep: beaconChunkSweep,
               beaconFramesFor: beaconFramesFor, beaconAlign: beaconAlign, parseEnvelope: parseEnvelope };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   global.OC = global.OC || {}; global.OC.plate = API;

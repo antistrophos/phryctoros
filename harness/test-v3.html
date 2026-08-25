@@ -734,6 +734,50 @@ async function main() {
                         : "no beacon row"));
   }
 
+  await tick("T22v: chunk banking across windows — the envelope assembled from sub-cycle captures…");
+  {
+    // The first a42 field clip's lesson: the envelope cycle is 13.3 s and
+    // harvest windows are 8–12 s, so NO single window can seal — the beacon
+    // read "no lock" forever while the data rings decoded happily. Chunks
+    // are droplets of the control plane: three ~6 s windows, none holding a
+    // whole cycle, must BANK their partial chunk sets and bind the moment
+    // the majority set assembles under the CRC16 seal — with the operator
+    // rung's droplets adopted into the content ledger at that instant.
+    const HVv = OC.harvest;
+    const pV = OC.profile.profileV3(undefined, { session32: 0x0C7A6BA9, render: { size_px: 448, scale_px_per_unit: 70 } });
+    OC.profile.applyDring(pV, "a42");
+    const stV = HVv.createStore(pV), lsV = HVv.leaseCreate({ operator: true });
+    // Slices OVERLAP by one chunk length (48 frames): a chunk straddling a
+    // window boundary dies to edge erasure exactly like a droplet does (the
+    // field36 edge-truncation lesson at the control plane) — the first cut of
+    // this test tiled the windows edge-to-edge and chunk 3 was never whole.
+    let seqV = OC.emission.renderSequence(pV, 620, { payloadBytes: OC.fountain.textToBytes("LEASE") });
+    const slices = [seqV.frames.slice(64, 280), seqV.frames.slice(232, 448), seqV.frames.slice(400, 616)];
+    seqV = null;
+    const evAll = [];
+    let sealedInWindow = false, bankSealAt = 0;
+    slices.forEach((sl, i) => {
+      const r = OC.pipeline.decodeSequence(sl, pV, { payload: true, beacon: true });
+      const row = r.error ? null : r.emitters[0].annuli.find(a => a && (a.beacon || a.annulus === "beacon"));
+      if (row && row.envelopeFields) sealedInWindow = true;   // a sub-cycle window must NOT seal alone
+      const o = HVv.leaseObserve(stV, lsV, r, pV, i + 1);
+      evAll.push(o.events.map(e => e.ev));
+      if (!bankSealAt && o.events.some(e => e.ev === "bank-seal")) bankSealAt = i + 1;
+    });
+    const tagV = Object.keys(stV.contexts)[0];
+    const ctxV = tagV && stV.contexts[tagV];
+    const peelV = ctxV && HVv.tryPeelStore(stV, lsV, ctxV.contentKey, pV);
+    record("T22v chunk banking: three sub-cycle windows (180 frames each against a 400-frame envelope cycle) never seal alone, their chunk sweeps bank across windows, the majority set ASSEMBLES + BINDS mid-clip, the operator rung's droplets adopt into the content ledger, and the payload peels from the union",
+      !!(!sealedInWindow && bankSealAt > 0 && ctxV && ctxV.state !== "clipped" &&
+         ctxV.session32 === 0x0C7A6BA9 && Object.keys(stV.ledgers).length === 1 &&
+         peelV && peelV.ok === true && peelV.text === "LEASE"),
+      "bank-seal at w" + bankSealAt + " (sealed-in-window " + sealedInWindow + ") · ctx " + tagV +
+      " session " + (ctxV && (ctxV.session32 >>> 0).toString(16)) + " state " + (ctxV && ctxV.state) +
+      " · ledgers " + Object.keys(stV.ledgers).length +
+      " · peel " + JSON.stringify(peelV && { ok: peelV.ok, text: peelV.text }) +
+      " · events " + JSON.stringify(evAll));
+  }
+
   await tick("T22j: preset auto-detect — dual-geometry CRC vote on a high-rate emission…");
   {
     const pH = OC.profile.profileV3("high-rate");
@@ -1159,17 +1203,25 @@ async function main() {
     const p2 = OC.profile.profileV3(undefined, { tiling: 2, render: { scale_px_per_unit: 100 } });
     const msg2 = "V3!";
     const seq2 = OC.emission.renderSequence(p2, 200, { payloadBytes: OC.fountain.textToBytes(msg2) });
-    const res2 = OC.pipeline.decodeSequence(seq2.frames, p2, { payload: true, maxEmitters: 6 });
+    // beacon: true is load-bearing here — at breaker placement tile 1 has NO
+    // beacon ring, so its beacon channel fails presence, and the first field
+    // 2-up found the presence-failed row walking into the payload pool
+    // (profile.annuli[4]) because it had lost its channel flag.
+    const res2 = OC.pipeline.decodeSequence(seq2.frames, p2, { payload: true, beacon: true, maxEmitters: 6 });
     const ems = res2.error ? [] : res2.emitters;
     const tiles = ems.map(e => e.tile).sort().join(",");
     const perDrops = ems.map(e => e.payload ? e.payload.droplets : 0);
     const pooled = res2.pooled;
-    record("T23c 2-up: both tiles register and identify (0,1), the cross-tile pool peels the payload with more droplets than either tile alone",
+    const absentBeaconRows = ems.map(e => (e.annuli || []).find(a => a && a.annulus === "beacon"))
+      .filter(r => r && r.present === false);
+    record("T23c 2-up: both tiles register and identify (0,1), the cross-tile pool peels the payload with more droplets than either tile alone — WITH the beacon channel enabled, so the no-beacon tile's presence-failed row must keep its channel flag and stay out of the pool",
       ems.length === 2 && tiles === "0,1" && res2.designatedTile !== undefined &&
-      !!(pooled && pooled.ok === true && pooled.text === msg2 && pooled.droplets > Math.max.apply(null, perDrops)),
+      !!(pooled && pooled.ok === true && pooled.text === msg2 && pooled.droplets > Math.max.apply(null, perDrops)) &&
+      absentBeaconRows.length >= 1 && absentBeaconRows.every(r => r.beacon === true),
       ems.length + " tiles [" + tiles + "] designated " + res2.designatedTile +
       " per-tile droplets " + perDrops.join("/") +
-      " pooled " + JSON.stringify(pooled && { ok: pooled.ok, droplets: pooled.droplets, text: pooled.text }));
+      " pooled " + JSON.stringify(pooled && { ok: pooled.ok, droplets: pooled.droplets, text: pooled.text }) +
+      " absent-beacon rows flagged " + absentBeaconRows.length);
   }
 }
 

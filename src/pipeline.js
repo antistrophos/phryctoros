@@ -49,9 +49,21 @@
     if (opts.registerOn) {
       reg = register.registerAll(opts.registerOn, regOpts);
     } else {
-      for (var rf = 0; rf < groups.length; rf++) {
+      // For a TILED profile the operator declared how many plates exist, so
+      // stopping at the first frame that yields ANY plate under-registers a
+      // lattice whenever that instant was blurred (the first field 2-up:
+      // both plates solve on clean frames, one on smeared ones — handheld
+      // frame luck). Keep the best frame seen among a bounded SPREAD of
+      // candidates (registration is the expensive stage — never per-frame);
+      // stop early the moment the declared count is met. Untiled behavior
+      // unchanged: first hit wins on the same spread.
+      var wantN = profile.plate ? (profile.tiling || 1) : 1;
+      var triesN = Math.min(groups.length, wantN > 1 ? 8 : groups.length);
+      for (var rt2 = 0; rt2 < triesN; rt2++) {
+        var rf = wantN > 1 ? Math.min(groups.length - 1, Math.floor(rt2 * groups.length / triesN)) : rt2;
         var rTry = register.registerAll(groups[rf].imgs[0], regOpts);
-        if (rTry.emitters.length) { reg = rTry; regFrame = rf; break; }
+        if (rTry.emitters.length > (reg ? reg.emitters.length : 0)) { reg = rTry; regFrame = rf; }
+        if (reg && reg.emitters.length >= wantN) break;
       }
     }
     if (!reg || !reg.emitters.length)
@@ -285,7 +297,13 @@
         var meanContrast = valid ? contrastAct / valid : 0;
         var present = firstValidIdx >= 0 && valid >= activeN * 0.6 && meanContrast > 0.02;
         if (!present)
-          return { res: { annulus: a.index, layer: a.layer, present: false, contrast: round3(meanContrast), validFrames: valid }, retry: null };
+          // The row keeps its CHANNEL identity even when absent: downstream
+          // filters branch on `beacon` (the payload pool indexes profile.annuli
+          // by row position for data rows), and a presence-failed beacon row
+          // without the flag walks into the data branch — the first field 2-up
+          // at breaker placement found it: tile 1 has no beacon ring, its
+          // beacon channel fails presence, and the pool read profile.annuli[4].
+          return { res: { annulus: a.index, layer: a.layer, beacon: a.beacon || undefined, present: false, contrast: round3(meanContrast), validFrames: valid }, retry: null };
 
         // The downstream (track → onset → carrier gates → align → demap → score)
         // as a function of the series, so the row-time branch can be judged
@@ -386,10 +404,24 @@
           }
           if (T) T.align += tnow() - tA;
           var tDm = T && tnow();
-          if (!align)
-            return { annulus: a.index, layer: a.layer, present: true, contrast: round3(meanContrast), validFrames: valid,
+          if (!align) {
+            // A beacon window shorter than the envelope cycle can still carry
+            // CHUNKS (the first a42 field clip: 13.3 s cycle vs 8–12 s harvest
+            // windows). Sweep the best alignment's CRC8-passing chunks so the
+            // lease can BANK them across windows and bind on assembly — the
+            // droplet pattern applied to the control plane. Sub-seal evidence:
+            // the row stays a no-lock row; only the assembled CRC16 ever binds.
+            var sweep = a.beacon ? dep("plate").beaconChunkSweep(track, a, profile, syncBase) : null;
+            return { annulus: a.index, layer: a.layer, beacon: a.beacon || undefined,
+                     present: true, contrast: round3(meanContrast), validFrames: valid,
                      carrierRatio: carrierRatio, tear: tearBrief(tearX),
-                     error: "no lock — symbols match neither preamble nor stream at any lag (carrier " + carrierRatio + "× expected" + (carrierRatio !== null && carrierRatio < 0.5 ? "; low carrier — see the layer-0 row" : "") + ")" };
+                     chunkSweep: sweep && sweep.passes ? sweep.chunks : undefined,
+                     chunkSweepPasses: sweep ? sweep.passes : undefined,
+                     tagSeen: sweep && sweep.tagSeen != null ? ("0000" + (sweep.tagSeen >>> 0).toString(16)).slice(-4) : undefined,
+                     tagSightings: sweep ? sweep.tagSightings : undefined,
+                     error: "no lock — symbols match neither preamble nor stream at any lag (carrier " + carrierRatio + "× expected" + (carrierRatio !== null && carrierRatio < 0.5 ? "; low carrier — see the layer-0 row" : "") + ")" +
+                            (sweep && sweep.passes ? " — chunk sweep banked " + Object.keys(sweep.chunks).length + " idx (" + sweep.passes + " passes)" : "") };
+          }
           var decoded = demap.decode(track, a, profile, align.offset);
 
           if (a.beacon) {
@@ -429,6 +461,11 @@
             // missing envelope is symbol quality or the carousel-phase draw.
             var nullSyms = 0;
             for (var ns = 0; ns < decoded.length; ns++) if (decoded[ns].s === null || decoded[ns].s === undefined) nullSyms++;
+            // The chunk sweep must also run HERE: a false preamble lock (or
+            // any alignment that parses nothing) routes around the no-lock
+            // return where the sweep lives, and T22v's middle window lost its
+            // two chunks to exactly that — the bank then never assembled.
+            var sweepB = (!env && !align.tagConfirmed) ? plateB.beaconChunkSweep(track, a, profile, syncBase) : null;
             return {
               annulus: a.index, layer: a.layer, present: true, beacon: true,
               contrast: round3(meanContrast), validFrames: valid,
@@ -447,13 +484,18 @@
               // a full seal (the lease's identity heartbeat).
               tag: env && env.envelope.length === 20 ? toHex(env.envelope.subarray ? env.envelope.subarray(18, 20) : env.envelope.slice(18, 20)) : (align.tag || undefined),
               tagConfirmed: align.tagConfirmed || undefined,
-              tagSightings: align.tagSightings !== undefined ? align.tagSightings : undefined,
+              tagSightings: align.tagSightings !== undefined ? align.tagSightings :
+                            (sweepB ? sweepB.tagSightings : undefined),
               chunkConflicts: align.chunkConflicts || undefined,
+              chunkSweep: sweepB && sweepB.passes ? sweepB.chunks : undefined,
+              chunkSweepPasses: sweepB ? sweepB.passes : undefined,
+              tagSeen: sweepB && sweepB.tagSeen != null ? ("0000" + (sweepB.tagSeen >>> 0).toString(16)).slice(-4) : undefined,
               envelope: env ? toHex(env.envelope) : null,
               envelopeAt: env ? env.at : null,
               envelopeFrames: envFrames.length,
               envelopeFields: envFields || undefined,
-              error: (env || align.tagConfirmed) ? undefined : "beacon locked but no framed envelope in the captured span (" + nullSyms + "/" + decoded.length + " symbols erased)"
+              error: (env || align.tagConfirmed) ? undefined : "beacon locked but no framed envelope in the captured span (" + nullSyms + "/" + decoded.length + " symbols erased)" +
+                     (sweepB && sweepB.passes ? " — chunk sweep banked " + Object.keys(sweepB.chunks).length + " idx (" + sweepB.passes + " passes)" : "")
             };
           }
 
@@ -604,7 +646,9 @@
         var emTile = tileOf ? tileOf[emIdx] : 0;
         var FNp = dep("fountain");
         var rings = annuli.map(function (r, ri) {
-          return r.beacon ? null : { seed: FNp.tileSeed(profile.annuli[ri].rotation.seed, emTile >= 0 ? emTile : 0), droplets: r._droplets || [] };
+          // beacon rows never pool; the profile.annuli guard keeps any future
+          // extra channel from aliasing into a data ring by position
+          return (r.beacon || !profile.annuli[ri]) ? null : { seed: FNp.tileSeed(profile.annuli[ri].rotation.seed, emTile >= 0 ? emTile : 0), droplets: r._droplets || [] };
         }).filter(function (x) { return x; });
         annuli.forEach(function (r) { delete r._droplets; });
         if (ringsByEmitter) ringsByEmitter[emIdx] = emTile >= 0 ? rings : null;

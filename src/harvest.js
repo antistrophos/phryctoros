@@ -17,6 +17,7 @@
   "use strict";
 
   function F() { return (typeof module !== "undefined" && module.exports) ? require("./fountain.js") : global.OC.fountain; }
+  function PL() { return (typeof module !== "undefined" && module.exports) ? require("./plate.js") : global.OC.plate; }
 
   function bytesToHex(u8) {
     var s = "";
@@ -380,8 +381,7 @@
     });
 
     // ——— route seals: create/refresh contexts ———
-    obs.forEach(function (o) {
-      if (!o.fields || !o.sealedTag) return;
+    var routeSeal = function (o) {
       var tag = o.sealedTag;
       var ctx = store.contexts[tag];
       if (!ctx) {
@@ -428,11 +428,14 @@
           events.push({ ev: "adopt", tag: tag, provisional: pid, droplets: counts(pr.ledger).droplets });
         }
       }
-    });
+    };
+    obs.forEach(function (o) { if (o.fields && o.sealedTag) routeSeal(o); });
 
     // ——— route unsealed emitters: context plates first, else provisional ———
+    // (an emitter carrying only a chunk SWEEP — beacon evidence without a
+    // data lock — still routes, so its chunks can bank)
     obs.forEach(function (o) {
-      if (o.ctx || !o.dataLocked) return;
+      if (o.ctx || (!o.dataLocked && !(o.beacon && o.beacon.chunkSweep))) return;
       var tags = Object.keys(store.contexts);
       for (var t = 0; t < tags.length; t++) {
         var ctx = store.contexts[tags[t]];
@@ -443,6 +446,32 @@
             if (ctx.state === "grace" && !o.confirmedTag) break;      // grace: no direct banking without the tag
             o.ctx = ctx; o.plate = ctx.plates[p];
             ctx.plates[p].center = o.center; ctx.plates[p].fid = o.fid; ctx.plates[p].lastSeen = w;
+            return;
+          }
+        }
+      }
+      // A DECLARED-LATTICE MEMBER follows its designated tile's context: the
+      // derived tile index is anchored at the breaker plate — the very plate
+      // that sealed — so at breaker placement (where only tile 0 carries a
+      // beacon) the other tiles are the sealed session's tiles by the
+      // operator's own lattice declaration. Only unambiguous when exactly ONE
+      // live tiled context exists; otherwise fall through to provisional.
+      if (o.em.tile !== undefined && o.em.tile >= 0) {
+        var tiledTag = null, tiledN = 0;
+        for (var tl2 in store.contexts) {
+          var cL = store.contexts[tl2];
+          if (cL.state !== "clipped" && cL.fields && cL.fields.tiling > 1) { tiledTag = tl2; tiledN++; }
+        }
+        if (tiledN === 1 && (!o.confirmedTag || o.confirmedTag === tiledTag)) {
+          var ctxL = store.contexts[tiledTag];
+          // grace still demands the tag before direct banking, members included
+          if (ctxL.state !== "grace" || o.confirmedTag === tiledTag) {
+            var plateL = null;
+            for (var pl2 = 0; pl2 < ctxL.plates.length; pl2++)
+              if (nearPlate(o.center, o.fid, ctxL.plates[pl2], lease.matchFidFrac)) { plateL = ctxL.plates[pl2]; break; }
+            if (!plateL) { plateL = {}; ctxL.plates.push(plateL); }
+            plateL.center = o.center; plateL.fid = o.fid; plateL.tile = o.em.tile; plateL.lastSeen = w;
+            o.ctx = ctxL; o.plate = plateL;
             return;
           }
         }
@@ -470,6 +499,58 @@
       var prv = lease.provisionals[provId];
       prv.center = o.center; prv.fid = o.fid; prv.lastSeen = w;
       o.prov = prv; o.provId = provId;
+    });
+
+    // ——— the chunk bank: control-plane droplets across windows ———
+    // A window shorter than the envelope cycle still carries CHUNKS; they
+    // bank on the routed target (context plate / provisional / the operator
+    // rung) with per-(idx, bytes) sighting counts, and when the majority set
+    // assembles under the CRC16 seal that IS a seal — the context binds
+    // exactly as if one window had read the whole envelope. Junk chunks from
+    // a wrong-alignment sweep cost one sighting, never the seal.
+    var assembleBank = function (bank) {
+      var env = new Uint8Array(20);
+      for (var ix = 1; ix <= 5; ix++) {
+        var slot = bank["" + ix];
+        if (!slot) return null;
+        var bestHex = null, bestN = 0, tie = false;
+        for (var hx in slot) {
+          if (slot[hx] > bestN) { bestN = slot[hx]; bestHex = hx; tie = false; }
+          else if (slot[hx] === bestN) tie = true;
+        }
+        if (!bestHex || tie) return null;
+        for (var bj = 0; bj < 4; bj++) env[4 * (ix - 1) + bj] = parseInt(bestHex.substr(2 * bj, 2), 16);
+      }
+      if (((env[18] << 8) | env[19]) !== F().crc16(env.subarray(0, 18))) return null;
+      return env;
+    };
+    obs.forEach(function (o) {
+      var sw = o.beacon && o.beacon.chunkSweep;
+      if (!sw) return;
+      var bank = null;
+      if (o.ctx && o.plate) bank = o.plate.chunkBank || (o.plate.chunkBank = {});
+      else if (o.prov) bank = o.prov.chunkBank || (o.prov.chunkBank = {});
+      else if (o.operator) bank = lease.operatorBank || (lease.operatorBank = {});
+      else return;
+      var newIdx = 0;
+      for (var ix2 in sw) {
+        var slot2 = bank[ix2] || (bank[ix2] = {});
+        if (!slot2[sw[ix2]]) newIdx++;
+        slot2[sw[ix2]] = (slot2[sw[ix2]] || 0) + 1;
+      }
+      events.push({ ev: "chunk-bank", chunks: Object.keys(sw).length, fresh: newIdx,
+                    have: Object.keys(bank).length, target: o.ctx ? o.ctx.tag : (o.provId || "operator") });
+      if (o.fields) return;                       // a real seal already routed this window
+      var env2 = assembleBank(bank);
+      if (env2) {
+        var fields2 = PL().parseEnvelope(env2);
+        if (fields2) {
+          o.fields = fields2;
+          o.sealedTag = ("0000" + (((env2[18] << 8) | env2[19]) >>> 0).toString(16)).slice(-4);
+          routeSeal(o);                            // binds/rebinds; operator-merge + adoption ride along
+          events.push({ ev: "bank-seal", tag: o.sealedTag, session: fields2.session32 });
+        }
+      }
     });
 
     // ——— bank ———

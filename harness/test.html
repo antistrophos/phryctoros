@@ -1020,6 +1020,58 @@ async function main() {
       record("TH7e lifecycle: grace expiry clips · a new clip clips every context but the same tag REBINDS · the store serializes without provisionals and round-trips · v1 ledgers refuse with a clear message",
         clippedOk && allClipped && rebindOk && serOk && v1Refused,
         "clip " + clippedOk + " rebind " + rebindOk + " ser " + serOk + " v1refuse " + v1Refused);
+
+      // TH7f — the declared-lattice member: at breaker placement only tile 0
+      // can ever seal, so a far plate with a DERIVED tile index (anchored at
+      // the breaker plate that sealed) joins the single live tiled context
+      // instead of rotting in a provisional; with TWO live tiled contexts the
+      // claim is ambiguous and it goes provisional after all.
+      const fT2 = { session32: 0x44, K: 3, len: 5, pcrc: 0x88, tile: 0, tiling: 2 };
+      const st2 = HV.createStore(pL), ls2 = HV.leaseCreate({ operator: true });
+      HV.leaseObserve(st2, ls2, { emitters: [sealed([100, 100], fT2, "0eee")] }, pL, 1);
+      const memb = em([820, 100], { tile: 1, annuli: [dRow(7)] });
+      const rM = HV.leaseObserve(st2, ls2, { emitters: [memb] }, pL, 2);
+      const keyT2 = HV.contentKeyOf(fT2, 24);
+      const claimOk = HV.counts(st2.ledgers[keyT2]).droplets === 2 &&           // c=1 from the seal + c=7 from the member
+        Object.keys(ls2.provisionals).length === 0 &&
+        rM.events.some(e => e.ev === "bank" && e.tag === "0eee");
+      const fT3 = { session32: 0x55, K: 3, len: 5, pcrc: 0x99, tile: 0, tiling: 2 };
+      HV.leaseObserve(st2, ls2, { emitters: [sealed([100, 500], fT3, "0fff")] }, pL, 3);
+      HV.leaseObserve(st2, ls2, { emitters: [em([820, 500], { tile: 1, annuli: [dRow(8)] })] }, pL, 4);
+      const ambOk = Object.keys(ls2.provisionals).length === 1;                 // two live tiled contexts → ambiguous → provisional
+      record("TH7f declared-lattice member: a far plate with a derived tile joins the ONE live tiled context and banks direct (no provisional); with two live tiled contexts the claim is ambiguous and it goes provisional",
+        claimOk && ambOk,
+        "claim " + claimOk + " (ledger " + HV.counts(st2.ledgers[keyT2]).droplets + " droplets, prov " +
+        Object.keys(ls2.provisionals).length + " at w2) · ambiguous→provisional " + ambOk);
+
+      // TH7g — the chunk bank: windows shorter than the envelope cycle carry
+      // partial chunk sets; they bank per (idx, bytes) with sighting counts
+      // across windows, a junk sighting forces a tie that DEFERS assembly,
+      // and when the majority set seals (CRC16) that IS a seal — bind,
+      // operator adoption and all.
+      const p3g = OC.profile.profileV3(undefined, { session32: 0xBAD5EED1 });
+      const envG = OC.emission.envelopeBytes(p3g, { K: 7, len: 9, pcrc: 0xABCD, capability: 1 });
+      const hexAt = (i) => Array.from(envG.subarray(4 * (i - 1), 4 * i)).map(b => (b < 16 ? "0" : "") + b.toString(16)).join("");
+      const st3 = HV.createStore(pL), ls3 = HV.leaseCreate({ operator: true, graceWindows: 3 });
+      const swEm = (sweep, withData, c) => em([900, 900], { annuli: [
+        { annulus: "beacon", beacon: true, present: true, chunkSweep: sweep, error: "no lock" }
+      ].concat(withData ? [dRow(c)] : []) });
+      const g1 = HV.leaseObserve(st3, ls3, { emitters: [swEm({ 1: hexAt(1), 3: hexAt(3) }, true, 1)] }, pL, 1);
+      const g2 = HV.leaseObserve(st3, ls3, { emitters: [swEm({ 2: hexAt(2), 4: hexAt(4), 1: "deadbeef" }, false)] }, pL, 2);
+      const g3 = HV.leaseObserve(st3, ls3, { emitters: [swEm({ 5: hexAt(5), 1: hexAt(1) }, true, 2)] }, pL, 3);
+      const gTag = Object.keys(st3.contexts)[0];
+      const gCtx = gTag && st3.contexts[gTag];
+      const expTag = ("0000" + (((envG[18] << 8) | envG[19]) >>> 0).toString(16)).slice(-4);
+      record("TH7g the chunk bank: partial sweeps bank across windows (w1 via the operator rung, a sweep-only w2 still routes), a junk idx-1 sighting ties and defers assembly, and w3's majority ASSEMBLES + SEALS — bind with session parsed off the assembled envelope, operator ledger adopted",
+        !!(g1.events.some(e => e.ev === "chunk-bank") &&
+           !g1.events.some(e => e.ev === "bank-seal") && !g2.events.some(e => e.ev === "bank-seal") &&
+           g3.events.some(e => e.ev === "bank-seal") &&
+           gCtx && gTag === expTag && gCtx.state === "bound" && gCtx.session32 === 0xBAD5EED1 &&
+           g3.events.some(e => e.ev === "operator-merge") &&
+           HV.counts(st3.ledgers[gCtx.contentKey]).droplets === 2),
+        "tag " + gTag + " (expect " + expTag + ") state " + (gCtx && gCtx.state) +
+        " session " + (gCtx && (gCtx.session32 >>> 0).toString(16)) +
+        " · w3 " + JSON.stringify(g3.events.map(e => e.ev)));
     }
   }
 

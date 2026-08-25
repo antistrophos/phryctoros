@@ -654,6 +654,8 @@ async function harvestDecode(v, geo, file) {
           if (e.ev === "all-lost") return "<span class='warn'>" + e.tag + " lost everything — grace</span>";
           if (e.ev === "clip") return "<span class='warn'>CLIP " + e.tag + " (grace expired)</span>";
           if (e.ev === "tile-disagree") return "<span class='bad'>tile disagree on " + e.tag + " (announced " + e.announced + " vs derived " + e.derived + ") — not banked</span>";
+          if (e.ev === "chunk-bank") return "<span class='dim'>chunks +" + e.fresh + " fresh (bank " + e.have + "/5 idx → " + e.target + ")</span>";
+          if (e.ev === "bank-seal") return "<span class='ok'>BANK SEAL " + e.tag + " — envelope assembled ACROSS windows</span>";
           return null;
         }).filter(Boolean);
       if (leaseBits.length) line += " — " + leaseBits.join(" · ");

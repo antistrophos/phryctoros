@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- single-file build 2026-08-23 — regenerate with build_standalone.py -->
+<!-- single-file build 2026-08-24 — regenerate with build_standalone.py -->
 
 <html lang="en">
 <head>
@@ -2831,10 +2831,16 @@
     }
     var bestTag = null, bestTagN = 0;
     for (var tv in tags) if (tags[tv] > bestTagN) { bestTagN = tags[tv]; bestTag = +tv; }
+    var chunkBytesHex = {};
+    for (var ck in data) {
+      var hx = "";
+      for (var cb = 1; cb <= 4; cb++) hx += (data[ck][cb] < 16 ? "0" : "") + data[ck][cb].toString(16);
+      chunkBytesHex[ck] = hx;
+    }
     return { envelope: envelope, tag: tag, sealed: envelope !== null,
              tagSeen: bestTag, tagSightings: bestTagN,
              tagMatchesSeal: envelope !== null && bestTag !== null && bestTag === tag,
-             chunkCounts: counts, conflicts: conflicts };
+             chunkCounts: counts, conflicts: conflicts, chunkBytesHex: chunkBytesHex };
   }
 
   /* First framed envelope in the window (the original single-frame read). */
@@ -3017,9 +3023,44 @@
     return best;
   }
 
+  /* BEST-EFFORT CHUNK SWEEP — for windows SHORTER than the envelope cycle
+     (the first a42 field clip: 13.3 s cycle against 8–12 s harvest windows,
+     so no single window could ever seal). Chunks are droplets of the control
+     plane: each is self-labeled (idx + CRC8), so they can bank ACROSS
+     windows and assemble when the set completes — this scan finds the one
+     (offset, phase) with the most CRC8-passing chunks and reports them for
+     the bank. Sub-seal evidence only (12 bits per chunk): the caller's bank
+     keeps per-(idx, bytes) sighting counts, assembly takes the majority per
+     idx, and the envelope CRC16 remains the only thing that ever BINDS.
+     Junk from a wrong-alignment window pollutes one sighting, never the
+     seal. Returns null when nothing passes anywhere. */
+  function beaconChunkSweep(track, annulus, profile, baseOverride) {
+    var demap = (typeof module !== "undefined" && module.exports) ? require("./demap.js") : global.OC.demap;
+    var F = annulus.rotation.frames_per_symbol, M = annulus.rotation.M;
+    var bitsPer = beaconBitsPer(M), phases = bitsPer === 2 ? 4 : 8;
+    var base = (baseOverride !== undefined && baseOverride !== null) ? baseOverride : (track.firstValid || 0);
+    var best = null;
+    for (var oi = 0; oi < F; oi++) {
+      var off = base + oi;
+      var decoded = demap.decode(track, annulus, profile, off);
+      if (!decoded.length) continue;
+      for (var ph = 0; ph < phases; ph++) {
+        var scan = beaconChunkScan(decoded, ph, M);
+        var passes = scan.chunkCounts.reduce(function (a, b) { return a + b; }, 0);
+        if (passes > 0 && (!best || passes > best.passes))
+          best = { offset: off, phase: ph, passes: passes, scan: scan };
+      }
+    }
+    if (!best) return null;
+    var chunks = {};
+    for (var idx in best.scan.chunkBytesHex) chunks[idx] = best.scan.chunkBytesHex[idx];
+    return { offset: best.offset, phase: best.phase, passes: best.passes,
+             chunks: chunks, tagSeen: best.scan.tagSeen, tagSightings: best.scan.tagSightings };
+  }
+
   var API = { findBullseye: findBullseye, plateSolve: plateSolve, fitCircleEdge: fitCircleEdge,
               beaconAnnulus: beaconAnnulus, beaconDecode: beaconDecode, beaconFrames: beaconFrames,
-              beaconBytes: beaconBytes, beaconChunkScan: beaconChunkScan,
+              beaconBytes: beaconBytes, beaconChunkScan: beaconChunkScan, beaconChunkSweep: beaconChunkSweep,
               beaconFramesFor: beaconFramesFor, beaconAlign: beaconAlign, parseEnvelope: parseEnvelope };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   global.OC = global.OC || {}; global.OC.plate = API;
@@ -5556,6 +5597,7 @@
   "use strict";
 
   function F() { return (typeof module !== "undefined" && module.exports) ? require("./fountain.js") : global.OC.fountain; }
+  function PL() { return (typeof module !== "undefined" && module.exports) ? require("./plate.js") : global.OC.plate; }
 
   function bytesToHex(u8) {
     var s = "";
@@ -5919,8 +5961,7 @@
     });
 
     // ——— route seals: create/refresh contexts ———
-    obs.forEach(function (o) {
-      if (!o.fields || !o.sealedTag) return;
+    var routeSeal = function (o) {
       var tag = o.sealedTag;
       var ctx = store.contexts[tag];
       if (!ctx) {
@@ -5967,11 +6008,14 @@
           events.push({ ev: "adopt", tag: tag, provisional: pid, droplets: counts(pr.ledger).droplets });
         }
       }
-    });
+    };
+    obs.forEach(function (o) { if (o.fields && o.sealedTag) routeSeal(o); });
 
     // ——— route unsealed emitters: context plates first, else provisional ———
+    // (an emitter carrying only a chunk SWEEP — beacon evidence without a
+    // data lock — still routes, so its chunks can bank)
     obs.forEach(function (o) {
-      if (o.ctx || !o.dataLocked) return;
+      if (o.ctx || (!o.dataLocked && !(o.beacon && o.beacon.chunkSweep))) return;
       var tags = Object.keys(store.contexts);
       for (var t = 0; t < tags.length; t++) {
         var ctx = store.contexts[tags[t]];
@@ -5982,6 +6026,32 @@
             if (ctx.state === "grace" && !o.confirmedTag) break;      // grace: no direct banking without the tag
             o.ctx = ctx; o.plate = ctx.plates[p];
             ctx.plates[p].center = o.center; ctx.plates[p].fid = o.fid; ctx.plates[p].lastSeen = w;
+            return;
+          }
+        }
+      }
+      // A DECLARED-LATTICE MEMBER follows its designated tile's context: the
+      // derived tile index is anchored at the breaker plate — the very plate
+      // that sealed — so at breaker placement (where only tile 0 carries a
+      // beacon) the other tiles are the sealed session's tiles by the
+      // operator's own lattice declaration. Only unambiguous when exactly ONE
+      // live tiled context exists; otherwise fall through to provisional.
+      if (o.em.tile !== undefined && o.em.tile >= 0) {
+        var tiledTag = null, tiledN = 0;
+        for (var tl2 in store.contexts) {
+          var cL = store.contexts[tl2];
+          if (cL.state !== "clipped" && cL.fields && cL.fields.tiling > 1) { tiledTag = tl2; tiledN++; }
+        }
+        if (tiledN === 1 && (!o.confirmedTag || o.confirmedTag === tiledTag)) {
+          var ctxL = store.contexts[tiledTag];
+          // grace still demands the tag before direct banking, members included
+          if (ctxL.state !== "grace" || o.confirmedTag === tiledTag) {
+            var plateL = null;
+            for (var pl2 = 0; pl2 < ctxL.plates.length; pl2++)
+              if (nearPlate(o.center, o.fid, ctxL.plates[pl2], lease.matchFidFrac)) { plateL = ctxL.plates[pl2]; break; }
+            if (!plateL) { plateL = {}; ctxL.plates.push(plateL); }
+            plateL.center = o.center; plateL.fid = o.fid; plateL.tile = o.em.tile; plateL.lastSeen = w;
+            o.ctx = ctxL; o.plate = plateL;
             return;
           }
         }
@@ -6009,6 +6079,58 @@
       var prv = lease.provisionals[provId];
       prv.center = o.center; prv.fid = o.fid; prv.lastSeen = w;
       o.prov = prv; o.provId = provId;
+    });
+
+    // ——— the chunk bank: control-plane droplets across windows ———
+    // A window shorter than the envelope cycle still carries CHUNKS; they
+    // bank on the routed target (context plate / provisional / the operator
+    // rung) with per-(idx, bytes) sighting counts, and when the majority set
+    // assembles under the CRC16 seal that IS a seal — the context binds
+    // exactly as if one window had read the whole envelope. Junk chunks from
+    // a wrong-alignment sweep cost one sighting, never the seal.
+    var assembleBank = function (bank) {
+      var env = new Uint8Array(20);
+      for (var ix = 1; ix <= 5; ix++) {
+        var slot = bank["" + ix];
+        if (!slot) return null;
+        var bestHex = null, bestN = 0, tie = false;
+        for (var hx in slot) {
+          if (slot[hx] > bestN) { bestN = slot[hx]; bestHex = hx; tie = false; }
+          else if (slot[hx] === bestN) tie = true;
+        }
+        if (!bestHex || tie) return null;
+        for (var bj = 0; bj < 4; bj++) env[4 * (ix - 1) + bj] = parseInt(bestHex.substr(2 * bj, 2), 16);
+      }
+      if (((env[18] << 8) | env[19]) !== F().crc16(env.subarray(0, 18))) return null;
+      return env;
+    };
+    obs.forEach(function (o) {
+      var sw = o.beacon && o.beacon.chunkSweep;
+      if (!sw) return;
+      var bank = null;
+      if (o.ctx && o.plate) bank = o.plate.chunkBank || (o.plate.chunkBank = {});
+      else if (o.prov) bank = o.prov.chunkBank || (o.prov.chunkBank = {});
+      else if (o.operator) bank = lease.operatorBank || (lease.operatorBank = {});
+      else return;
+      var newIdx = 0;
+      for (var ix2 in sw) {
+        var slot2 = bank[ix2] || (bank[ix2] = {});
+        if (!slot2[sw[ix2]]) newIdx++;
+        slot2[sw[ix2]] = (slot2[sw[ix2]] || 0) + 1;
+      }
+      events.push({ ev: "chunk-bank", chunks: Object.keys(sw).length, fresh: newIdx,
+                    have: Object.keys(bank).length, target: o.ctx ? o.ctx.tag : (o.provId || "operator") });
+      if (o.fields) return;                       // a real seal already routed this window
+      var env2 = assembleBank(bank);
+      if (env2) {
+        var fields2 = PL().parseEnvelope(env2);
+        if (fields2) {
+          o.fields = fields2;
+          o.sealedTag = ("0000" + (((env2[18] << 8) | env2[19]) >>> 0).toString(16)).slice(-4);
+          routeSeal(o);                            // binds/rebinds; operator-merge + adoption ride along
+          events.push({ ev: "bank-seal", tag: o.sealedTag, session: fields2.session32 });
+        }
+      }
     });
 
     // ——— bank ———
@@ -6618,9 +6740,21 @@
     if (opts.registerOn) {
       reg = register.registerAll(opts.registerOn, regOpts);
     } else {
-      for (var rf = 0; rf < groups.length; rf++) {
+      // For a TILED profile the operator declared how many plates exist, so
+      // stopping at the first frame that yields ANY plate under-registers a
+      // lattice whenever that instant was blurred (the first field 2-up:
+      // both plates solve on clean frames, one on smeared ones — handheld
+      // frame luck). Keep the best frame seen among a bounded SPREAD of
+      // candidates (registration is the expensive stage — never per-frame);
+      // stop early the moment the declared count is met. Untiled behavior
+      // unchanged: first hit wins on the same spread.
+      var wantN = profile.plate ? (profile.tiling || 1) : 1;
+      var triesN = Math.min(groups.length, wantN > 1 ? 8 : groups.length);
+      for (var rt2 = 0; rt2 < triesN; rt2++) {
+        var rf = wantN > 1 ? Math.min(groups.length - 1, Math.floor(rt2 * groups.length / triesN)) : rt2;
         var rTry = register.registerAll(groups[rf].imgs[0], regOpts);
-        if (rTry.emitters.length) { reg = rTry; regFrame = rf; break; }
+        if (rTry.emitters.length > (reg ? reg.emitters.length : 0)) { reg = rTry; regFrame = rf; }
+        if (reg && reg.emitters.length >= wantN) break;
       }
     }
     if (!reg || !reg.emitters.length)
@@ -6854,7 +6988,13 @@
         var meanContrast = valid ? contrastAct / valid : 0;
         var present = firstValidIdx >= 0 && valid >= activeN * 0.6 && meanContrast > 0.02;
         if (!present)
-          return { res: { annulus: a.index, layer: a.layer, present: false, contrast: round3(meanContrast), validFrames: valid }, retry: null };
+          // The row keeps its CHANNEL identity even when absent: downstream
+          // filters branch on `beacon` (the payload pool indexes profile.annuli
+          // by row position for data rows), and a presence-failed beacon row
+          // without the flag walks into the data branch — the first field 2-up
+          // at breaker placement found it: tile 1 has no beacon ring, its
+          // beacon channel fails presence, and the pool read profile.annuli[4].
+          return { res: { annulus: a.index, layer: a.layer, beacon: a.beacon || undefined, present: false, contrast: round3(meanContrast), validFrames: valid }, retry: null };
 
         // The downstream (track → onset → carrier gates → align → demap → score)
         // as a function of the series, so the row-time branch can be judged
@@ -6955,10 +7095,24 @@
           }
           if (T) T.align += tnow() - tA;
           var tDm = T && tnow();
-          if (!align)
-            return { annulus: a.index, layer: a.layer, present: true, contrast: round3(meanContrast), validFrames: valid,
+          if (!align) {
+            // A beacon window shorter than the envelope cycle can still carry
+            // CHUNKS (the first a42 field clip: 13.3 s cycle vs 8–12 s harvest
+            // windows). Sweep the best alignment's CRC8-passing chunks so the
+            // lease can BANK them across windows and bind on assembly — the
+            // droplet pattern applied to the control plane. Sub-seal evidence:
+            // the row stays a no-lock row; only the assembled CRC16 ever binds.
+            var sweep = a.beacon ? dep("plate").beaconChunkSweep(track, a, profile, syncBase) : null;
+            return { annulus: a.index, layer: a.layer, beacon: a.beacon || undefined,
+                     present: true, contrast: round3(meanContrast), validFrames: valid,
                      carrierRatio: carrierRatio, tear: tearBrief(tearX),
-                     error: "no lock — symbols match neither preamble nor stream at any lag (carrier " + carrierRatio + "× expected" + (carrierRatio !== null && carrierRatio < 0.5 ? "; low carrier — see the layer-0 row" : "") + ")" };
+                     chunkSweep: sweep && sweep.passes ? sweep.chunks : undefined,
+                     chunkSweepPasses: sweep ? sweep.passes : undefined,
+                     tagSeen: sweep && sweep.tagSeen != null ? ("0000" + (sweep.tagSeen >>> 0).toString(16)).slice(-4) : undefined,
+                     tagSightings: sweep ? sweep.tagSightings : undefined,
+                     error: "no lock — symbols match neither preamble nor stream at any lag (carrier " + carrierRatio + "× expected" + (carrierRatio !== null && carrierRatio < 0.5 ? "; low carrier — see the layer-0 row" : "") + ")" +
+                            (sweep && sweep.passes ? " — chunk sweep banked " + Object.keys(sweep.chunks).length + " idx (" + sweep.passes + " passes)" : "") };
+          }
           var decoded = demap.decode(track, a, profile, align.offset);
 
           if (a.beacon) {
@@ -6998,6 +7152,11 @@
             // missing envelope is symbol quality or the carousel-phase draw.
             var nullSyms = 0;
             for (var ns = 0; ns < decoded.length; ns++) if (decoded[ns].s === null || decoded[ns].s === undefined) nullSyms++;
+            // The chunk sweep must also run HERE: a false preamble lock (or
+            // any alignment that parses nothing) routes around the no-lock
+            // return where the sweep lives, and T22v's middle window lost its
+            // two chunks to exactly that — the bank then never assembled.
+            var sweepB = (!env && !align.tagConfirmed) ? plateB.beaconChunkSweep(track, a, profile, syncBase) : null;
             return {
               annulus: a.index, layer: a.layer, present: true, beacon: true,
               contrast: round3(meanContrast), validFrames: valid,
@@ -7016,13 +7175,18 @@
               // a full seal (the lease's identity heartbeat).
               tag: env && env.envelope.length === 20 ? toHex(env.envelope.subarray ? env.envelope.subarray(18, 20) : env.envelope.slice(18, 20)) : (align.tag || undefined),
               tagConfirmed: align.tagConfirmed || undefined,
-              tagSightings: align.tagSightings !== undefined ? align.tagSightings : undefined,
+              tagSightings: align.tagSightings !== undefined ? align.tagSightings :
+                            (sweepB ? sweepB.tagSightings : undefined),
               chunkConflicts: align.chunkConflicts || undefined,
+              chunkSweep: sweepB && sweepB.passes ? sweepB.chunks : undefined,
+              chunkSweepPasses: sweepB ? sweepB.passes : undefined,
+              tagSeen: sweepB && sweepB.tagSeen != null ? ("0000" + (sweepB.tagSeen >>> 0).toString(16)).slice(-4) : undefined,
               envelope: env ? toHex(env.envelope) : null,
               envelopeAt: env ? env.at : null,
               envelopeFrames: envFrames.length,
               envelopeFields: envFields || undefined,
-              error: (env || align.tagConfirmed) ? undefined : "beacon locked but no framed envelope in the captured span (" + nullSyms + "/" + decoded.length + " symbols erased)"
+              error: (env || align.tagConfirmed) ? undefined : "beacon locked but no framed envelope in the captured span (" + nullSyms + "/" + decoded.length + " symbols erased)" +
+                     (sweepB && sweepB.passes ? " — chunk sweep banked " + Object.keys(sweepB.chunks).length + " idx (" + sweepB.passes + " passes)" : "")
             };
           }
 
@@ -7173,7 +7337,9 @@
         var emTile = tileOf ? tileOf[emIdx] : 0;
         var FNp = dep("fountain");
         var rings = annuli.map(function (r, ri) {
-          return r.beacon ? null : { seed: FNp.tileSeed(profile.annuli[ri].rotation.seed, emTile >= 0 ? emTile : 0), droplets: r._droplets || [] };
+          // beacon rows never pool; the profile.annuli guard keeps any future
+          // extra channel from aliasing into a data ring by position
+          return (r.beacon || !profile.annuli[ri]) ? null : { seed: FNp.tileSeed(profile.annuli[ri].rotation.seed, emTile >= 0 ? emTile : 0), droplets: r._droplets || [] };
         }).filter(function (x) { return x; });
         annuli.forEach(function (r) { delete r._droplets; });
         if (ringsByEmitter) ringsByEmitter[emIdx] = emTile >= 0 ? rings : null;
@@ -7840,6 +8006,8 @@ async function harvestDecode(v, geo, file) {
           if (e.ev === "all-lost") return "<span class='warn'>" + e.tag + " lost everything — grace</span>";
           if (e.ev === "clip") return "<span class='warn'>CLIP " + e.tag + " (grace expired)</span>";
           if (e.ev === "tile-disagree") return "<span class='bad'>tile disagree on " + e.tag + " (announced " + e.announced + " vs derived " + e.derived + ") — not banked</span>";
+          if (e.ev === "chunk-bank") return "<span class='dim'>chunks +" + e.fresh + " fresh (bank " + e.have + "/5 idx → " + e.target + ")</span>";
+          if (e.ev === "bank-seal") return "<span class='ok'>BANK SEAL " + e.tag + " — envelope assembled ACROSS windows</span>";
           return null;
         }).filter(Boolean);
       if (leaseBits.length) line += " — " + leaseBits.join(" · ");
