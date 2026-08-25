@@ -548,22 +548,45 @@
      M=2/F=4 (the frozen §5 default), "c42" = chunked M=4/F=2 (the primary
      trial: tag 1.07 s, envelope 13.3 s), "c82" = chunked M=8/F=2 (the A/B:
      tag 0.71 s, SNR-risky at the 0.010 amplitude — the filming session
-     decides). Framing is auto-detected on receive, so this only has to be
-     right on the EMIT side; the receive/batch selects exist for the beacon's
-     M/F, which demodulation does need. Mutates and returns the profile;
-     anything unrecognised restores the default. */
+     decides). Amplitude re-split trials (2026-08-24 — the a-inner ring
+     under-resolves at range): trackPhase EXCLUDES k=1 from the phase
+     estimate (F5b: centering error rides the k=1 coefficient), so the
+     default split spends 0.010 of the 0.025 class on a branch guide. Both
+     trials keep the class sum at exactly 0.025 (no validator change):
+     "a42r" re-splits within [1,2,3] → k≥2 estimation power Σ(k·a)² ×3.0
+     (+4.8 dB); "a42x" extends the ladder to [1,2,3,5] → ×5.6 (+7.5 dB),
+     k=5 riding the ascending-k branch resolution the way the data rings
+     already run k=13, same ~1.3u spatial wavelength. Framing is
+     auto-detected on receive, so framing only has to be right on the EMIT
+     side; the receive/batch selects exist for the beacon's M/F — and the
+     amplitude lists, which the carrier gate and tracker weights DO need.
+     Every branch resets the beacon lists so toggling codes on a live
+     profile never carries a previous trial's split. Mutates and returns
+     the profile; anything unrecognised restores the default. */
   function applyDring(p, code) {
     if (!p || !p.beacon) return p;
-    if (code === "c42" || code === "c82" || code === "a42" || code === "a82") {
+    p.beacon.harmonics = [1, 2, 3];
+    p.beacon.amplitudes = [0.010, 0.008, 0.007];
+    p.beacon.phases_deg = [0, 45, 90];
+    if (code === "c42" || code === "c82" || code === "a42" || code === "a82" ||
+        code === "a42r" || code === "a42x") {
       p.beacon.framing = "chunked";
       p.beacon.rotation.M = (code === "c82" || code === "a82") ? 8 : 4;
       p.beacon.rotation.gray = true;
       p.beacon.rotation.frames_per_symbol = 2;
-      // a42/a82 — ruling 1b: the control ring RELOCATES to band A's inner
-      // boundary on every tile (per-tile envelopes, announced identity); the
-      // breaker renders static and stays the derived-identity degrade rung.
-      if (code === "a42" || code === "a82") p.beacon.placement = "a-inner";
-      else delete p.beacon.placement;
+      // a42/a82/a42r/a42x — ruling 1b: the control ring RELOCATES to band
+      // A's inner boundary on every tile (per-tile envelopes, announced
+      // identity); the breaker renders static and stays the derived-identity
+      // degrade rung.
+      if (code === "c42" || code === "c82") delete p.beacon.placement;
+      else p.beacon.placement = "a-inner";
+      if (code === "a42r") {
+        p.beacon.amplitudes = [0.005, 0.005, 0.015];
+      } else if (code === "a42x") {
+        p.beacon.harmonics = [1, 2, 3, 5];
+        p.beacon.amplitudes = [0.004, 0.004, 0.005, 0.012];
+        p.beacon.phases_deg = [0, 45, 90, 135];
+      }
     } else {
       delete p.beacon.framing;
       delete p.beacon.placement;

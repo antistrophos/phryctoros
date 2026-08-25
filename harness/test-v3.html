@@ -778,6 +778,68 @@ async function main() {
       " · events " + JSON.stringify(evAll));
   }
 
+  await tick("T22w: A-inner amplitude re-split trials — the class re-aimed at the tracker…");
+  {
+    // The field said the a-inner ring under-resolves at range; trackPhase
+    // EXCLUDES k=1 from the phase estimate (F5b — centering error rides the
+    // k=1 coefficient), so the default split spends 0.010 of the 0.025 class
+    // on a branch guide. The trial codes re-split the SAME class toward the
+    // harmonics the tracker actually weights, (k·a)².
+    // (a) shapes: both codes keep the class sum at exactly 0.025 and validate.
+    const pR = OC.profile.profileV3(undefined, {});
+    OC.profile.applyDring(pR, "a42r");
+    const sumR = pR.beacon.amplitudes.reduce((s, a) => s + a, 0);
+    const vR = OC.profile.validate(pR);
+    const okR = !!(vR.ok && pR.beacon.placement === "a-inner" && pR.beacon.framing === "chunked" &&
+                   pR.beacon.rotation.M === 4 && pR.beacon.rotation.frames_per_symbol === 2 &&
+                   pR.beacon.harmonics.join(",") === "1,2,3" &&
+                   pR.beacon.amplitudes.join(",") === "0.005,0.005,0.015" &&
+                   Math.abs(sumR - 0.025) < 1e-12);
+    const pX0 = OC.profile.profileV3(undefined, {});
+    OC.profile.applyDring(pX0, "a42x");
+    const sumX = pX0.beacon.amplitudes.reduce((s, a) => s + a, 0);
+    const vX = OC.profile.validate(pX0);
+    const okX = !!(vX.ok && pX0.beacon.placement === "a-inner" && pX0.beacon.harmonics.join(",") === "1,2,3,5" &&
+                   pX0.beacon.phases_deg.length === 4 && Math.abs(sumX - 0.025) < 1e-12);
+    // (b) list hygiene: toggling codes on ONE live profile (the emit select)
+    //     must never carry a previous trial's split forward.
+    const pH = OC.profile.profileV3(undefined, {});
+    OC.profile.applyDring(pH, "a42x");
+    OC.profile.applyDring(pH, "a42");
+    const backA = pH.beacon.harmonics.join(",") === "1,2,3" &&
+                  pH.beacon.amplitudes.join(",") === "0.01,0.008,0.007";
+    OC.profile.applyDring(pH, "f24");
+    const backF = JSON.stringify(pH.beacon) === JSON.stringify(OC.profile.profileV3(undefined, {}).beacon);
+    // (c) a42x optically: k=5 has never ridden the beacon ladder — a 1-up
+    //     mid-loop capture in T22s's shape (identity-only envelope, beacon-only
+    //     decode; payload+beacon coexistence at a-inner is T22t's pin) must
+    //     assemble the chunked envelope through the standard chain. Structure,
+    //     not SNR: synthetic frames are noise-free; the dB claims are the
+    //     FIELD A/B's to earn.
+    const pW = OC.profile.profileV3(undefined, { session32: 0xA42E0001, render: { size_px: 448, scale_px_per_unit: 70 } });
+    OC.profile.applyDring(pW, "a42x");
+    const infoW = { K: 9, len: 17, pcrc: 0x7E57, capability: 1 };
+    const expTagW = (() => { const e = OC.emission.envelopeBytes(pW, infoW); return ((e[18] << 8) | e[19]); })();
+    let seqW = OC.emission.renderSequence(pW, 500, { payloadInfo: infoW });
+    let slW = seqW.frames.slice(50);
+    seqW = null;
+    const rW = OC.pipeline.decodeSequence(slW, pW, { beacon: true });
+    slW = null;
+    const bW = rW.error ? null : rW.emitters[0].annuli.find(a => a.beacon);
+    const fW = bW && bW.envelopeFields;
+    const okW = !!(bW && !bW.error && bW.alignMethod === "framed" && bW.framing === "chunked" &&
+                   fW && fW.session32 === 0xA42E0001 && fW.K === 9 && fW.pcrc === 0x7E57 && fW.tile === 0 &&
+                   bW.tag === expTagW.toString(16).padStart(4, "0"));
+    record("T22w A-inner amplitude re-split: a42r concentrates the 0.025 class k≥2-heavy and a42x climbs the ladder to k=5, both validate at exactly the class sum, toggling codes on one live profile restores the default lists (no stale split rides the emit select), and a42x assembles the chunked envelope through the standard chain",
+      okR && okX && backA && backF && okW,
+      "(a) a42r " + vR.ok + " [" + pR.beacon.amplitudes + "] sum " + sumR.toFixed(3) +
+      " · a42x " + vX.ok + " k[" + pX0.beacon.harmonics + "] [" + pX0.beacon.amplitudes + "] sum " + sumX.toFixed(3) +
+      " · (b) a42x→a42 restores " + backA + ", →f24 byte-identical " + backF +
+      " · (c) a42x optical: " + (bW ? (bW.alignMethod || "?") + "/" + bW.framing + " tag " + bW.tag +
+                    " tile " + (fW && fW.tile) + " sess " + (fW && (fW.session32 >>> 0).toString(16)) +
+                    (bW.error ? " ERR " + bW.error : "") : "no row: " + JSON.stringify(rW.error).slice(0, 80)));
+  }
+
   await tick("T22j: preset auto-detect — dual-geometry CRC vote on a high-rate emission…");
   {
     const pH = OC.profile.profileV3("high-rate");
@@ -1225,5 +1287,16 @@ async function main() {
   }
 }
 
+// Stall watchdog (2026-08-24): one run parked forever between a tick and its
+// case with the main thread RESPONSIVE and no exception (suiteError never
+// fired). An interval can only run when the thread is free, so it cleanly
+// separates "runner parked, thread alive" (title marks STALL) from a heavy
+// case legitimately grinding (interval can't fire mid-block). Title-only.
+let wdCount = -1, wdSince = Date.now();
+setInterval(() => {
+  if (results.length !== wdCount) { wdCount = results.length; wdSince = Date.now(); }
+  else if (Date.now() - wdSince > 120000 && !/^(DONE|ERROR)/.test(document.title))
+    document.title = "STALL v3 " + results.length + "R — " + statusEl.textContent.slice(0, 50);
+}, 30000);
 main().then(() => suiteFinish(window.SUITE_PAGE)).catch(e => suiteError(window.SUITE_PAGE, e));
 </script>
