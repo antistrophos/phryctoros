@@ -7473,6 +7473,13 @@ function currentProfile() {
 function v31Opts(p) {
   if ($("m_quad") && $("m_quad").checked) p.plate.corner_style = "quadrant";
   if ($("m_qrp") && $("m_qrp").checked) p.qr_persistent = true;
+  // TILING — the first 2-up field night's biggest find: the settings intake
+  // read tiling=2, the summary SAID "2-up emitter", and the profile stayed
+  // tiling:1 — so the pre-scan crop hugged one plate, plate 2 was cropped
+  // out of the capture entirely, and the receiver could never see two
+  // emitters no matter what registration did. The declared lattice must
+  // reach the profile, not the summary text.
+  if (window.ocTiling > 1) p.tiling = window.ocTiling;
   // D-ring ruling-2 trial: the FRAMING is auto-detected, but the beacon's
   // M/F must match the emitter for demodulation — the settings string's
   // dring= key sets this select.
@@ -8383,6 +8390,7 @@ function ocApplySettings(str) {
   if ($("m_quad")) $("m_quad").checked = kv.quad === "1";
   if ($("m_qrp")) $("m_qrp").checked = kv.qrp === "1";
   if ($("m_dring")) $("m_dring").value = ["c42", "c82", "a42", "a82"].indexOf(kv.dring) >= 0 ? kv.dring : "f24";
+  window.ocTiling = Math.max(1, +kv.tiling || 1);   // the declared lattice, applied in v31Opts
   const bits = [target, "capture " + (kv.capfps || "?") + " fps", (kv.tiling || "1") + "-up emitter"];
   if (kv.quad === "1") bits.push("quadrant corners");
   if (kv.qrp === "1") bits.push("persistent QR");

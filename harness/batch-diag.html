@@ -110,6 +110,9 @@ async function runClip(name) {
   // dring=c42|c82: D-ring ruling-2 trial beacon configs (framing auto-detects;
   // M/F must match the emitter for demodulation).
   if (qs.get("dring") && profile.beacon) OC.profile.applyDring(profile, qs.get("dring"));
+  // tiling=N: the declared lattice (the receive page's first-2-up lesson —
+  // it must reach the PROFILE, or the crop and tile identity never hear it).
+  if (qs.get("tiling") && profile.plate) profile.tiling = Math.max(1, +qs.get("tiling") || 1);
   // capfps: the SEEK cadence — must match the clip's recording rate (a 60 fps
   // clip stepped at 1/30 silently drops every other camera frame). anw: the
   // analysis-crop width cap — raise to 2048 for 4K sources to keep module
