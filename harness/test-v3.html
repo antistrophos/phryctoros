@@ -692,7 +692,7 @@ async function main() {
     OC.profile.applyDring(pC, "a42");
     pC.beacon.amplitudes = [0.011, 0.008, 0.007];
     const vC = OC.profile.validate(pC);
-    const okC = !!(vC.ok === false && vC.errors.some(e => /control class/.test(e)));
+    const okC = !!(vC.ok === false && vC.errors.some(e => /geometry-priced class/.test(e)));
     record("T22t D-ring at A-inner (ruling 1b): the control contour rides band A's floor on every tile with the breaker static, a 1-up mid-loop capture carries payload AND the chunked envelope together, a 2-up's tiles each ANNOUNCE their own index (b[16]) agreeing with breaker-derived identity while the pooled peel completes, the amended budget validates at exactly 0.125 quiet, and 0.001 over the 0.025 control class refuses",
       okA && okB && okC,
       "(a) validate " + vA.ok + " payload " + JSON.stringify(emA && emA.payload && emA.payload.text) +
@@ -871,6 +871,58 @@ async function main() {
       " · (c) a42x optical: " + (bW ? (bW.alignMethod || "?") + "/" + bW.framing + " tag " + bW.tag +
                     " tile " + (fW && fW.tile) + " sess " + (fW && (fW.session32 >>> 0).toString(16)) +
                     (bW.error ? " ERR " + bW.error : "") : "no row: " + JSON.stringify(rW.error).slice(0, 80)));
+  }
+
+  await tick("T22y: the a42g geometry trial — the ring moves in, the class rises to what the geometry prices…");
+  {
+    // 2026-08-27 (the QR retired emit-side): floor 1.00, quiet_r 0.80 (the
+    // breaker's own outer edge), class 0.075 k3-heavy. Quiet width lands ON
+    // the 0.125 floor, pinch stays at the frozen 0.255 exactly, no data edge
+    // moves. The validator's class bound is now geometry-priced: the frozen
+    // default still prices 0.025 byte-for-byte.
+    const pG = OC.profile.profileV3(undefined, {});
+    OC.profile.applyDring(pG, "a42g");
+    const vG = OC.profile.validate(pG);
+    const sumG = pG.beacon.amplitudes.reduce((s, a) => s + a, 0);
+    const okG = !!(vG.ok && pG.bands[0].lo.fixed === 1.00 && pG.plate.quiet_r === 0.80 &&
+                   pG.beacon.placement === "a-inner" && pG.beacon.rotation.M === 4 &&
+                   pG.beacon.amplitudes.join(",") === "0.012,0.018,0.045" &&
+                   Math.abs(sumG - 0.075) < 1e-12);
+    // one hair over the geometry-priced class refuses
+    const pGo = OC.profile.profileV3(undefined, {});
+    OC.profile.applyDring(pGo, "a42g");
+    pGo.beacon.amplitudes = [0.012, 0.018, 0.046];
+    const vGo = OC.profile.validate(pGo);
+    const okGo = !!(vGo.ok === false && vGo.errors.some(e => /geometry-priced class/.test(e)));
+    // toggle hygiene one level up: a42g → a42 restores the frozen geometry
+    const pH2 = OC.profile.profileV3(undefined, {});
+    OC.profile.applyDring(pH2, "a42g");
+    OC.profile.applyDring(pH2, "a42");
+    const backG = pH2.bands[0].lo.fixed === 1.05 && pH2.plate.quiet_r === 0.90 &&
+                  pH2.beacon.amplitudes.join(",") === "0.01,0.008,0.007";
+    // optical end-to-end at the new geometry: the wider band A and the
+    // 0.045 k3 contour must register, seal, and peel through the standard
+    // chain (T22s's shape: identity-only envelope, beacon-only decode).
+    const pW2 = OC.profile.profileV3(undefined, { session32: 0xA4260001, render: { size_px: 448, scale_px_per_unit: 70 } });
+    OC.profile.applyDring(pW2, "a42g");
+    const infoG = { K: 9, len: 17, pcrc: 0x7E57, capability: 1 };
+    const expTagG = (() => { const e = OC.emission.envelopeBytes(pW2, infoG); return ((e[18] << 8) | e[19]); })();
+    let seqG = OC.emission.renderSequence(pW2, 500, { payloadInfo: infoG });
+    let slG = seqG.frames.slice(50);
+    seqG = null;
+    const rG = OC.pipeline.decodeSequence(slG, pW2, { beacon: true });
+    slG = null;
+    const bG = rG.error ? null : rG.emitters[0].annuli.find(a => a.beacon);
+    const fG = bG && bG.envelopeFields;
+    const okW2 = !!(bG && !bG.error && bG.alignMethod === "framed" && bG.framing === "chunked" &&
+                    fG && fG.session32 === 0xA4260001 && bG.tag === expTagG.toString(16).padStart(4, "0"));
+    record("T22y a42g geometry trial: floor 1.00 / quiet 0.80 / class 0.075 k3-heavy validates with quiet ON the 0.125 floor and pinch at the frozen 0.255, one hair over the geometry-priced class refuses, toggling back to a42 restores the frozen geometry, and the relocated ring seals the chunked envelope through the standard chain",
+      okG && okGo && backG && okW2,
+      "(a) validate " + vG.ok + " floor " + pG.bands[0].lo.fixed + " quiet " + pG.plate.quiet_r + " sum " + sumG.toFixed(3) +
+      " · (b) over-class refused " + okGo +
+      " · (c) a42g→a42 restores " + backG +
+      " · (d) optical: " + (bG ? (bG.alignMethod || "?") + "/" + bG.framing + " tag " + bG.tag +
+                    " sess " + (fG && (fG.session32 >>> 0).toString(16)) + (bG.error ? " ERR " + bG.error : "") : "no row: " + JSON.stringify(rG.error).slice(0, 80)));
   }
 
   await tick("T22j: preset auto-detect — dual-geometry CRC vote on a high-rate emission…");

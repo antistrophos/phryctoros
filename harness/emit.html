@@ -71,7 +71,6 @@
   </p>
   <p style="margin:.3rem 0">
     <label><input id="quadChk" type="checkbox"> <b>v3.1: quadrant corner targets</b> (amendment 2 — saddle registration)</label>
-    <label style="margin-left:.8rem"><input id="qrPersChk" type="checkbox"> diagnostic: persistent center QR (off-contract)</label>
     <label style="margin-left:.8rem">D-ring <select id="dringSel">
       <option value="f24">f24 — v0 frame, M=2/F=4 @ breaker (envelope 24.5 s)</option>
       <option value="c42">c42 — chunked M=4/F=2 @ breaker (ruling-2 trial: tag 1.07 s, envelope 13.3 s)</option>
@@ -79,6 +78,7 @@
       <option value="a42">a42 — THE D-RING: chunked M=4/F=2 @ A-inner, per tile (ruling 1b — breaker goes static)</option>
       <option value="a42r">a42r — A-inner amp re-split, k≥2-heavy [.005 .005 .015], sum 0.025 (+4.8 dB estimate)</option>
       <option value="a42x">a42x — A-inner amp ladder-climb, k=[1,2,3,5] w/ k5 0.012, sum 0.025 (+7.5 dB estimate)</option>
+      <option value="a42g">a42g — THE GEOMETRY TRIAL: floor 1.00, quiet 0.80, class 0.075 k3-heavy (+14.5 dB estimate)</option>
       <option value="a82">a82 — D-ring @ A-inner, M=8/F=2 (1b + the rate A/B)</option>
     </select></label>
   </p>
@@ -424,11 +424,6 @@ function drawFrameV3(f) {
     const bsched = dringAt ? (layout.n > 1 && beaconSchedulesT ? beaconSchedulesT[t] : beaconSchedule) : null;
     const { pl, shade } = v3PlateBase(ctx, f, c.cx, c.cy, sched, bsched);
     pl0 = pl; shade0 = shade;
-    if (profile.qr_persistent) {
-      // diagnostic lock: the QR owns the center on every face; no bullseye, no beacon
-      ctx.drawImage(qrCanvas, c.cx - qrCanvas.width / 2, c.cy - qrCanvas.height / 2);
-      return;
-    }
     bullseyeLive(ctx, c.cx, c.cy, pl.center.r_out * scale, shade, R.background);
     if (t === 0 && dringAt) {
       // ruling 1b: the control contour lives at band A's floor now (drawn in
@@ -636,7 +631,7 @@ function prepareV3() {
     ? Math.max(1, Math.min(+$("cdSecs").value || 3, profile.countdown.loop_s - 1))
     : 0;
   profile.tiling = +$("tileSel").value || 1;
-  profile.qr_persistent = $("qrPersChk").checked;
+  profile.qr_persistent = false; // the emit-side diagnostic retired 2026-08-27 (receive keeps decoding the era's clips)
   profile.plate.corner_style = $("quadChk").checked ? "quadrant" : "bullseye";
   ocApplyDring(profile);
   profile.session32 = (Math.random() * 4294967296) >>> 0;
@@ -878,7 +873,7 @@ function ocSettingsString() {
     "payload=" + ($("payloadChk").checked ? 1 : 0),
     "tiling=" + $("tileSel").value,
     "quad=" + ($("quadChk").checked ? 1 : 0),
-    "qrp=" + ($("qrPersChk").checked ? 1 : 0),
+    "qrp=0",
     "dring=" + ($("dringSel") ? $("dringSel").value : "f24"),
     "loop=" + (+$("loopSecs").value || 60),
     "freeze=" + ($("freezeChk").checked ? (+$("cdSecs").value || 3) : 0),
@@ -963,11 +958,11 @@ function ocRefreshMode() {
     pay ? "PAYLOAD" : "REFERENCE (no content!)",
     $("tileSel").value + "-up"];
   if ($("quadChk").checked) bits.push("quadrant corners");
-  if ($("qrPersChk").checked) bits.push("persistent QR");
   const dr = $("dringSel") ? $("dringSel").value : "f24";
   if (dr !== "f24") bits.push("D-ring " +
     (dr === "a42" ? "A-INNER chunked M=4/F=2 (1b)" : dr === "a82" ? "A-INNER chunked M=8/F=2 (1b+A/B)" :
      dr === "a42r" ? "A-INNER re-split k≥2-heavy (amp trial)" : dr === "a42x" ? "A-INNER k5 ladder (amp trial)" :
+     dr === "a42g" ? "A-INNER GEOMETRY TRIAL floor 1.00 class 0.075" :
      dr === "c82" ? "chunked M=8/F=2 (A/B)" : "chunked M=4/F=2 (trial)"));
   bits.push("film at " + (rate === "15" ? "30" : "60") + " fps");
   const el = $("modeSummary");
@@ -977,7 +972,7 @@ function ocRefreshMode() {
   $("settingsStr").value = ocSettingsString();
   ocCarouselInfo();
 }
-for (const id of ["payloadChk", "rateSel", "tileSel", "quadChk", "qrPersChk", "dringSel", "loopSecs", "cdSecs", "freezeChk"])
+for (const id of ["payloadChk", "rateSel", "tileSel", "quadChk", "dringSel", "loopSecs", "cdSecs", "freezeChk"])
   $(id).addEventListener("change", ocRefreshMode);
 // K tracks the message length, so the coverage moves as you type.
 $("payloadTxt").addEventListener("input", ocCarouselInfo);

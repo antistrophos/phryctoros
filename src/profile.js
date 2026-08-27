@@ -496,9 +496,17 @@
     if (p.beacon.harmonics.length !== p.beacon.amplitudes.length ||
         p.beacon.harmonics.length !== p.beacon.phases_deg.length)
       errors.push("beacon harmonics/amplitudes/phases_deg length mismatch");
-    if (dringAt && beaconSum > 0.025 + 1e-9)
-      errors.push("D-ring amplitude sum " + beaconSum.toFixed(3) + " exceeds the 0.025 control class (ruling 1b)");
-    else if (beaconSum > 0.045 + 1e-9)
+    // The class bound IS the geometry (2026-08-27, generalizing ruling 1b's
+    // 0.025): at a-inner the sum may spend exactly what sits between the
+    // band floor and the quiet reference, minus the 0.125 quiet floor. The
+    // frozen default (floor 1.05, quiet_r 0.90) prices 0.025 byte-for-byte;
+    // the a42g trial (1.00, 0.80) prices 0.075. The pinch check caps
+    // independently through bandBoundary's beacon-sum accounting.
+    var classBound = dringAt ? (p.bands[0].lo.fixed - pl.quiet_r - 0.125) : 0;
+    if (dringAt && beaconSum > classBound + 1e-9)
+      errors.push("D-ring amplitude sum " + beaconSum.toFixed(3) + " exceeds the geometry-priced class " +
+                  classBound.toFixed(3) + " (floor " + p.bands[0].lo.fixed + " − quiet_r " + pl.quiet_r + " − 0.125 quiet)");
+    else if (!dringAt && beaconSum > 0.045 + 1e-9)
       errors.push("beacon amplitude sum " + beaconSum.toFixed(3) + " exceeds the ring-gap bound 0.045");
     else if (!dringAt && beaconSum > 0.030 + 1e-9)
       warnings.push("beacon amplitude sum " + beaconSum.toFixed(3) + " above 0.030 — quiet-zone margin thins");
@@ -578,8 +586,14 @@
     p.beacon.harmonics = [1, 2, 3];
     p.beacon.amplitudes = [0.010, 0.008, 0.007];
     p.beacon.phases_deg = [0, 45, 90];
+    // Geometry rides the same reset rule as the amplitude lists: every branch
+    // restores the frozen defaults FIRST, so toggling codes on a live profile
+    // can never carry a previous trial's geometry (T22w's stale-split trap,
+    // one level up).
+    if (p.bands && p.bands[0] && p.bands[0].lo) p.bands[0].lo.fixed = 1.05;
+    if (p.plate) p.plate.quiet_r = 0.90;
     if (code === "c42" || code === "c82" || code === "a42" || code === "a82" ||
-        code === "a42r" || code === "a42x") {
+        code === "a42r" || code === "a42x" || code === "a42g") {
       p.beacon.framing = "chunked";
       p.beacon.rotation.M = (code === "c82" || code === "a82") ? 8 : 4;
       p.beacon.rotation.gray = true;
@@ -596,6 +610,16 @@
         p.beacon.harmonics = [1, 2, 3, 5];
         p.beacon.amplitudes = [0.004, 0.004, 0.005, 0.012];
         p.beacon.phases_deg = [0, 45, 90, 135];
+      } else if (code === "a42g") {
+        // THE GEOMETRY TRIAL (2026-08-27; the QR retired emit-side, freeze-0
+        // era): the ring moves IN and the class rises to what the geometry
+        // prices — quiet_r 0.80 (the breaker's own outer edge; containment
+        // holds exactly), floor 1.00, class 0.075 split k3-heavy per F5b.
+        // Quiet width lands ON the 0.125 floor and band A's pinch stays at
+        // the frozen 0.255 exactly; no data edge moves, ledgers survive.
+        p.bands[0].lo.fixed = 1.00;
+        p.plate.quiet_r = 0.80;
+        p.beacon.amplitudes = [0.012, 0.018, 0.045];
       }
     } else {
       delete p.beacon.framing;
