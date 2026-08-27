@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- single-file build 2026-08-24 — regenerate with build_standalone.py -->
+<!-- single-file build 2026-08-26 — regenerate with build_standalone.py -->
 
 <html lang="en">
 <head>
@@ -7044,9 +7044,28 @@
             pF = ff; pPhi = track.phi[ff];
           }
           var carrierRatio = stepN ? round3((stepSum / stepN) / nomStep) : null;
-          if (onset === null && a.rotation.M <= 4)
+          // Early-verdict rows carry the same per-harmonic receipt as the
+          // no-lock row: STRONG harmonics on a slow track = the emitter's
+          // pacing; ABSENT harmonics = the channel never reached the camera
+          // (range floor / wrong placement) — a bare static verdict cannot
+          // say which, and the first a42r retry take needed exactly that.
+          var sigmaEV = averageNoise(seriesX, a, kmax, transform);
+          var snrEV = {};
+          a.boundary.harmonics.forEach(function (kEV) {
+            snrEV[kEV] = round1(20 * Math.log10((track.meanMag[kEV] || 1e-9) / (sigmaEV + 1e-9)));
+          });
+          // Beacon rows NEVER take the early static/clock verdicts: a window
+          // straddling the countdown carries a legitimately static prefix
+          // (the D-ring HOLDS through the countdown face by design), reads a
+          // low mean carrier, and the early return would starve the chunk
+          // sweep — the a42r retry take sealed over its full span while every
+          // harvest window static-verdicted and banked nothing. The stalled-
+          // emitter verdict belongs to annulus 0 (a stalled canvas stalls ALL
+          // annuli); the beacon falls through to alignment + sweep, and the
+          // row keeps carrier + snr as its receipt.
+          if (onset === null && a.rotation.M <= 4 && !a.beacon)
             return { annulus: a.index, layer: a.layer, present: true, contrast: round3(meanContrast), validFrames: valid,
-                     carrierRatio: carrierRatio,
+                     carrierRatio: carrierRatio, snr_db: snrEV,
                      error: "STATIC PATTERN — no motion onset in the whole capture (" + (carrierRatio !== null ? carrierRatio + "× expected" : "no track") + "). The emitter's rendering was stalled: re-film with the rings visibly turning; keep the emitter window focused, plugged in, Fullscreen." };
           // Gate only on low-M annuli (M ≤ 4): a stalled canvas stalls ALL annuli,
           // so annulus 0's verdict covers the emission; higher-M rows report only.
@@ -7055,13 +7074,13 @@
           var swayHint = tearX && valid && (tearX.slipSuspect > valid * 0.2 || tearX.torn > valid * 0.1)
             ? " OR this is a sway-degraded handheld capture (tear/slip diagnostics are heavy) — steady the phone or add light and re-film."
             : "";
-          if (carrierRatio !== null && a.rotation.M <= 4 && Math.abs(carrierRatio) < 0.4)
+          if (carrierRatio !== null && a.rotation.M <= 4 && Math.abs(carrierRatio) < 0.4 && !a.beacon)
             return { annulus: a.index, layer: a.layer, present: true, contrast: round3(meanContrast), validFrames: valid,
-                     carrierRatio: carrierRatio, tear: tearBrief(tearX),
+                     carrierRatio: carrierRatio, tear: tearBrief(tearX), snr_db: snrEV,
                      error: "STATIC PATTERN — annulus present but not rotating (" + carrierRatio + "× expected). The emitter's rendering was stalled (browser throttling / battery saver): re-film with the emitter animating; keep its window focused, plug in power, use Fullscreen." + swayHint };
-          if (carrierRatio !== null && a.rotation.M <= 4 && (carrierRatio < 0.4 || carrierRatio > 1.8))
+          if (carrierRatio !== null && a.rotation.M <= 4 && (carrierRatio < 0.4 || carrierRatio > 1.8) && !a.beacon)
             return { annulus: a.index, layer: a.layer, present: true, contrast: round3(meanContrast), validFrames: valid,
-                     carrierRatio: carrierRatio,
+                     carrierRatio: carrierRatio, snr_db: snrEV,
                      error: "CLOCK MISMATCH — rotation at " + carrierRatio + "× expected. Emitter stalling intermittently, or capture fps ≠ profile fps." };
 
           if (T) T.track += tnow() - tT;
@@ -7126,9 +7145,19 @@
             // droplet pattern applied to the control plane. Sub-seal evidence:
             // the row stays a no-lock row; only the assembled CRC16 ever binds.
             var sweep = a.beacon ? dep("plate").beaconChunkSweep(track, a, profile, syncBase) : null;
+            // The no-lock row keeps its per-harmonic receipt (mag/sigma dB per
+            // tracked k, same figure as the locked path): the measured SHAPE
+            // identifies the emitted amp split from the clip alone, and the
+            // absolute level separates a STARVED channel from a WRONG CLOCK —
+            // the two readings of a low carrier that need different fixes.
+            var sigmaNL = averageNoise(seriesX, a, kmax, transform);
+            var snrNL = {};
+            a.boundary.harmonics.forEach(function (kNL) {
+              snrNL[kNL] = round1(20 * Math.log10((track.meanMag[kNL] || 1e-9) / (sigmaNL + 1e-9)));
+            });
             return { annulus: a.index, layer: a.layer, beacon: a.beacon || undefined,
                      present: true, contrast: round3(meanContrast), validFrames: valid,
-                     carrierRatio: carrierRatio, tear: tearBrief(tearX),
+                     carrierRatio: carrierRatio, tear: tearBrief(tearX), snr_db: snrNL,
                      chunkSweep: sweep && sweep.passes ? sweep.chunks : undefined,
                      chunkSweepPasses: sweep ? sweep.passes : undefined,
                      tagSeen: sweep && sweep.tagSeen != null ? ("0000" + (sweep.tagSeen >>> 0).toString(16)).slice(-4) : undefined,
@@ -7180,9 +7209,14 @@
             // return where the sweep lives, and T22v's middle window lost its
             // two chunks to exactly that — the bank then never assembled.
             var sweepB = (!env && !align.tagConfirmed) ? plateB.beaconChunkSweep(track, a, profile, syncBase) : null;
+            var sigmaBk = averageNoise(seriesX, a, kmax, transform);
+            var snrBk = {};
+            a.boundary.harmonics.forEach(function (kBk) {
+              snrBk[kBk] = round1(20 * Math.log10((track.meanMag[kBk] || 1e-9) / (sigmaBk + 1e-9)));
+            });
             return {
               annulus: a.index, layer: a.layer, present: true, beacon: true,
-              contrast: round3(meanContrast), validFrames: valid,
+              contrast: round3(meanContrast), validFrames: valid, snr_db: snrBk,
               carrierRatio: carrierRatio, alignMethod: align.method || "preamble",
               alignOffset: align.offset, alignLag: align.lag,
               framing: align.framing || "frame",
