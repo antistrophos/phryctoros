@@ -279,6 +279,27 @@
     return (wIn * (1 - q) + (1 - wIn) * q) * covDisc;
   }
 
+  /* v4 clause 2′ (practitioner's proposal, 2026-08-27): the CENTER quadrant
+     target — three radial sections (one more than the corners = the
+     detector's discriminator), polarities alternating inner/middle/outer =
+     inverted/normal/inverted. The DESIGNATED tile carries the VARIANT
+     (every section flipped): identity by SHAPE, not position — the breaker's
+     count asymmetry retires into it. Same analytic construction as the
+     corner mark: half-plane ramps make a soft saddle, section membership
+     blends by two swap radii at R/3 and 2R/3. The saddle center is
+     projectively exact — the sampler origin the whole plate leans on. */
+  function quadrant3Cov(dx, dy, rr, R, scale, soft, variant) {
+    var covDisc = clamp01((R - rr) * scale / soft + 0.5);
+    if (covDisc <= 0) return 0;
+    var sx = clamp01(dx * scale / soft + 0.5), sy = clamp01(dy * scale / soft + 0.5);
+    var q = sx * sy + (1 - sx) * (1 - sy);
+    var w1 = clamp01((R / 3 - rr) * scale / soft + 0.5);
+    var w2 = clamp01((2 * R / 3 - rr) * scale / soft + 0.5);
+    var inv = w1 + (1 - w2);            // 1 in the inner and outer sections, 0 in the middle
+    if (variant) inv = 1 - inv;         // the designated tile's flip
+    return (inv * (1 - q) + (1 - inv) * q) * covDisc;
+  }
+
   /* ——— Fast-render tables (opt-in: opts.fast) ———
      The analytic renderer costs one atan2 plus ~12 cos() per BAND pixel —
      ~8M transcendental calls per 1024² frame, measured at 85% of video-export
@@ -440,6 +461,7 @@
     // bit-identical while shedding most of its per-pixel overhead.
     var quietLim = pl.quiet_r + pad;
     var centerRout = pl.center.r_out;
+    var centerQ3 = pl.center_style === "quadrant3";
     var brIn = pl.breaker.r_in, brOut = pl.breaker.r_out;
     var reach = brBeacon ? brBeacon.sum : 0;
     var brLoLim = brIn - reach - pad, brHiLim = brOut + reach + pad;
@@ -473,6 +495,11 @@
               var my = Math.floor((y + qrHalf) / qrModU); if (my >= qrN) my = qrN - 1;
               if (qrm[my * qrN + mx]) v = qrDark;
             }
+          } else if (centerQ3) {
+            // clause 2′: the three-section center target replaces bullseye AND
+            // breaker; the 1-up plate is tile 0 = the designated VARIANT
+            var covQ = quadrant3Cov(x, y, r, centerRout, scale, soft, true);
+            if (covQ > 0) v = bg + (shade - bg) * covQ;
           } else {
             var cov = bullseyeCov(r, centerRout, scale, soft);
             var loB = brIn, hiBk = brOut;
@@ -678,6 +705,11 @@
                 var my = Math.floor((y + qrHalf) / qrModU); if (my >= qrN) my = qrN - 1;
                 if (qrm[my * qrN + mx]) v = profile.qr.dark;
               }
+            } else if (pl.center_style === "quadrant3") {
+              // clause 2′: identity by shape — tile 0 carries the VARIANT,
+              // every other tile the plain target; no breaker anywhere
+              var covQ3 = quadrant3Cov(x, y, r, pl.center.r_out, scale, soft, t === 0);
+              if (covQ3 > 0) v = bg + (shade - bg) * covQ3;
             } else {
               var cov = bullseyeCov(r, pl.center.r_out, scale, soft);
               if (t === 0) {

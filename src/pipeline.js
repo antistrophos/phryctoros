@@ -203,13 +203,44 @@
     // tile index matters exactly twice: the assemble seed, and the pool.
     var tileOf = null, designatedIdx = -1;
     var tilesN = profile.plate ? (profile.tiling || 1) : 1;
+    // clause 2′ (center_style quadrant3): the designated tile is read from its
+    // center target's VARIANT — identity by shape, per plate, no breaker. The
+    // middle section's polarity flips on the designated tile: sample the four
+    // quadrant mid-angles at two radii inside [R/3, 2R/3]; plain reads
+    // dark-where-dx·dy>0, the variant reads the opposite.
+    var readCenterVariant = function (imgV, H) {
+      var gV = dep("geom");
+      var R3 = profile.plate.center.r_out;
+      var score = 0, n = 0;
+      var rads = [0.42 * R3, 0.55 * R3];
+      for (var qi = 0; qi < 4; qi++) {
+        var ang = Math.PI / 4 + qi * Math.PI / 2;
+        var sgn = (qi % 2 === 0) ? -1 : 1;   // dx·dy>0 quadrants are DARK on the plain target
+        for (var ri3 = 0; ri3 < rads.length; ri3++) {
+          var pt = gV.applyH(H, rads[ri3] * Math.cos(ang), rads[ri3] * Math.sin(ang));
+          var xi = Math.round(pt[0]), yi = Math.round(pt[1]);
+          if (xi < 0 || yi < 0 || xi >= imgV.w || yi >= imgV.h) return null;
+          score += sgn * imgV.data[yi * imgV.w + xi];
+          n++;
+        }
+      }
+      score /= (n / 2) * (imgV.norm || 1);   // mean(light-class) − mean(dark-class), normalized
+      if (score > 0.05) return "plain";
+      if (score < -0.05) return "variant";
+      return null;
+    };
     if (tilesN > 1 && emitters.length) {
       var plateT = dep("plate");
       var imgT = opts.registerOn || groups[regFrame].imgs[0];
       tileOf = emitters.map(function () { return -1; });
+      var q3T = profile.plate.center_style === "quadrant3";
       for (var de = 0; de < emitters.length; de++) {
-        var bT = plateT.findBullseye(imgT, emitters[de].H, 0, 0, profile.plate.center.r_out, { breaker: profile.plate.breaker });
-        if (bT && bT.breaker && designatedIdx < 0) designatedIdx = de;
+        if (q3T) {
+          if (readCenterVariant(imgT, emitters[de].H) === "variant" && designatedIdx < 0) designatedIdx = de;
+        } else {
+          var bT = plateT.findBullseye(imgT, emitters[de].H, 0, 0, profile.plate.center.r_out, { breaker: profile.plate.breaker });
+          if (bT && bT.breaker && designatedIdx < 0) designatedIdx = de;
+        }
       }
       if (designatedIdx >= 0) {
         var gT = dep("geom");

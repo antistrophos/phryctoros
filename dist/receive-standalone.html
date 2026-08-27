@@ -41,7 +41,7 @@
   <label>handheld <input id="m_hand" type="checkbox" checked></label>
   <label>emitter loop (s) <input id="m_loop" type="number" value="60" style="width:4rem"></label>
   <label>profile <select id="m_prof"><option value="v2">v2 (current)</option><option value="v2p">v2 + payload (Phase 1)</option><option value="v3">v3.1 resilient (paced standard; payload; film at 60 fps)</option><option value="v3hr">v3.1 high-rate (paced; payload; film at 60 fps)</option><option value="v3f">V3 FLAT (legacy: flat F, pre-ruling clips)</option><option value="v3hrf">V3 high-rate FLAT (legacy)</option><option value="v3c">V3 CLASSIC ladder (legacy: base outermost, pre-2026-08-21 clips)</option><option value="v3a">V3 auto-detect preset (payload)</option></select></label>
-  <label id="v3opts" style="display:none"><input id="m_solve" type="checkbox" checked> plate solve <input id="m_beacon" type="checkbox" checked> beacon <input id="m_quad" type="checkbox"> quadrant corners (v3.1) <input id="m_qrp" type="checkbox"> persistent QR (diagnostic) D-ring <select id="m_dring"><option value="f24">v0 M=2/F=4</option><option value="c42">chunked M=4/F=2 (trial)</option><option value="c82">chunked M=8/F=2 (A/B)</option><option value="a42">A-inner M=4/F=2 (1b)</option><option value="a42r">A-inner re-split (amp trial)</option><option value="a42x">A-inner k5 ladder (amp trial)</option><option value="a42g">a42g geometry trial (floor 1.00, class 0.075)</option><option value="a82">A-inner M=8/F=2 (1b+A/B)</option></select></label>
+  <label id="v3opts" style="display:none"><input id="m_solve" type="checkbox" checked> plate solve <input id="m_beacon" type="checkbox" checked> beacon <input id="m_quad" type="checkbox"> quadrant corners (v3.1) <input id="m_qrp" type="checkbox"> persistent QR (diagnostic) D-ring <select id="m_dring"><option value="f24">v0 M=2/F=4</option><option value="c42">chunked M=4/F=2 (trial)</option><option value="c82">chunked M=8/F=2 (A/B)</option><option value="a42">A-inner M=4/F=2 (1b)</option><option value="a42r">A-inner re-split (amp trial)</option><option value="a42x">A-inner k5 ladder (amp trial)</option><option value="a42g">a42g geometry trial (floor 1.00, class 0.075)</option><option value="a42q">a42q center revision (quadrant3 + variant)</option><option value="a82">A-inner M=8/F=2 (1b+A/B)</option></select></label>
   <label>capture fps <select id="m_capfps"><option value="30">30</option><option value="60">60</option></select></label>
   <label>notes <input id="m_notes" style="width:12rem"></label>
 </fieldset>
@@ -845,6 +845,24 @@
       errors.push("plate.corner_style must be \"bullseye\" (frozen v3) or \"quadrant\" (v3.1 amendment 2)");
     if (cstyle === "quadrant")
       warnings.push("corner_style quadrant is the v3.1 amendment-2 mark — pending the full v3.1 freeze; the frozen v3 contract's corners are bullseyes");
+    // v4 clause 2′ trial: the CENTER becomes a three-section quadrant target
+    // and the breaker retires into it (identity = the designated VARIANT).
+    // Requires the a-inner beacon (the breaker was the beacon's carrier
+    // otherwise), freeze 0 (no countdown face exists to match means against),
+    // and quadrant corners (the saddle-detector world).
+    var ctr = pl.center_style || "bullseye";
+    if (ctr !== "bullseye" && ctr !== "quadrant3")
+      errors.push("plate.center_style must be \"bullseye\" (frozen v3) or \"quadrant3\" (v4 clause 2′ trial)");
+    if (ctr === "quadrant3") {
+      if (p.beacon.placement !== "a-inner")
+        errors.push("center_style quadrant3 requires beacon.placement \"a-inner\" — the breaker (retired by the target) was the beacon's carrier otherwise");
+      if (!p.countdown || p.countdown.freeze_s !== 0)
+        errors.push("center_style quadrant3 requires freeze_s 0 — no countdown face exists over the target (the matched-mean rule has nothing to govern)");
+      if (cstyle !== "quadrant")
+        errors.push("center_style quadrant3 requires corner_style quadrant (saddle-first registration carries the plate)");
+      if (pl.center.r_out + 0.10 > pl.quiet_r + 1e-9)
+        errors.push("center target " + pl.center.r_out + " + 0.10 moat exceeds quiet_r " + pl.quiet_r);
+    }
     // D-ring ruling 1b: with placement "a-inner" the control betas ride band
     // A's inner boundary and the BREAKER RENDERS STATIC (it stays one
     // generation as the derived-identity degrade rung, retiring at v4) — so
@@ -853,10 +871,14 @@
     // 0.90). At the frozen default everything reads exactly as before.
     var dringAt = p.beacon.placement === "a-inner";
     var brExc = dringAt ? 0 : beaconSum;
-    if (pl.center.r_out + 0.02 > pl.breaker.r_in - brExc)
-      errors.push("beacon excursion erodes the center-bullseye/breaker gap (0.60→0.70 must hold at worst wiggle)");
-    if (pl.breaker.r_out + brExc > pl.quiet_r)
-      errors.push("breaker + beacon excursion " + (pl.breaker.r_out + brExc).toFixed(3) + " exceeds the donut budget " + pl.quiet_r);
+    if (ctr !== "quadrant3") {
+      // the breaker exists only under the bullseye center — quadrant3 retired
+      // it into the target (its containment is the target-moat check above)
+      if (pl.center.r_out + 0.02 > pl.breaker.r_in - brExc)
+        errors.push("beacon excursion erodes the center-bullseye/breaker gap (0.60→0.70 must hold at worst wiggle)");
+      if (pl.breaker.r_out + brExc > pl.quiet_r)
+        errors.push("breaker + beacon excursion " + (pl.breaker.r_out + brExc).toFixed(3) + " exceeds the donut budget " + pl.quiet_r);
+    }
     var innermostLo = bandBoundary(p, p.bands[0].lo);
     var quietFloor = dringAt ? 0.125 : 0.15;
     if (pl.quiet_r + quietFloor > innermostLo.r0 - innermostLo.sum + 1e-9)
@@ -968,9 +990,9 @@
     // can never carry a previous trial's geometry (T22w's stale-split trap,
     // one level up).
     if (p.bands && p.bands[0] && p.bands[0].lo) p.bands[0].lo.fixed = 1.05;
-    if (p.plate) p.plate.quiet_r = 0.90;
+    if (p.plate) { p.plate.quiet_r = 0.90; p.plate.center_style = "bullseye"; }
     if (code === "c42" || code === "c82" || code === "a42" || code === "a82" ||
-        code === "a42r" || code === "a42x" || code === "a42g") {
+        code === "a42r" || code === "a42x" || code === "a42g" || code === "a42q") {
       p.beacon.framing = "chunked";
       p.beacon.rotation.M = (code === "c82" || code === "a82") ? 8 : 4;
       p.beacon.rotation.gray = true;
@@ -996,6 +1018,16 @@
         // the frozen 0.255 exactly; no data edge moves, ledgers survive.
         p.bands[0].lo.fixed = 1.00;
         p.plate.quiet_r = 0.80;
+        p.beacon.amplitudes = [0.012, 0.018, 0.045];
+      } else if (code === "a42q") {
+        // THE CENTER REVISION (v4 clause 2′, practitioner's proposal): a42g's
+        // proven geometry + the three-section quadrant center — bullseye and
+        // breaker retire into the target, the designated tile carries the
+        // VARIANT (identity by shape; the count asymmetry ends). One new
+        // variable against a42g. Requires freeze 0 (validator enforces).
+        p.bands[0].lo.fixed = 1.00;
+        p.plate.quiet_r = 0.80;
+        p.plate.center_style = "quadrant3";
         p.beacon.amplitudes = [0.012, 0.018, 0.045];
       }
     } else {
@@ -1297,6 +1329,27 @@
     return (wIn * (1 - q) + (1 - wIn) * q) * covDisc;
   }
 
+  /* v4 clause 2′ (practitioner's proposal, 2026-08-27): the CENTER quadrant
+     target — three radial sections (one more than the corners = the
+     detector's discriminator), polarities alternating inner/middle/outer =
+     inverted/normal/inverted. The DESIGNATED tile carries the VARIANT
+     (every section flipped): identity by SHAPE, not position — the breaker's
+     count asymmetry retires into it. Same analytic construction as the
+     corner mark: half-plane ramps make a soft saddle, section membership
+     blends by two swap radii at R/3 and 2R/3. The saddle center is
+     projectively exact — the sampler origin the whole plate leans on. */
+  function quadrant3Cov(dx, dy, rr, R, scale, soft, variant) {
+    var covDisc = clamp01((R - rr) * scale / soft + 0.5);
+    if (covDisc <= 0) return 0;
+    var sx = clamp01(dx * scale / soft + 0.5), sy = clamp01(dy * scale / soft + 0.5);
+    var q = sx * sy + (1 - sx) * (1 - sy);
+    var w1 = clamp01((R / 3 - rr) * scale / soft + 0.5);
+    var w2 = clamp01((2 * R / 3 - rr) * scale / soft + 0.5);
+    var inv = w1 + (1 - w2);            // 1 in the inner and outer sections, 0 in the middle
+    if (variant) inv = 1 - inv;         // the designated tile's flip
+    return (inv * (1 - q) + (1 - inv) * q) * covDisc;
+  }
+
   /* ——— Fast-render tables (opt-in: opts.fast) ———
      The analytic renderer costs one atan2 plus ~12 cos() per BAND pixel —
      ~8M transcendental calls per 1024² frame, measured at 85% of video-export
@@ -1458,6 +1511,7 @@
     // bit-identical while shedding most of its per-pixel overhead.
     var quietLim = pl.quiet_r + pad;
     var centerRout = pl.center.r_out;
+    var centerQ3 = pl.center_style === "quadrant3";
     var brIn = pl.breaker.r_in, brOut = pl.breaker.r_out;
     var reach = brBeacon ? brBeacon.sum : 0;
     var brLoLim = brIn - reach - pad, brHiLim = brOut + reach + pad;
@@ -1491,6 +1545,11 @@
               var my = Math.floor((y + qrHalf) / qrModU); if (my >= qrN) my = qrN - 1;
               if (qrm[my * qrN + mx]) v = qrDark;
             }
+          } else if (centerQ3) {
+            // clause 2′: the three-section center target replaces bullseye AND
+            // breaker; the 1-up plate is tile 0 = the designated VARIANT
+            var covQ = quadrant3Cov(x, y, r, centerRout, scale, soft, true);
+            if (covQ > 0) v = bg + (shade - bg) * covQ;
           } else {
             var cov = bullseyeCov(r, centerRout, scale, soft);
             var loB = brIn, hiBk = brOut;
@@ -1696,6 +1755,11 @@
                 var my = Math.floor((y + qrHalf) / qrModU); if (my >= qrN) my = qrN - 1;
                 if (qrm[my * qrN + mx]) v = profile.qr.dark;
               }
+            } else if (pl.center_style === "quadrant3") {
+              // clause 2′: identity by shape — tile 0 carries the VARIANT,
+              // every other tile the plain target; no breaker anywhere
+              var covQ3 = quadrant3Cov(x, y, r, pl.center.r_out, scale, soft, t === 0);
+              if (covQ3 > 0) v = bg + (shade - bg) * covQ3;
             } else {
               var cov = bullseyeCov(r, pl.center.r_out, scale, soft);
               if (t === 0) {
@@ -6987,13 +7051,44 @@
     // tile index matters exactly twice: the assemble seed, and the pool.
     var tileOf = null, designatedIdx = -1;
     var tilesN = profile.plate ? (profile.tiling || 1) : 1;
+    // clause 2′ (center_style quadrant3): the designated tile is read from its
+    // center target's VARIANT — identity by shape, per plate, no breaker. The
+    // middle section's polarity flips on the designated tile: sample the four
+    // quadrant mid-angles at two radii inside [R/3, 2R/3]; plain reads
+    // dark-where-dx·dy>0, the variant reads the opposite.
+    var readCenterVariant = function (imgV, H) {
+      var gV = dep("geom");
+      var R3 = profile.plate.center.r_out;
+      var score = 0, n = 0;
+      var rads = [0.42 * R3, 0.55 * R3];
+      for (var qi = 0; qi < 4; qi++) {
+        var ang = Math.PI / 4 + qi * Math.PI / 2;
+        var sgn = (qi % 2 === 0) ? -1 : 1;   // dx·dy>0 quadrants are DARK on the plain target
+        for (var ri3 = 0; ri3 < rads.length; ri3++) {
+          var pt = gV.applyH(H, rads[ri3] * Math.cos(ang), rads[ri3] * Math.sin(ang));
+          var xi = Math.round(pt[0]), yi = Math.round(pt[1]);
+          if (xi < 0 || yi < 0 || xi >= imgV.w || yi >= imgV.h) return null;
+          score += sgn * imgV.data[yi * imgV.w + xi];
+          n++;
+        }
+      }
+      score /= (n / 2) * (imgV.norm || 1);   // mean(light-class) − mean(dark-class), normalized
+      if (score > 0.05) return "plain";
+      if (score < -0.05) return "variant";
+      return null;
+    };
     if (tilesN > 1 && emitters.length) {
       var plateT = dep("plate");
       var imgT = opts.registerOn || groups[regFrame].imgs[0];
       tileOf = emitters.map(function () { return -1; });
+      var q3T = profile.plate.center_style === "quadrant3";
       for (var de = 0; de < emitters.length; de++) {
-        var bT = plateT.findBullseye(imgT, emitters[de].H, 0, 0, profile.plate.center.r_out, { breaker: profile.plate.breaker });
-        if (bT && bT.breaker && designatedIdx < 0) designatedIdx = de;
+        if (q3T) {
+          if (readCenterVariant(imgT, emitters[de].H) === "variant" && designatedIdx < 0) designatedIdx = de;
+        } else {
+          var bT = plateT.findBullseye(imgT, emitters[de].H, 0, 0, profile.plate.center.r_out, { breaker: profile.plate.breaker });
+          if (bT && bT.breaker && designatedIdx < 0) designatedIdx = de;
+        }
       }
       if (designatedIdx >= 0) {
         var gT = dep("geom");
@@ -8548,15 +8643,16 @@ function ocApplySettings(str) {
   if (kv.loop) $("m_loop").value = kv.loop;
   if ($("m_quad")) $("m_quad").checked = kv.quad === "1";
   if ($("m_qrp")) $("m_qrp").checked = kv.qrp === "1";
-  if ($("m_dring")) $("m_dring").value = ["c42", "c82", "a42", "a42r", "a42x", "a42g", "a82"].indexOf(kv.dring) >= 0 ? kv.dring : "f24";
+  if ($("m_dring")) $("m_dring").value = ["c42", "c82", "a42", "a42r", "a42x", "a42g", "a42q", "a82"].indexOf(kv.dring) >= 0 ? kv.dring : "f24";
   window.ocTiling = Math.max(1, +kv.tiling || 1);   // the declared lattice, applied in v31Opts
   const bits = [target, "capture " + (kv.capfps || "?") + " fps", (kv.tiling || "1") + "-up emitter"];
   if (kv.quad === "1") bits.push("quadrant corners");
   if (kv.qrp === "1") bits.push("persistent QR");
-  if (["c42", "c82", "a42", "a42r", "a42x", "a42g", "a82"].indexOf(kv.dring) >= 0)
+  if (["c42", "c82", "a42", "a42r", "a42x", "a42g", "a42q", "a82"].indexOf(kv.dring) >= 0)
     bits.push("D-ring " + (kv.dring[0] === "a" ? "A-INNER " : "") + "chunked " + (kv.dring[1] === "8" ? "M=8/F=2" : "M=4/F=2") +
       (kv.dring === "a42r" ? " · AMP RE-SPLIT" : kv.dring === "a42x" ? " · AMP k5 LADDER" :
-       kv.dring === "a42g" ? " · GEOMETRY TRIAL floor 1.00 class 0.075" : ""));
+       kv.dring === "a42g" ? " · GEOMETRY TRIAL floor 1.00 class 0.075" :
+       kv.dring === "a42q" ? " · CENTER REVISION quadrant3 + variant" : ""));
   const v3fam = kv.prof === "v3" || kv.prof === "v3hr" || kv.prof === "v3i" || kv.prof === "v3c" ||
                 kv.prof === "v3p" || kv.prof === "v3hrp" || kv.prof === "v3f";
   const warn = v3fam && !pay;

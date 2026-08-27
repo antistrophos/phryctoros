@@ -468,6 +468,24 @@
       errors.push("plate.corner_style must be \"bullseye\" (frozen v3) or \"quadrant\" (v3.1 amendment 2)");
     if (cstyle === "quadrant")
       warnings.push("corner_style quadrant is the v3.1 amendment-2 mark — pending the full v3.1 freeze; the frozen v3 contract's corners are bullseyes");
+    // v4 clause 2′ trial: the CENTER becomes a three-section quadrant target
+    // and the breaker retires into it (identity = the designated VARIANT).
+    // Requires the a-inner beacon (the breaker was the beacon's carrier
+    // otherwise), freeze 0 (no countdown face exists to match means against),
+    // and quadrant corners (the saddle-detector world).
+    var ctr = pl.center_style || "bullseye";
+    if (ctr !== "bullseye" && ctr !== "quadrant3")
+      errors.push("plate.center_style must be \"bullseye\" (frozen v3) or \"quadrant3\" (v4 clause 2′ trial)");
+    if (ctr === "quadrant3") {
+      if (p.beacon.placement !== "a-inner")
+        errors.push("center_style quadrant3 requires beacon.placement \"a-inner\" — the breaker (retired by the target) was the beacon's carrier otherwise");
+      if (!p.countdown || p.countdown.freeze_s !== 0)
+        errors.push("center_style quadrant3 requires freeze_s 0 — no countdown face exists over the target (the matched-mean rule has nothing to govern)");
+      if (cstyle !== "quadrant")
+        errors.push("center_style quadrant3 requires corner_style quadrant (saddle-first registration carries the plate)");
+      if (pl.center.r_out + 0.10 > pl.quiet_r + 1e-9)
+        errors.push("center target " + pl.center.r_out + " + 0.10 moat exceeds quiet_r " + pl.quiet_r);
+    }
     // D-ring ruling 1b: with placement "a-inner" the control betas ride band
     // A's inner boundary and the BREAKER RENDERS STATIC (it stays one
     // generation as the derived-identity degrade rung, retiring at v4) — so
@@ -476,10 +494,14 @@
     // 0.90). At the frozen default everything reads exactly as before.
     var dringAt = p.beacon.placement === "a-inner";
     var brExc = dringAt ? 0 : beaconSum;
-    if (pl.center.r_out + 0.02 > pl.breaker.r_in - brExc)
-      errors.push("beacon excursion erodes the center-bullseye/breaker gap (0.60→0.70 must hold at worst wiggle)");
-    if (pl.breaker.r_out + brExc > pl.quiet_r)
-      errors.push("breaker + beacon excursion " + (pl.breaker.r_out + brExc).toFixed(3) + " exceeds the donut budget " + pl.quiet_r);
+    if (ctr !== "quadrant3") {
+      // the breaker exists only under the bullseye center — quadrant3 retired
+      // it into the target (its containment is the target-moat check above)
+      if (pl.center.r_out + 0.02 > pl.breaker.r_in - brExc)
+        errors.push("beacon excursion erodes the center-bullseye/breaker gap (0.60→0.70 must hold at worst wiggle)");
+      if (pl.breaker.r_out + brExc > pl.quiet_r)
+        errors.push("breaker + beacon excursion " + (pl.breaker.r_out + brExc).toFixed(3) + " exceeds the donut budget " + pl.quiet_r);
+    }
     var innermostLo = bandBoundary(p, p.bands[0].lo);
     var quietFloor = dringAt ? 0.125 : 0.15;
     if (pl.quiet_r + quietFloor > innermostLo.r0 - innermostLo.sum + 1e-9)
@@ -591,9 +613,9 @@
     // can never carry a previous trial's geometry (T22w's stale-split trap,
     // one level up).
     if (p.bands && p.bands[0] && p.bands[0].lo) p.bands[0].lo.fixed = 1.05;
-    if (p.plate) p.plate.quiet_r = 0.90;
+    if (p.plate) { p.plate.quiet_r = 0.90; p.plate.center_style = "bullseye"; }
     if (code === "c42" || code === "c82" || code === "a42" || code === "a82" ||
-        code === "a42r" || code === "a42x" || code === "a42g") {
+        code === "a42r" || code === "a42x" || code === "a42g" || code === "a42q") {
       p.beacon.framing = "chunked";
       p.beacon.rotation.M = (code === "c82" || code === "a82") ? 8 : 4;
       p.beacon.rotation.gray = true;
@@ -619,6 +641,16 @@
         // the frozen 0.255 exactly; no data edge moves, ledgers survive.
         p.bands[0].lo.fixed = 1.00;
         p.plate.quiet_r = 0.80;
+        p.beacon.amplitudes = [0.012, 0.018, 0.045];
+      } else if (code === "a42q") {
+        // THE CENTER REVISION (v4 clause 2′, practitioner's proposal): a42g's
+        // proven geometry + the three-section quadrant center — bullseye and
+        // breaker retire into the target, the designated tile carries the
+        // VARIANT (identity by shape; the count asymmetry ends). One new
+        // variable against a42g. Requires freeze 0 (validator enforces).
+        p.bands[0].lo.fixed = 1.00;
+        p.plate.quiet_r = 0.80;
+        p.plate.center_style = "quadrant3";
         p.beacon.amplitudes = [0.012, 0.018, 0.045];
       }
     } else {

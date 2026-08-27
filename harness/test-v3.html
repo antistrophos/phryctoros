@@ -925,6 +925,80 @@ async function main() {
                     " sess " + (fG && (fG.session32 >>> 0).toString(16)) + (bG.error ? " ERR " + bG.error : "") : "no row: " + JSON.stringify(rG.error).slice(0, 80)));
   }
 
+  await tick("T22z: the center revision (a42q) — three-section quadrant center, identity by variant…");
+  {
+    // v4 clause 2′ (practitioner's proposal): bullseye AND breaker retire
+    // into one three-section quadrant target; the designated tile carries
+    // the VARIANT (every section flipped) — identity by shape, the count
+    // asymmetry ends. a42q = a42g's proven geometry + this one new variable.
+    const q3over = { countdown: { freeze_s: 0, loop_s: 60 }, plate: { corner_style: "quadrant" } };
+    // (a) validator: a42q at freeze 0 validates; at the default freeze it
+    //     REFUSES (no countdown face may exist over the target); toggling
+    //     back to a42 restores the bullseye center and the frozen geometry.
+    const pQ = OC.profile.profileV3(undefined, Object.assign({ session32: 0xA42C0001, render: { size_px: 448, scale_px_per_unit: 70 } }, q3over));
+    OC.profile.applyDring(pQ, "a42q");
+    const vQ = OC.profile.validate(pQ);
+    const pQf = OC.profile.profileV3(undefined, { plate: { corner_style: "quadrant" } });
+    OC.profile.applyDring(pQf, "a42q");
+    const vQf = OC.profile.validate(pQf);
+    const pQh = OC.profile.profileV3(undefined, q3over);
+    OC.profile.applyDring(pQh, "a42q");
+    OC.profile.applyDring(pQh, "a42");
+    const backQ = pQh.plate.center_style === "bullseye" && pQh.plate.quiet_r === 0.90 && pQh.bands[0].lo.fixed === 1.05;
+    const okA2 = !!(vQ.ok && pQ.plate.center_style === "quadrant3" && pQ.plate.quiet_r === 0.80 &&
+                    vQf.ok === false && vQf.errors.some(e => /freeze_s 0/.test(e)) && backQ);
+    // (b) the variant differs from the plain target on rendered pixels
+    const p2q = OC.profile.profileV3(undefined, Object.assign({ tiling: 2, session32: 0xA42C0002, render: { scale_px_per_unit: 50 } }, q3over));
+    OC.profile.applyDring(p2q, "a42q");
+    let seq2q = OC.emission.renderSequence(p2q, 2, {});
+    const f2q = seq2q.frames[0].img;
+    seq2q = null;
+    const pitchPx = (p2q.tile_pitch || 7.2) * 50;
+    const c0x = Math.round(0.5 * pitchPx), c1x = Math.round(1.5 * pitchPx), cy0 = Math.round(0.5 * pitchPx);
+    let dVar = 0, nVar = 0;
+    for (let dy = -20; dy <= 20; dy += 2) for (let dx = -20; dx <= 20; dx += 2) {
+      const a0v = f2q.data[(cy0 + dy) * f2q.w + (c0x + dx)];
+      const a1v = f2q.data[(cy0 + dy) * f2q.w + (c1x + dx)];
+      dVar += Math.abs(a0v - a1v); nVar++;
+    }
+    const okB2 = dVar / nVar > 0.02;  // tile-0 (variant) vs tile-1 (plain) centers differ
+    // (c) 1-up optical: the chunked envelope seals through the standard
+    //     chain with the new center (corners carry registration)
+    const infoQ = { K: 9, len: 17, pcrc: 0x7E57, capability: 1 };
+    const expTagQ = (() => { const e = OC.emission.envelopeBytes(pQ, infoQ); return ((e[18] << 8) | e[19]); })();
+    let seqQ = OC.emission.renderSequence(pQ, 500, { payloadInfo: infoQ });
+    let slQ = seqQ.frames.slice(50);
+    seqQ = null;
+    const rQ = OC.pipeline.decodeSequence(slQ, pQ, { beacon: true });
+    slQ = null;
+    const bQ = rQ.error ? null : rQ.emitters[0].annuli.find(a => a.beacon);
+    const fQ = bQ && bQ.envelopeFields;
+    const okC2 = !!(bQ && !bQ.error && bQ.alignMethod === "framed" && bQ.framing === "chunked" &&
+                    fQ && fQ.session32 === 0xA42C0001 && bQ.tag === expTagQ.toString(16).padStart(4, "0"));
+    // (d) 2-up: the designated tile is read from the VARIANT (no breaker
+    //     anywhere), announced identity agrees, and the pooled peel completes
+    const msgQ = "QCENT";
+    let seqD = OC.emission.renderSequence(p2q, 500, { payloadBytes: OC.fountain.textToBytes(msgQ) });
+    let slD = seqD.frames.slice(50);
+    seqD = null;
+    const rD = OC.pipeline.decodeSequence(slD, p2q, { payload: true, beacon: true });
+    slD = null;
+    const emsD = rD.error ? [] : rD.emitters;
+    const beaconRowsD = emsD.map(em => ({ derived: em.tile, row: em.annuli.find(a => a.beacon) }))
+                            .filter(x => x.row && x.row.envelopeFields);
+    const announcedD = beaconRowsD.map(x => x.row.envelopeFields.tile).sort().join(",");
+    const agreeD = beaconRowsD.every(x => x.row.envelopeFields.tile === x.derived);
+    const okD2 = !!(emsD.length === 2 && rD.designatedTile !== undefined && announcedD === "0,1" && agreeD &&
+                    rD.pooled && rD.pooled.ok === true && rD.pooled.text === msgQ);
+    record("T22z the center revision (a42q): validator admits the target only at freeze 0 and restores the bullseye on toggle, the designated VARIANT differs from the plain target on pixels, the chunked envelope seals through the standard chain with the new center, and a 2-up derives its designated tile from the variant with the pooled peel completing",
+      okA2 && okB2 && okC2 && okD2,
+      "(a) v(q3) " + vQ.ok + " v(freeze3) refused " + (vQf.ok === false) + " restores " + backQ +
+      " · (b) variant-vs-plain px " + (dVar / nVar).toFixed(3) +
+      " · (c) " + (bQ ? (bQ.alignMethod || "?") + "/" + bQ.framing + " tag " + bQ.tag + (bQ.error ? " ERR " + bQ.error : "") : "no row: " + JSON.stringify(rQ.error).slice(0, 60)) +
+      " · (d) emitters " + emsD.length + " designated " + rD.designatedTile + " announced [" + announcedD + "] agree " + agreeD +
+      " pooled " + JSON.stringify(rD.pooled && { ok: rD.pooled.ok, text: rD.pooled.text }));
+  }
+
   await tick("T22j: preset auto-detect — dual-geometry CRC vote on a high-rate emission…");
   {
     const pH = OC.profile.profileV3("high-rate");

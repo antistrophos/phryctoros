@@ -79,6 +79,7 @@
       <option value="a42r">a42r — A-inner amp re-split, k≥2-heavy [.005 .005 .015], sum 0.025 (+4.8 dB estimate)</option>
       <option value="a42x">a42x — A-inner amp ladder-climb, k=[1,2,3,5] w/ k5 0.012, sum 0.025 (+7.5 dB estimate)</option>
       <option value="a42g">a42g — THE GEOMETRY TRIAL: floor 1.00, quiet 0.80, class 0.075 k3-heavy (+14.5 dB estimate)</option>
+      <option value="a42q">a42q — THE CENTER REVISION: a42g + 3-section quadrant center, variant = identity (freeze must be OFF)</option>
       <option value="a82">a82 — D-ring @ A-inner, M=8/F=2 (1b + the rate A/B)</option>
     </select></label>
   </p>
@@ -424,6 +425,12 @@ function drawFrameV3(f) {
     const bsched = dringAt ? (layout.n > 1 && beaconSchedulesT ? beaconSchedulesT[t] : beaconSchedule) : null;
     const { pl, shade } = v3PlateBase(ctx, f, c.cx, c.cy, sched, bsched);
     pl0 = pl; shade0 = shade;
+    if (pl.center_style === "quadrant3") {
+      // clause 2′: the three-section center target — tile 0 = the VARIANT;
+      // no bullseye, no breaker
+      quadrant3Live(ctx, c.cx, c.cy, pl.center.r_out * scale, shade, t === 0);
+      return;
+    }
     bullseyeLive(ctx, c.cx, c.cy, pl.center.r_out * scale, shade, R.background);
     if (t === 0 && dringAt) {
       // ruling 1b: the control contour lives at band A's floor now (drawn in
@@ -469,6 +476,29 @@ function drawFrameV3(f) {
       for (let vr = 1; vr < layout.rows; vr++)
         plateMarkLive(ctx, vc * layout.pitch * scale, vr * layout.pitch * scale,
                       pl0.corners.r_out * scale, shade0, R.background, false);
+  }
+}
+
+/* clause 2′ live twin: three radial sections, quadrants alternating —
+   sections 0/2 inverted, section 1 normal (dark where dx·dy>0); the
+   designated VARIANT flips every section. Mirrors emission.quadrant3Cov. */
+function quadrant3Live(ctx, cx, cy, Rpx, shade, variant) {
+  ctx.fillStyle = gray(shade);
+  for (let s = 0; s < 3; s++) {
+    const r0 = s * Rpx / 3, r1 = (s + 1) * Rpx / 3;
+    const inverted = (s !== 1) !== !!variant;   // plain: inner/outer inverted; variant flips all
+    for (let qd = 0; qd < 4; qd++) {
+      // canvas frame matches the renderer's (y down): quadrant qd spans
+      // [qd·90°, (qd+1)·90°); dx·dy>0 in quadrants 0 and 2
+      const darkHere = inverted ? (qd % 2 === 1) : (qd % 2 === 0);
+      if (!darkHere) continue;
+      const a0 = qd * Math.PI / 2, a1 = (qd + 1) * Math.PI / 2;
+      ctx.beginPath();
+      ctx.arc(cx, cy, r1, a0, a1);
+      ctx.arc(cx, cy, r0, a1, a0, true);
+      ctx.closePath();
+      ctx.fill();
+    }
   }
 }
 
@@ -963,6 +993,7 @@ function ocRefreshMode() {
     (dr === "a42" ? "A-INNER chunked M=4/F=2 (1b)" : dr === "a82" ? "A-INNER chunked M=8/F=2 (1b+A/B)" :
      dr === "a42r" ? "A-INNER re-split k≥2-heavy (amp trial)" : dr === "a42x" ? "A-INNER k5 ladder (amp trial)" :
      dr === "a42g" ? "A-INNER GEOMETRY TRIAL floor 1.00 class 0.075" :
+     dr === "a42q" ? "A-INNER CENTER REVISION quadrant3 + variant identity" :
      dr === "c82" ? "chunked M=8/F=2 (A/B)" : "chunked M=4/F=2 (trial)"));
   bits.push("film at " + (rate === "15" ? "30" : "60") + " fps");
   const el = $("modeSummary");
