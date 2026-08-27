@@ -627,7 +627,14 @@ function loop(now) {
 function prepareV3() {
   const fps = profile.frame_rate_hz;
   profile.countdown.loop_s = Math.max(10, +$("loopSecs").value || 60);
-  profile.countdown.freeze_s = Math.max(1, Math.min(+$("cdSecs").value || 3, profile.countdown.loop_s - 1));
+  // The freeze checkbox is HONORED here (2026-08-27 — it never was on the v3
+  // path: unchecking silently kept max(1, cdSecs) while the carousel readout
+  // showed freeze-0 arithmetic — the readout and the air disagreed, the third
+  // member of the select/message rebind family). Unchecked = freeze_s 0 =
+  // the v4-preview trial: no countdown, no QR, rotation from frame 0.
+  profile.countdown.freeze_s = $("freezeChk").checked
+    ? Math.max(1, Math.min(+$("cdSecs").value || 3, profile.countdown.loop_s - 1))
+    : 0;
   profile.tiling = +$("tileSel").value || 1;
   profile.qr_persistent = $("qrPersChk").checked;
   profile.plate.corner_style = $("quadChk").checked ? "quadrant" : "bullseye";
@@ -874,7 +881,7 @@ function ocSettingsString() {
     "qrp=" + ($("qrPersChk").checked ? 1 : 0),
     "dring=" + ($("dringSel") ? $("dringSel").value : "f24"),
     "loop=" + (+$("loopSecs").value || 60),
-    "freeze=" + (+$("cdSecs").value || 3),
+    "freeze=" + ($("freezeChk").checked ? (+$("cdSecs").value || 3) : 0),
     "capfps=" + (rate === "15" ? 30 : 60)].join(" ");
 }
 /* CAROUSEL COVERAGE — the readout that makes loop length legible.

@@ -515,10 +515,17 @@
 
     // Countdown (§6): freeze ≥ 1 s is the optical-intrinsic floor (AF/AE settle
     // + motion-onset anchor); the envelope is the only movable function.
+    // EXACTLY 0 is the v4-preview trial (rulings 1+4 pulled forward
+    // 2026-08-27): no countdown, no QR ever rendered, rotation from frame 0,
+    // the loop is pure emission airtime — b[13]=0 self-describes it on the
+    // wire and mid-loop framing never needed the onset anchor. Values in
+    // (0, 1) stay illegal: a freeze too short to settle is worse than none.
     var cd = p.countdown;
-    if (!cd || !(cd.freeze_s >= 1))
-      errors.push("freeze_s under the 1 s floor (AF/AE settle + onset anchor are optical-intrinsic)");
-    else {
+    if (!cd || !(cd.freeze_s >= 1 || cd.freeze_s === 0))
+      errors.push("freeze_s must be ≥ 1 s (AF/AE settle + onset anchor) or exactly 0 (the v4-preview no-countdown trial)");
+    else if (cd.freeze_s === 0) {
+      if (!(cd.loop_s > 0)) errors.push("loop_s must be positive");
+    } else {
       if (!(cd.loop_s > cd.freeze_s)) errors.push("loop_s must exceed freeze_s");
       else if (cd.freeze_s / cd.loop_s > 0.10)
         warnings.push("freeze airtime " + Math.round(100 * cd.freeze_s / cd.loop_s) + "% over 10% — the envelope is an accelerant, not a tax");
@@ -529,7 +536,10 @@
     // loadable (it owns the QR module map); T22 re-checks on rendered pixels.
     var em = (global.OC && global.OC.emission) ||
              (typeof require !== "undefined" && typeof module !== "undefined" && module.exports ? require("./emission.js") : null);
-    if (em && em.centerMeans) {
+    if (cd && cd.freeze_s === 0) {
+      // no countdown face exists — there is no QR↔bullseye swap to keep
+      // AE-neutral; the matched-mean rule has nothing to govern.
+    } else if (em && em.centerMeans) {
       var mm = em.centerMeans(p);
       var dm = Math.abs(mm.steady - mm.countdown);
       if (dm > 0.05) errors.push("matched-mean: countdown center " + mm.countdown.toFixed(3) + " vs steady " + mm.steady.toFixed(3) + " differ by " + dm.toFixed(3) + " (> 0.05) — the swap will kick AE");

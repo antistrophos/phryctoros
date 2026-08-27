@@ -394,6 +394,39 @@ async function main() {
       " · tags tile0 " + ((e6a[18] << 8) | e6a[19]).toString(16) + " vs tile4 " + ((e6b[18] << 8) | e6b[19]).toString(16));
   }
 
+  await tick("T22e0: freeze 0 — the v4-preview trial (no countdown, no QR, rotation from frame 0)…");
+  {
+    // Rulings 1+4 pulled forward (2026-08-27): freeze_s === 0 is legal — the
+    // countdown face never exists, the QR is never rendered, and the whole
+    // loop is emission airtime. Values in (0,1) stay illegal: a freeze too
+    // short to settle is worse than none. b[13]=0 self-describes the trial
+    // on the wire; the receiver needs nothing (mid-loop framing never used
+    // the onset anchor, and sustained static now means genuine stall).
+    const p0 = OC.profile.profileV3(undefined, { countdown: { freeze_s: 0, loop_s: 60 } });
+    const v0 = OC.profile.validate(p0);
+    const pHalf = OC.profile.profileV3(undefined, { countdown: { freeze_s: 0.5, loop_s: 60 } });
+    const vHalf = OC.profile.validate(pHalf);
+    const fps0 = p0.frame_rate_hz, loopF0 = Math.round(60 * fps0);
+    let everFroze = false, effOk = true;
+    for (const f of [0, 1, 2, loopF0 - 1, loopF0, loopF0 + 1, loopF0 * 2 + 5]) {
+      const tl = OC.emission.timeline(p0, f);
+      if (tl.freeze) everFroze = true;
+      if (tl.eff !== f) effOk = false;   // no freeze ⟹ eff ≡ wall frame, seam-free
+    }
+    const env0 = OC.emission.envelopeBytes(p0, null);
+    let seq0 = OC.emission.renderSequence(p0, 5, {});
+    const fA = seq0.frames[0].img, fB = seq0.frames[2].img;
+    let diff = 0;
+    for (let i = 0; i < fA.data.length; i += 997) diff += Math.abs(fA.data[i] - fB.data[i]);
+    seq0 = null;
+    record("T22e0 freeze 0 (the v4-preview trial): the validator admits exactly 0 and refuses (0,1), the timeline never freezes and eff runs continuous through the loop boundary, b[13] declares 0, and frame 0 is already rotating",
+      !!(v0.ok && vHalf.ok === false && !everFroze && effOk && env0[13] === 0 && diff > 0),
+      "v(0) " + v0.ok + (v0.errors.length ? " [" + v0.errors[0].slice(0, 60) + "]" : "") +
+      " · v(0.5) refused " + (vHalf.ok === false) +
+      " · froze " + everFroze + " · eff≡wall " + effOk + " · b13 " + env0[13] +
+      " · frame0 motion " + (diff > 0 ? "yes" : "NO"));
+  }
+
   let v3seq = null, v3res = null, v3msg = null; // shared with the rung-2 tests below
   await tick("T22f: v3 optical round-trip (rings register the plate, 4 edges decode, pooled peel)…");
   {
