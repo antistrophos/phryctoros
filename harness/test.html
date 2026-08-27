@@ -970,7 +970,10 @@ async function main() {
         OC.fountain.subsetFor(seed, c, KL, ver).indexOf(0) >= 0;
       const mkStore = (provHexFlip) => {
         const st = HV.createStore(pL), ls = HV.leaseCreate({ graceWindows: 2 });
-        const fields = { session32: 0x33, K: KL, len: 9, pcrc: 0x55, tile: 0 };
+        // the REAL fingerprint (encodeCarousels exposes the wire crc16): the
+        // content key now arms the peel's full validation, so a stub pcrc
+        // would refuse even the honest peel — which is the gate doing its job
+        const fields = { session32: 0x33, K: KL, len: 9, pcrc: encL.wireCrc16, tile: 0 };
         // ledger: everything NOT touching block 0 → block 0 unrecoverable alone
         const rows = ringDrops.map((r, ri) => ({ annulus: pL.annuli[ri].index,
           alignLag: 4, alignOffset: 0,
@@ -1073,6 +1076,54 @@ async function main() {
         " session " + (gCtx && (gCtx.session32 >>> 0).toString(16)) +
         " · w3 " + JSON.stringify(g3.events.map(e => e.ev)));
     }
+  }
+
+  await tick("TH8: the liar and the gate — a chance-passed droplet must not print…");
+  {
+    // The a42g field specimen (2026-08-27): two garbage droplets that
+    // chance-passed CRC8 (the priced 1/256 residual) peeled into a corrupted
+    // payload that PRINTED AS VALID, because 48-bit droplets hold 5 data
+    // bytes, the header carries only the pcrc's HIGH byte, and assemble's
+    // validation required pcrcBits === 16 — no v3-family profile ever
+    // validated content. The gate now has an 8-bit branch (header high byte)
+    // and an expectPcrc16 option (the content key's full fingerprint, wired
+    // by tryPeelStore).
+    const pL8 = OC.profile.profileV3("high-rate", {});
+    const msg8 = "THE GATE MUST HOLD THE LIAR OUT OF THE PRINT";
+    const enc8 = OC.fountain.encodeCarousels(pL8, OC.fountain.textToBytes(msg8));
+    const mkRings = () => pL8.annuli.map((a, ri) => {
+      // raw carousel symbols are the DATA stream — collect's j = i + lag is
+      // emission-absolute, so the lag is the preamble the stream never had
+      // (TH7d's own lesson, re-learned once already)
+      const dec = Array.from(enc8.carousels[ri], (s, i) => ({ i, s, resid: 0 }));
+      const col = OC.fountain.collect(dec, pL8.preamble_symbols, a, pL8);
+      return { seed: a.rotation.seed, droplets: col.passed.map(d => ({ c: d.c, bytes: new Uint8Array(d.bytes) })) };
+    });
+    const good = OC.fountain.assemble(mkRings(), pL8, {});
+    const okGood = good.ok === true && good.text === msg8;
+    // the positive 16-bit leg: the TRUE fingerprint accepts
+    const goodKeyed = OC.fountain.assemble(mkRings(), pL8, { expectPcrc16: enc8.wireCrc16 });
+    const okGoodKeyed = goodKeyed.ok === true && goodKeyed.text === msg8;
+    // inject the liar: corrupt one non-header droplet's bytes (the ledger
+    // path trusts wire-CRC upstream, so this IS the chance-passed case)
+    const evil = mkRings();
+    let liar = null;
+    outer: for (const r of evil) for (const d of r.droplets) {
+      if (d.c % 8 === 0) continue;
+      d.bytes[0] ^= 0xE0; d.bytes[2] ^= 0x5D; d.bytes[4] ^= 0x32;
+      liar = r.seed + ":" + d.c; break outer;
+    }
+    const bad = OC.fountain.assemble(evil, pL8, {});
+    const okBad = bad.ok === false && /CRC/.test(bad.reason || "");
+    // the expectPcrc16 plumbing: a WRONG fingerprint must refuse even a
+    // perfect peel, with the key-fingerprint reason
+    const wrongKey = OC.fountain.assemble(mkRings(), pL8, { expectPcrc16: 0x0000 });
+    const okWrongKey = wrongKey.ok === false && /content key/.test(wrongKey.reason || "");
+    record("TH8 the liar and the gate: an honest peel validates (bare and under the true 16-bit fingerprint), a corrupted droplet (the chance-passed CRC8 class, the a42g specimen) now FAILS instead of printing, and a mismatched content-key fingerprint refuses even a perfect peel",
+      okGood && okGoodKeyed && okBad && okWrongKey,
+      "good " + good.ok + " text " + (good.text === msg8) + " keyed " + goodKeyed.ok +
+      " · liar " + liar + " → ok " + bad.ok + " (" + (bad.reason || "no reason") + ")" +
+      " · wrong key → ok " + wrongKey.ok + " (" + (wrongKey.reason || "no reason") + ")");
   }
 
   // Determinism spot-check: dtrig render of one frame is identical across two runs.

@@ -626,6 +626,19 @@
   function tryPeelStore(store, lease, contentKey, profile) {
     var ledger = store.ledgers[contentKey];
     if (!ledger) return { ok: false, reason: "no such ledger" };
+    // A content key carries its own 16-bit fingerprint (bits:K:len:pcrc16 —
+    // the envelope's pcrc, which a 48-bit header cannot: 5 data bytes hold
+    // only the high byte). Passing it down arms the peel's full-strength
+    // validation; the "operator" pseudo-key has none and rides the header's
+    // 8-bit check. The a42g specimen (two chance-passed CRC8 droplets
+    // printing a corrupted payload as valid) is the case this closes.
+    // The key's len rides along too: 24-bit droplets hold 2 data bytes, so
+    // their headers carry neither len nor pcrc — the envelope (through the
+    // key) is the only source of BOTH the exact wire length and the full
+    // fingerprint. This closes the validation gap for the 24-bit mode as
+    // well, not just the 48-bit high byte.
+    var kp = /^\d+:\d+:(\d+):([0-9a-f]+)$/.exec(contentKey);
+    var aOpts = kp ? { expectLen: +kp[1], expectPcrc16: parseInt(kp[2], 16) } : undefined;
     var base = ringsFor(ledger, profile);
     var adoptedIds = [];
     for (var pid in lease.provisionals) {
@@ -633,7 +646,7 @@
       if (pr.adopted && !pr.rejected && store.contexts[pr.forTag] &&
           store.contexts[pr.forTag].contentKey === contentKey) adoptedIds.push(pid);
     }
-    if (!adoptedIds.length) return F().assemble(base, profile);
+    if (!adoptedIds.length) return F().assemble(base, profile, aOpts);
     var bySeed = {};
     base.forEach(function (r) { bySeed[r.seed] = { seed: r.seed, droplets: r.droplets.slice(), have: {} };
       r.droplets.forEach(function (d) { bySeed[r.seed].have[d.c] = true; }); });
@@ -645,10 +658,10 @@
     });
     var union = [];
     for (var s in bySeed) union.push({ seed: bySeed[s].seed, droplets: bySeed[s].droplets });
-    var withProv = F().assemble(union, profile);
+    var withProv = F().assemble(union, profile, aOpts);
     if (withProv.ok === true || withProv.recovered == null || withProv.recovered !== withProv.K) return withProv;
     // completed but did not validate — the union is suspect; try bare
-    var bare = F().assemble(base, profile);
+    var bare = F().assemble(base, profile, aOpts);
     if (bare.ok === true || (bare.recovered != null && bare.recovered !== bare.K)) {
       adoptedIds.forEach(function (pid) { lease.provisionals[pid].rejected = true; });
       bare.provisionalsRejected = adoptedIds.length;

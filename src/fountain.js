@@ -289,7 +289,10 @@
     });
     // L stays the nominal 2K+12 (what the carousel would be without the loop
     // extension); Ls is what each ring actually carries.
-    return { carousels: carousels, K: tb.K, L: L, Ls: Ls, geom: g, framed: framed, wireLen: payloadBytes.length };
+    // wireCrc16 = the content fingerprint over the (framed) wire — what the
+    // envelope's pcrc carries on the air, and what expectPcrc16 validates.
+    return { carousels: carousels, K: tb.K, L: L, Ls: Ls, geom: g, framed: framed,
+             wireLen: payloadBytes.length, wireCrc16: crc16(payloadBytes) };
   }
 
   /* Decoder side: decoded symbol list (+erasures) at a known lag → verified
@@ -563,13 +566,33 @@
     }
     if (recovered < K)
       return { ok: false, reason: "peel incomplete", K: K, recovered: recovered, droplets: uniq.length, rankGain: rankGain };
-    var len = header.len !== null ? header.len : K * g.dataBytes;
+    // opts.expectLen: the exact wire length when the header cannot carry one
+    // (24-bit droplets) — from the content key / the envelope. Without it the
+    // padded K·dataBytes buffer stands in, and a wire-length fingerprint
+    // could never match.
+    var len = header.len !== null ? header.len
+            : (opts && opts.expectLen != null ? opts.expectLen : K * g.dataBytes);
     var out = new Uint8Array(len);
     for (var b3 = 0; b3 < len; b3++) out[b3] = blocks[Math.floor(b3 / g.dataBytes)][b3 % g.dataBytes];
     var ok = true, why = null;
-    // The header's len/pcrc (48-mode) cover the WIRE — framed when self-framing
-    // is on — so the CRC check precedes unframing.
-    if (header.pcrc !== null && header.pcrcBits === 16 && crc16(out) !== header.pcrc) { ok = false; why = "payload CRC16 mismatch"; }
+    // The header's len/pcrc cover the WIRE — framed when self-framing is on —
+    // so the CRC checks precede unframing.
+    // opts.expectPcrc16: the FULL 16-bit fingerprint when the caller knows it
+    // (a content-keyed ledger carries it in its own key; the envelope carries
+    // it on the air). The header alone cannot: 48-bit droplets hold 5 data
+    // bytes, so v3-family headers carry only the HIGH BYTE — and until
+    // 2026-08-27 the validation below required pcrcBits === 16, which meant
+    // NO v3 profile ever validated content at all. Two chance-passed CRC8
+    // droplets (the priced 1/256 residual) peeled into a corrupted payload
+    // that printed as valid: the a42g field specimen (store export
+    // 1787846567849; liars 403:137 and 404:9; healed at exactly the
+    // envelope's 0x9edc). The 8-bit branch catches 255/256 of that class;
+    // expectPcrc16 catches it all.
+    var wireCrc = crc16(out);
+    var expect16 = opts && opts.expectPcrc16 != null ? opts.expectPcrc16 : null;
+    if (expect16 !== null && wireCrc !== expect16) { ok = false; why = "payload CRC16 mismatch (vs the content key's fingerprint)"; }
+    else if (header.pcrc !== null && header.pcrcBits === 16 && wireCrc !== header.pcrc) { ok = false; why = "payload CRC16 mismatch"; }
+    else if (header.pcrc !== null && header.pcrcBits === 8 && ((wireCrc >> 8) & 0xFF) !== header.pcrc) { ok = false; why = "payload CRC8-of-16 mismatch (the header's high byte)"; }
     var ftype;
     if (ok && profile.carriage && profile.carriage.self_framing) {
       var fr = unframe(out);

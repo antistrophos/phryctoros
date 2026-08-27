@@ -5316,7 +5316,10 @@
     });
     // L stays the nominal 2K+12 (what the carousel would be without the loop
     // extension); Ls is what each ring actually carries.
-    return { carousels: carousels, K: tb.K, L: L, Ls: Ls, geom: g, framed: framed, wireLen: payloadBytes.length };
+    // wireCrc16 = the content fingerprint over the (framed) wire — what the
+    // envelope's pcrc carries on the air, and what expectPcrc16 validates.
+    return { carousels: carousels, K: tb.K, L: L, Ls: Ls, geom: g, framed: framed,
+             wireLen: payloadBytes.length, wireCrc16: crc16(payloadBytes) };
   }
 
   /* Decoder side: decoded symbol list (+erasures) at a known lag → verified
@@ -5590,13 +5593,33 @@
     }
     if (recovered < K)
       return { ok: false, reason: "peel incomplete", K: K, recovered: recovered, droplets: uniq.length, rankGain: rankGain };
-    var len = header.len !== null ? header.len : K * g.dataBytes;
+    // opts.expectLen: the exact wire length when the header cannot carry one
+    // (24-bit droplets) — from the content key / the envelope. Without it the
+    // padded K·dataBytes buffer stands in, and a wire-length fingerprint
+    // could never match.
+    var len = header.len !== null ? header.len
+            : (opts && opts.expectLen != null ? opts.expectLen : K * g.dataBytes);
     var out = new Uint8Array(len);
     for (var b3 = 0; b3 < len; b3++) out[b3] = blocks[Math.floor(b3 / g.dataBytes)][b3 % g.dataBytes];
     var ok = true, why = null;
-    // The header's len/pcrc (48-mode) cover the WIRE — framed when self-framing
-    // is on — so the CRC check precedes unframing.
-    if (header.pcrc !== null && header.pcrcBits === 16 && crc16(out) !== header.pcrc) { ok = false; why = "payload CRC16 mismatch"; }
+    // The header's len/pcrc cover the WIRE — framed when self-framing is on —
+    // so the CRC checks precede unframing.
+    // opts.expectPcrc16: the FULL 16-bit fingerprint when the caller knows it
+    // (a content-keyed ledger carries it in its own key; the envelope carries
+    // it on the air). The header alone cannot: 48-bit droplets hold 5 data
+    // bytes, so v3-family headers carry only the HIGH BYTE — and until
+    // 2026-08-27 the validation below required pcrcBits === 16, which meant
+    // NO v3 profile ever validated content at all. Two chance-passed CRC8
+    // droplets (the priced 1/256 residual) peeled into a corrupted payload
+    // that printed as valid: the a42g field specimen (store export
+    // 1787846567849; liars 403:137 and 404:9; healed at exactly the
+    // envelope's 0x9edc). The 8-bit branch catches 255/256 of that class;
+    // expectPcrc16 catches it all.
+    var wireCrc = crc16(out);
+    var expect16 = opts && opts.expectPcrc16 != null ? opts.expectPcrc16 : null;
+    if (expect16 !== null && wireCrc !== expect16) { ok = false; why = "payload CRC16 mismatch (vs the content key's fingerprint)"; }
+    else if (header.pcrc !== null && header.pcrcBits === 16 && wireCrc !== header.pcrc) { ok = false; why = "payload CRC16 mismatch"; }
+    else if (header.pcrc !== null && header.pcrcBits === 8 && ((wireCrc >> 8) & 0xFF) !== header.pcrc) { ok = false; why = "payload CRC8-of-16 mismatch (the header's high byte)"; }
     var ftype;
     if (ok && profile.carriage && profile.carriage.self_framing) {
       var fr = unframe(out);
@@ -6263,6 +6286,19 @@
   function tryPeelStore(store, lease, contentKey, profile) {
     var ledger = store.ledgers[contentKey];
     if (!ledger) return { ok: false, reason: "no such ledger" };
+    // A content key carries its own 16-bit fingerprint (bits:K:len:pcrc16 —
+    // the envelope's pcrc, which a 48-bit header cannot: 5 data bytes hold
+    // only the high byte). Passing it down arms the peel's full-strength
+    // validation; the "operator" pseudo-key has none and rides the header's
+    // 8-bit check. The a42g specimen (two chance-passed CRC8 droplets
+    // printing a corrupted payload as valid) is the case this closes.
+    // The key's len rides along too: 24-bit droplets hold 2 data bytes, so
+    // their headers carry neither len nor pcrc — the envelope (through the
+    // key) is the only source of BOTH the exact wire length and the full
+    // fingerprint. This closes the validation gap for the 24-bit mode as
+    // well, not just the 48-bit high byte.
+    var kp = /^\d+:\d+:(\d+):([0-9a-f]+)$/.exec(contentKey);
+    var aOpts = kp ? { expectLen: +kp[1], expectPcrc16: parseInt(kp[2], 16) } : undefined;
     var base = ringsFor(ledger, profile);
     var adoptedIds = [];
     for (var pid in lease.provisionals) {
@@ -6270,7 +6306,7 @@
       if (pr.adopted && !pr.rejected && store.contexts[pr.forTag] &&
           store.contexts[pr.forTag].contentKey === contentKey) adoptedIds.push(pid);
     }
-    if (!adoptedIds.length) return F().assemble(base, profile);
+    if (!adoptedIds.length) return F().assemble(base, profile, aOpts);
     var bySeed = {};
     base.forEach(function (r) { bySeed[r.seed] = { seed: r.seed, droplets: r.droplets.slice(), have: {} };
       r.droplets.forEach(function (d) { bySeed[r.seed].have[d.c] = true; }); });
@@ -6282,10 +6318,10 @@
     });
     var union = [];
     for (var s in bySeed) union.push({ seed: bySeed[s].seed, droplets: bySeed[s].droplets });
-    var withProv = F().assemble(union, profile);
+    var withProv = F().assemble(union, profile, aOpts);
     if (withProv.ok === true || withProv.recovered == null || withProv.recovered !== withProv.K) return withProv;
     // completed but did not validate — the union is suspect; try bare
-    var bare = F().assemble(base, profile);
+    var bare = F().assemble(base, profile, aOpts);
     if (bare.ok === true || (bare.recovered != null && bare.recovered !== bare.K)) {
       adoptedIds.forEach(function (pid) { lease.provisionals[pid].rejected = true; });
       bare.provisionalsRejected = adoptedIds.length;
