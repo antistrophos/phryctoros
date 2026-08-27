@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- single-file build 2026-08-26 — regenerate with build_standalone.py -->
+<!-- single-file build 2026-08-27 — regenerate with build_standalone.py -->
 
 <html lang="en">
 <head>
@@ -7957,6 +7957,15 @@ async function harvestDecode(v, geo, file) {
   // advisory, so a post-absorb divergence just cancels the prefetch with its
   // seeks counted honestly.
   let prefetch = null, prefetchCancel = false, everLocked = false, totalAdded = 0;
+  // Hold-for-bank (practitioner's ruling 2026-08-27): the payload winning the
+  // race must not forfeit identity — the a82 real-photon take reached 4/5
+  // chunk indices and the early exit abandoned the bank with half the clip
+  // unread. While any beacon bank is mid-assembly and PROGRESSING (a fresh
+  // idx within the last HOLD_BANK_N windows), the harvest keeps taking
+  // windows after the payload peels, capped at HOLD_BANK_CAP held windows.
+  const HOLD_BANK_N = 2, HOLD_BANK_CAP = 4;
+  const bankState = {};   // target → { have, freshW }
+  let heldForBank = 0;
   while (queue.length) {
     const [wf0, wf1] = queue.shift();
     wrun++;
@@ -8031,6 +8040,14 @@ async function harvestDecode(v, geo, file) {
       let added = 0, dup = 0, quarantined = 0, conflicts = 0;
       got.events.forEach(e => {
         if (e.ev === "bank") { added += e.added || 0; dup += e.dup || 0; quarantined += e.quarantined || 0; conflicts += e.conflicts || 0; }
+        if (e.ev === "chunk-bank") {
+          const bs = bankState[e.target] || (bankState[e.target] = { have: 0, freshW: -1 });
+          bs.have = e.have || 0;
+          if (e.fresh > 0) bs.freshW = wrun;
+        }
+        if (e.ev === "bank-seal" || e.ev === "bind" || e.ev === "rebind") {
+          for (const t in bankState) bankState[t].have = 5;  // assembled — nothing left to hold for
+        }
       });
       totalAdded += added;
       // Locks per context/operator clock (the routing already knows whose
@@ -8107,8 +8124,23 @@ async function harvestDecode(v, geo, file) {
     $("harvest").innerHTML += line + "<br>";
     ledgerInfo();
     // Early exit: every content ledger any live context (or the operator)
-    // feeds has peeled and validated.
-    if (pa.any && pa.allOk) break;
+    // feeds has peeled and validated — UNLESS a beacon bank is mid-assembly
+    // and progressing (hold-for-bank; identity is worth the extra windows).
+    if (pa.any && pa.allOk) {
+      const bankLive = Object.keys(bankState).some(t => {
+        const bs = bankState[t];
+        // Patience scales with proximity: at 4/5 every window holds ~1–2
+        // occurrences of exactly the missing index, so a bank one index from
+        // BIND gets the whole cap; farther banks get the short staleness bound.
+        const staleBound = bs.have >= 4 ? HOLD_BANK_CAP : HOLD_BANK_N;
+        return bs.have > 0 && bs.have < 5 && (wrun - bs.freshW) <= staleBound;
+      });
+      if (!bankLive || heldForBank >= HOLD_BANK_CAP) break;
+      heldForBank++;
+      const bh = Object.keys(bankState).map(t => bankState[t].have + "/5").join(", ");
+      $("harvest").innerHTML += "<span class='warn'>payload complete — holding for the chunk bank (" + bh +
+        " idx; held " + heldForBank + "/" + HOLD_BANK_CAP + ")</span><br>";
+    }
     // Dead-clip guard: bootstrap + its growth + a second stretch all silent
     // on an empty take = stop burning seeks (the 29-minute exhaustion of a
     // clip where nothing ever locked). Anything carried in stays banked.
