@@ -615,7 +615,7 @@
     if (p.bands && p.bands[0] && p.bands[0].lo) p.bands[0].lo.fixed = 1.05;
     if (p.plate) { p.plate.quiet_r = 0.90; p.plate.center_style = "bullseye"; }
     if (code === "c42" || code === "c82" || code === "a42" || code === "a82" ||
-        code === "a42r" || code === "a42x" || code === "a42g" || code === "a42q") {
+        code === "a42r" || code === "a42x" || code === "a42g" || code === "a42q" || code === "a44q") {
       p.beacon.framing = "chunked";
       p.beacon.rotation.M = (code === "c82" || code === "a82") ? 8 : 4;
       p.beacon.rotation.gray = true;
@@ -642,16 +642,21 @@
         p.bands[0].lo.fixed = 1.00;
         p.plate.quiet_r = 0.80;
         p.beacon.amplitudes = [0.012, 0.018, 0.045];
-      } else if (code === "a42q") {
+      } else if (code === "a42q" || code === "a44q") {
         // THE CENTER REVISION (v4 clause 2′, practitioner's proposal): a42g's
         // proven geometry + the three-section quadrant center — bullseye and
         // breaker retire into the target, the designated tile carries the
         // VARIANT (identity by shape; the count asymmetry ends). One new
         // variable against a42g. Requires freeze 0 (validator enforces).
+        // a44q = the same plate at F=4 (practitioner's rate lever, 2026-08-27:
+        // tag ~2.7 s, envelope 26.7 s, +3 dB per symbol at half rate) — the
+        // photons-at-range A/B against a42q decides whether symbol SNR or
+        // chunk content is the binding constraint out there.
         p.bands[0].lo.fixed = 1.00;
         p.plate.quiet_r = 0.80;
         p.plate.center_style = "quadrant3";
         p.beacon.amplitudes = [0.012, 0.018, 0.045];
+        if (code === "a44q") p.beacon.rotation.frames_per_symbol = 4;
       }
     } else {
       delete p.beacon.framing;

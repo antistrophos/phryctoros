@@ -945,8 +945,13 @@ async function main() {
     OC.profile.applyDring(pQh, "a42q");
     OC.profile.applyDring(pQh, "a42");
     const backQ = pQh.plate.center_style === "bullseye" && pQh.plate.quiet_r === 0.90 && pQh.bands[0].lo.fixed === 1.05;
+    // a44q = the same plate at F=4 (the rate lever): validates, F carries
+    const pR4 = OC.profile.profileV3(undefined, q3over);
+    OC.profile.applyDring(pR4, "a44q");
+    const vR4 = OC.profile.validate(pR4);
     const okA2 = !!(vQ.ok && pQ.plate.center_style === "quadrant3" && pQ.plate.quiet_r === 0.80 &&
-                    vQf.ok === false && vQf.errors.some(e => /freeze_s 0/.test(e)) && backQ);
+                    vQf.ok === false && vQf.errors.some(e => /freeze_s 0/.test(e)) && backQ &&
+                    vR4.ok && pR4.beacon.rotation.frames_per_symbol === 4 && pR4.plate.center_style === "quadrant3");
     // (b) the variant differs from the plain target on rendered pixels
     const p2q = OC.profile.profileV3(undefined, Object.assign({ tiling: 2, session32: 0xA42C0002, render: { scale_px_per_unit: 50 } }, q3over));
     OC.profile.applyDring(p2q, "a42q");
@@ -993,6 +998,7 @@ async function main() {
     record("T22z the center revision (a42q): validator admits the target only at freeze 0 and restores the bullseye on toggle, the designated VARIANT differs from the plain target on pixels, the chunked envelope seals through the standard chain with the new center, and a 2-up derives its designated tile from the variant with the pooled peel completing",
       okA2 && okB2 && okC2 && okD2,
       "(a) v(q3) " + vQ.ok + " v(freeze3) refused " + (vQf.ok === false) + " restores " + backQ +
+      " a44q " + vR4.ok + "/F" + pR4.beacon.rotation.frames_per_symbol + "/" + pR4.plate.center_style +
       " · (b) variant-vs-plain px " + (dVar / nVar).toFixed(3) +
       " · (c) " + (bQ ? (bQ.alignMethod || "?") + "/" + bQ.framing + " tag " + bQ.tag + (bQ.error ? " ERR " + bQ.error : "") : "no row: " + JSON.stringify(rQ.error).slice(0, 60)) +
       " · (d) emitters " + emsD.length + " designated " + rD.designatedTile + " announced [" + announcedD + "] agree " + agreeD +

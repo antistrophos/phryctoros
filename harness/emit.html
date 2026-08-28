@@ -80,6 +80,7 @@
       <option value="a42x">a42x — A-inner amp ladder-climb, k=[1,2,3,5] w/ k5 0.012, sum 0.025 (+7.5 dB estimate)</option>
       <option value="a42g">a42g — THE GEOMETRY TRIAL: floor 1.00, quiet 0.80, class 0.075 k3-heavy (+14.5 dB estimate)</option>
       <option value="a42q">a42q — THE CENTER REVISION: a42g + 3-section quadrant center, variant = identity (freeze must be OFF)</option>
+      <option value="a44q">a44q — a42q at F=4: tag ~2.7 s, +3 dB/symbol at half rate (the rate lever; freeze OFF)</option>
       <option value="a82">a82 — D-ring @ A-inner, M=8/F=2 (1b + the rate A/B)</option>
     </select></label>
   </p>
@@ -994,6 +995,7 @@ function ocRefreshMode() {
      dr === "a42r" ? "A-INNER re-split k≥2-heavy (amp trial)" : dr === "a42x" ? "A-INNER k5 ladder (amp trial)" :
      dr === "a42g" ? "A-INNER GEOMETRY TRIAL floor 1.00 class 0.075" :
      dr === "a42q" ? "A-INNER CENTER REVISION quadrant3 + variant identity" :
+     dr === "a44q" ? "A-INNER CENTER REVISION @ F=4 (rate lever)" :
      dr === "c82" ? "chunked M=8/F=2 (A/B)" : "chunked M=4/F=2 (trial)"));
   bits.push("film at " + (rate === "15" ? "30" : "60") + " fps");
   const el = $("modeSummary");
