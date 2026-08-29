@@ -1005,6 +1005,77 @@ async function main() {
       " pooled " + JSON.stringify(rD.pooled && { ok: rD.pooled.ok, text: rD.pooled.text }));
   }
 
+  await tick("T22f4: the v4 geometry dividend (a42v) — floor 0.95, class 0.090, family 4 announced…");
+  {
+    // v4 clause 3 (ruled 2026-08-28): the full step past the a42g bridge.
+    // quiet_r 0.70 = the target rim + its 0.10 moat exactly; floor 0.95;
+    // class 0.090 (both walls carry margin: quiet width 0.160 vs the 0.125
+    // floor, class vs the 0.125 ceiling). The version signal b[1]=4 rides
+    // the envelope — the tag moves, as the content-switch interlock
+    // requires. Geometry past the bridge without the signal REFUSES.
+    const v4over = { countdown: { freeze_s: 0, loop_s: 60 }, plate: { corner_style: "quadrant" } };
+    // (a) validator + wire: a42v validates with the ruled numbers; b[1] = 4;
+    //     the tag differs from a42q's at the same session (family under CRC)
+    const pV4 = OC.profile.profileV3(undefined, Object.assign({ session32: 0xA42F0004, render: { size_px: 448, scale_px_per_unit: 70 } }, v4over));
+    OC.profile.applyDring(pV4, "a42v");
+    const vV4 = OC.profile.validate(pV4);
+    const sumV4 = pV4.beacon.amplitudes.reduce((a, b) => a + b, 0);
+    const infoF = { K: 9, len: 17, pcrc: 0x7E57, capability: 1 };
+    const envV4 = OC.emission.envelopeBytes(pV4, infoF);
+    const pQ4 = OC.profile.profileV3(undefined, Object.assign({ session32: 0xA42F0004 }, v4over));
+    OC.profile.applyDring(pQ4, "a42q");
+    const envQ4 = OC.emission.envelopeBytes(pQ4, infoF);
+    const tagDiffers = ((envV4[18] << 8) | envV4[19]) !== ((envQ4[18] << 8) | envQ4[19]);
+    const okA = !!(vV4.ok && pV4.plate.quiet_r === 0.70 && pV4.bands[0].lo.fixed === 0.95 &&
+                   pV4.plate.center_style === "quadrant3" && Math.abs(sumV4 - 0.090) < 1e-9 &&
+                   pV4.family === 4 && envV4[1] === 4 && envQ4[1] === 3 && tagDiffers);
+    // (b) the family gate: the same geometry WITHOUT the version signal
+    //     refuses; family on a non-quadrant3 plate refuses; the class
+    //     ceiling (0.125) still prices — 0.126 refuses
+    const pNo = OC.profile.profileV3(undefined, v4over);
+    OC.profile.applyDring(pNo, "a42q");
+    pNo.bands[0].lo.fixed = 0.95; pNo.plate.quiet_r = 0.70;   // past the bridge, no signal
+    const vNo = OC.profile.validate(pNo);
+    const pWr = OC.profile.profileV3(undefined, v4over);
+    OC.profile.applyDring(pWr, "a42g");
+    pWr.family = 4;                                            // family on a bullseye-center plate
+    const vWr = OC.profile.validate(pWr);
+    const pOv = OC.profile.profileV3(undefined, v4over);
+    OC.profile.applyDring(pOv, "a42v");
+    pOv.beacon.amplitudes = [0.020, 0.030, 0.076];             // sum 0.126 > the 0.125 ceiling
+    const vOv = OC.profile.validate(pOv);
+    const okB = !!(vNo.ok === false && vNo.errors.some(e => /family-4 version signal/.test(e)) &&
+                   vWr.ok === false && vWr.errors.some(e => /quadrant3/.test(e)) &&
+                   vOv.ok === false && vOv.errors.some(e => /geometry-priced class/.test(e)));
+    // (c) toggle: a42v → a42 restores the frozen plate AND family 3 on the wire
+    const pTg = OC.profile.profileV3(undefined, v4over);
+    OC.profile.applyDring(pTg, "a42v");
+    OC.profile.applyDring(pTg, "a42");
+    const envTg = OC.emission.envelopeBytes(pTg, infoF);
+    const okC = pTg.plate.quiet_r === 0.90 && pTg.bands[0].lo.fixed === 1.05 &&
+                pTg.family === undefined && envTg[1] === 3;
+    // (d) optical: the chunked envelope seals at the new geometry through
+    //     the standard chain, and FAMILY 4 reads from the air
+    const expTagF = ((envV4[18] << 8) | envV4[19]);
+    let seqF = OC.emission.renderSequence(pV4, 500, { payloadInfo: infoF });
+    let slF = seqF.frames.slice(50);
+    seqF = null;
+    const rF = OC.pipeline.decodeSequence(slF, pV4, { beacon: true });
+    slF = null;
+    const bF = rF.error ? null : rF.emitters[0].annuli.find(a => a.beacon);
+    const fF = bF && bF.envelopeFields;
+    const okD = !!(bF && !bF.error && bF.alignMethod === "framed" && bF.framing === "chunked" &&
+                   fF && fF.session32 === 0xA42F0004 && fF.family === 4 &&
+                   bF.tag === expTagF.toString(16).padStart(4, "0"));
+    record("T22f4 the v4 dividend (a42v): floor 0.95 / quiet 0.70 / class 0.090 validates with margin on both walls and announces family 4 (the tag moves under the CRC), the same geometry without the version signal refuses, the 0.125 ceiling still prices, toggling back restores the frozen plate at family 3, and the sealed envelope reads FAMILY 4 off the air",
+      okA && okB && okC && okD,
+      "(a) v " + vV4.ok + " quiet " + pV4.plate.quiet_r + " floor " + pV4.bands[0].lo.fixed + " sum " + sumV4.toFixed(3) +
+      " b1 " + envV4[1] + "/" + envQ4[1] + " tagDiff " + tagDiffers +
+      " · (b) no-signal " + (vNo.ok === false) + " wrong-plate " + (vWr.ok === false) + " over-ceiling " + (vOv.ok === false) +
+      " · (c) restores " + okC +
+      " · (d) " + (bF ? (bF.alignMethod || "?") + "/" + bF.framing + " fam " + (fF && fF.family) + " tag " + bF.tag + (bF.error ? " ERR " + bF.error : "") : "no row: " + JSON.stringify(rF.error).slice(0, 60)));
+  }
+
   await tick("T22j: preset auto-detect — dual-geometry CRC vote on a high-rate emission…");
   {
     const pH = OC.profile.profileV3("high-rate");

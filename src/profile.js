@@ -528,6 +528,18 @@
     if (dringAt && beaconSum > classBound + 1e-9)
       errors.push("D-ring amplitude sum " + beaconSum.toFixed(3) + " exceeds the geometry-priced class " +
                   classBound.toFixed(3) + " (floor " + p.bands[0].lo.fixed + " − quiet_r " + pl.quiet_r + " − 0.125 quiet)");
+    // v4 clause 3 (ruled 2026-08-28): geometry past the a42g bridge (floor
+    // 1.00 / quiet 0.80) is the family-4 dividend and must ANNOUNCE it —
+    // b[1] = 4, the version signal — so stores and receipts carry which
+    // contract priced the plate. The bridge and everything shallower stays
+    // family 3 (b[1] byte-exact for every fielded config; the tag holds).
+    if (p.family !== undefined && p.family !== 4)
+      errors.push("profile.family must be absent (v3, b[1]=3) or 4 (the v4 geometry dividend)");
+    if (p.family === 4 && ctr !== "quadrant3")
+      errors.push("family 4 requires center_style quadrant3 — the v4 plate is the clause-2′ target plate");
+    if (dringAt && (p.bands[0].lo.fixed < 1.00 - 1e-9 || pl.quiet_r < 0.80 - 1e-9) && p.family !== 4)
+      errors.push("geometry past the a42g bridge (floor " + p.bands[0].lo.fixed + " / quiet_r " + pl.quiet_r +
+                  ") requires the family-4 version signal (v4 clause 3)");
     else if (!dringAt && beaconSum > 0.045 + 1e-9)
       errors.push("beacon amplitude sum " + beaconSum.toFixed(3) + " exceeds the ring-gap bound 0.045");
     else if (!dringAt && beaconSum > 0.030 + 1e-9)
@@ -614,8 +626,10 @@
     // one level up).
     if (p.bands && p.bands[0] && p.bands[0].lo) p.bands[0].lo.fixed = 1.05;
     if (p.plate) { p.plate.quiet_r = 0.90; p.plate.center_style = "bullseye"; }
+    delete p.family;
     if (code === "c42" || code === "c82" || code === "a42" || code === "a82" ||
-        code === "a42r" || code === "a42x" || code === "a42g" || code === "a42q" || code === "a44q") {
+        code === "a42r" || code === "a42x" || code === "a42g" || code === "a42q" || code === "a44q" ||
+        code === "a42v") {
       p.beacon.framing = "chunked";
       p.beacon.rotation.M = (code === "c82" || code === "a82") ? 8 : 4;
       p.beacon.rotation.gray = true;
@@ -657,6 +671,21 @@
         p.plate.center_style = "quadrant3";
         p.beacon.amplitudes = [0.012, 0.018, 0.045];
         if (code === "a44q") p.beacon.rotation.frames_per_symbol = 4;
+      } else if (code === "a42v") {
+        // THE v4 GEOMETRY DIVIDEND (clause 3, ruled 2026-08-28): the full
+        // step past the a42g bridge — quiet_r 0.70 (the target rim + its
+        // 0.10 moat exactly), floor 0.95, class 0.090 = a42q's k3-heavy
+        // split scaled 1.2×. Both walls carry margin for the first time
+        // (quiet width 0.160 vs the 0.125 floor, class 0.090 vs the 0.125
+        // ceiling). Announces family 4 — b[1], the version signal — so the
+        // tag moves, as the content-switch interlock requires. The DEFAULT
+        // emission stays a42q until one clean 0.090 take + the flicker
+        // report pass (the ruling's own gate).
+        p.bands[0].lo.fixed = 0.95;
+        p.plate.quiet_r = 0.70;
+        p.plate.center_style = "quadrant3";
+        p.beacon.amplitudes = [0.014, 0.022, 0.054];
+        p.family = 4;
       }
     } else {
       delete p.beacon.framing;

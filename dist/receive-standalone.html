@@ -41,7 +41,7 @@
   <label>handheld <input id="m_hand" type="checkbox" checked></label>
   <label>emitter loop (s) <input id="m_loop" type="number" value="60" style="width:4rem"></label>
   <label>profile <select id="m_prof"><option value="v2">v2 (current)</option><option value="v2p">v2 + payload (Phase 1)</option><option value="v3">v3.1 resilient (paced standard; payload; film at 60 fps)</option><option value="v3hr">v3.1 high-rate (paced; payload; film at 60 fps)</option><option value="v3f">V3 FLAT (legacy: flat F, pre-ruling clips)</option><option value="v3hrf">V3 high-rate FLAT (legacy)</option><option value="v3c">V3 CLASSIC ladder (legacy: base outermost, pre-2026-08-21 clips)</option><option value="v3a">V3 auto-detect preset (payload)</option></select></label>
-  <label id="v3opts" style="display:none"><input id="m_solve" type="checkbox" checked> plate solve <input id="m_beacon" type="checkbox" checked> beacon <input id="m_quad" type="checkbox"> quadrant corners (v3.1) <input id="m_qrp" type="checkbox"> persistent QR (diagnostic) D-ring <select id="m_dring"><option value="f24">v0 M=2/F=4</option><option value="c42">chunked M=4/F=2 (trial)</option><option value="c82">chunked M=8/F=2 (A/B)</option><option value="a42">A-inner M=4/F=2 (1b)</option><option value="a42r">A-inner re-split (amp trial)</option><option value="a42x">A-inner k5 ladder (amp trial)</option><option value="a42g">a42g geometry trial (floor 1.00, class 0.075)</option><option value="a42q">a42q center revision (quadrant3 + variant)</option><option value="a44q">a44q center revision @ F=4 (rate lever)</option><option value="a82">A-inner M=8/F=2 (1b+A/B)</option></select></label>
+  <label id="v3opts" style="display:none"><input id="m_solve" type="checkbox" checked> plate solve <input id="m_beacon" type="checkbox" checked> beacon <input id="m_quad" type="checkbox"> quadrant corners (v3.1) <input id="m_qrp" type="checkbox"> persistent QR (diagnostic) D-ring <select id="m_dring"><option value="f24">v0 M=2/F=4</option><option value="c42">chunked M=4/F=2 (trial)</option><option value="c82">chunked M=8/F=2 (A/B)</option><option value="a42">A-inner M=4/F=2 (1b)</option><option value="a42r">A-inner re-split (amp trial)</option><option value="a42x">A-inner k5 ladder (amp trial)</option><option value="a42g">a42g geometry trial (floor 1.00, class 0.075)</option><option value="a42q">a42q center revision (quadrant3 + variant)</option><option value="a44q">a44q center revision @ F=4 (rate lever)</option><option value="a42v">a42v v4 dividend (floor 0.95, class 0.090, family 4)</option><option value="a82">A-inner M=8/F=2 (1b+A/B)</option></select></label>
   <label>capture fps <select id="m_capfps"><option value="30">30</option><option value="60">60</option></select></label>
   <label>notes <input id="m_notes" style="width:12rem"></label>
 </fieldset>
@@ -905,6 +905,18 @@
     if (dringAt && beaconSum > classBound + 1e-9)
       errors.push("D-ring amplitude sum " + beaconSum.toFixed(3) + " exceeds the geometry-priced class " +
                   classBound.toFixed(3) + " (floor " + p.bands[0].lo.fixed + " − quiet_r " + pl.quiet_r + " − 0.125 quiet)");
+    // v4 clause 3 (ruled 2026-08-28): geometry past the a42g bridge (floor
+    // 1.00 / quiet 0.80) is the family-4 dividend and must ANNOUNCE it —
+    // b[1] = 4, the version signal — so stores and receipts carry which
+    // contract priced the plate. The bridge and everything shallower stays
+    // family 3 (b[1] byte-exact for every fielded config; the tag holds).
+    if (p.family !== undefined && p.family !== 4)
+      errors.push("profile.family must be absent (v3, b[1]=3) or 4 (the v4 geometry dividend)");
+    if (p.family === 4 && ctr !== "quadrant3")
+      errors.push("family 4 requires center_style quadrant3 — the v4 plate is the clause-2′ target plate");
+    if (dringAt && (p.bands[0].lo.fixed < 1.00 - 1e-9 || pl.quiet_r < 0.80 - 1e-9) && p.family !== 4)
+      errors.push("geometry past the a42g bridge (floor " + p.bands[0].lo.fixed + " / quiet_r " + pl.quiet_r +
+                  ") requires the family-4 version signal (v4 clause 3)");
     else if (!dringAt && beaconSum > 0.045 + 1e-9)
       errors.push("beacon amplitude sum " + beaconSum.toFixed(3) + " exceeds the ring-gap bound 0.045");
     else if (!dringAt && beaconSum > 0.030 + 1e-9)
@@ -991,8 +1003,10 @@
     // one level up).
     if (p.bands && p.bands[0] && p.bands[0].lo) p.bands[0].lo.fixed = 1.05;
     if (p.plate) { p.plate.quiet_r = 0.90; p.plate.center_style = "bullseye"; }
+    delete p.family;
     if (code === "c42" || code === "c82" || code === "a42" || code === "a82" ||
-        code === "a42r" || code === "a42x" || code === "a42g" || code === "a42q" || code === "a44q") {
+        code === "a42r" || code === "a42x" || code === "a42g" || code === "a42q" || code === "a44q" ||
+        code === "a42v") {
       p.beacon.framing = "chunked";
       p.beacon.rotation.M = (code === "c82" || code === "a82") ? 8 : 4;
       p.beacon.rotation.gray = true;
@@ -1034,6 +1048,21 @@
         p.plate.center_style = "quadrant3";
         p.beacon.amplitudes = [0.012, 0.018, 0.045];
         if (code === "a44q") p.beacon.rotation.frames_per_symbol = 4;
+      } else if (code === "a42v") {
+        // THE v4 GEOMETRY DIVIDEND (clause 3, ruled 2026-08-28): the full
+        // step past the a42g bridge — quiet_r 0.70 (the target rim + its
+        // 0.10 moat exactly), floor 0.95, class 0.090 = a42q's k3-heavy
+        // split scaled 1.2×. Both walls carry margin for the first time
+        // (quiet width 0.160 vs the 0.125 floor, class 0.090 vs the 0.125
+        // ceiling). Announces family 4 — b[1], the version signal — so the
+        // tag moves, as the content-switch interlock requires. The DEFAULT
+        // emission stays a42q until one clean 0.090 take + the flicker
+        // report pass (the ruling's own gate).
+        p.bands[0].lo.fixed = 0.95;
+        p.plate.quiet_r = 0.70;
+        p.plate.center_style = "quadrant3";
+        p.beacon.amplitudes = [0.014, 0.022, 0.054];
+        p.family = 4;
       }
     } else {
       delete p.beacon.framing;
@@ -1158,7 +1187,7 @@
     var F = FN();
     var b = new Uint8Array(20);
     b[0] = 1;                                        // envelope format version
-    b[1] = 3;                                        // profile family: v3
+    b[1] = profile.family || 3;                      // profile family: 3 = v3; 4 = the v4 geometry dividend (clause 3)
     b[2] = profile.preset === "high-rate" ? 1 : 0;   // §2: the ONE toggle rides the envelope
     var s32 = (profile.session32 || 0) >>> 0;
     b[3] = s32 >>> 24; b[4] = (s32 >>> 16) & 255; b[5] = (s32 >>> 8) & 255; b[6] = s32 & 255;
@@ -7870,7 +7899,7 @@ function layerSummary(res) {
                                     (a.framing === "chunked" && a.tag ? " tag " + a.tag + (a.tagSightings ? " ×" + a.tagSightings : "") : "")) : "—";
       const verdict = !a.present ? "<span class='dim'>unresolved</span>" :
         a.beacon && a.envelope ? "<span class='ok'>ENVELOPE " + a.envelope +
-          (a.envelopeFields ? " — " + a.envelopeFields.preset + " session " + a.envelopeFields.session32.toString(16).padStart(8, "0") +
+          (a.envelopeFields ? " — " + (a.envelopeFields.family === 4 ? "fam4 " : "") + a.envelopeFields.preset + " session " + a.envelopeFields.session32.toString(16).padStart(8, "0") +
             " K=" + a.envelopeFields.K + " tiling=" + a.envelopeFields.tiling +
             (a.envelopeFields.tiling > 1 ? " (grid " + a.envelopeFields.grid.cols + "×" + a.envelopeFields.grid.rows + ", tile " + a.envelopeFields.tile + ")" : "") +
             " loop=" + a.envelopeFields.loop_s + "s" : "") +
@@ -8304,7 +8333,7 @@ async function harvestDecode(v, geo, file) {
         if (f && a.envelope)
           line += " — <span class='ok'>ENVELOPE " + a.alignMethod + (a.framing === "chunked" ? " CHUNKED tag " + a.tag + (a.tagSightings ? " ×" + a.tagSightings : "") : "") +
             (a.folded ? " (folded, repeats agree " + Math.round((a.foldAgree || 0) * 100) + "% of " + a.foldCompared + ")" : "") +
-            ": " + f.preset + " session " + f.session32.toString(16).padStart(8, "0") +
+            ": " + (f.family === 4 ? "FAMILY 4 (v4 dividend) " : "") + f.preset + " session " + f.session32.toString(16).padStart(8, "0") +
             " K=" + f.K + " len=" + f.len + " tiling=" + f.tiling +
             (f.tiling > 1 ? " (grid " + f.grid.cols + "×" + f.grid.rows + ", carried by tile " + f.tile + ")" : "") +
             " loop=" + f.loop_s + "s freeze=" + f.freeze_s + "s</span>";
@@ -8716,17 +8745,18 @@ function ocApplySettings(str) {
   if (kv.loop) $("m_loop").value = kv.loop;
   if ($("m_quad")) $("m_quad").checked = kv.quad === "1";
   if ($("m_qrp")) $("m_qrp").checked = kv.qrp === "1";
-  if ($("m_dring")) $("m_dring").value = ["c42", "c82", "a42", "a42r", "a42x", "a42g", "a42q", "a44q", "a82"].indexOf(kv.dring) >= 0 ? kv.dring : "f24";
+  if ($("m_dring")) $("m_dring").value = ["c42", "c82", "a42", "a42r", "a42x", "a42g", "a42q", "a44q", "a42v", "a82"].indexOf(kv.dring) >= 0 ? kv.dring : "f24";
   window.ocTiling = Math.max(1, +kv.tiling || 1);   // the declared lattice, applied in v31Opts
   const bits = [target, "capture " + (kv.capfps || "?") + " fps", (kv.tiling || "1") + "-up emitter"];
   if (kv.quad === "1") bits.push("quadrant corners");
   if (kv.qrp === "1") bits.push("persistent QR");
-  if (["c42", "c82", "a42", "a42r", "a42x", "a42g", "a42q", "a44q", "a82"].indexOf(kv.dring) >= 0)
+  if (["c42", "c82", "a42", "a42r", "a42x", "a42g", "a42q", "a44q", "a42v", "a82"].indexOf(kv.dring) >= 0)
     bits.push("D-ring " + (kv.dring[0] === "a" ? "A-INNER " : "") + "chunked " + (kv.dring[1] === "8" ? "M=8/F=2" : kv.dring === "a44q" ? "M=4/F=4" : "M=4/F=2") +
       (kv.dring === "a42r" ? " · AMP RE-SPLIT" : kv.dring === "a42x" ? " · AMP k5 LADDER" :
        kv.dring === "a42g" ? " · GEOMETRY TRIAL floor 1.00 class 0.075" :
        kv.dring === "a42q" ? " · CENTER REVISION quadrant3 + variant" :
-       kv.dring === "a44q" ? " · CENTER REVISION @ F=4 (rate lever)" : ""));
+       kv.dring === "a44q" ? " · CENTER REVISION @ F=4 (rate lever)" :
+       kv.dring === "a42v" ? " · v4 DIVIDEND floor 0.95 class 0.090 (family 4)" : ""));
   const v3fam = kv.prof === "v3" || kv.prof === "v3hr" || kv.prof === "v3i" || kv.prof === "v3c" ||
                 kv.prof === "v3p" || kv.prof === "v3hrp" || kv.prof === "v3f";
   const warn = v3fam && !pay;

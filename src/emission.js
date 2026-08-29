@@ -103,7 +103,7 @@
     var F = FN();
     var b = new Uint8Array(20);
     b[0] = 1;                                        // envelope format version
-    b[1] = 3;                                        // profile family: v3
+    b[1] = profile.family || 3;                      // profile family: 3 = v3; 4 = the v4 geometry dividend (clause 3)
     b[2] = profile.preset === "high-rate" ? 1 : 0;   // §2: the ONE toggle rides the envelope
     var s32 = (profile.session32 || 0) >>> 0;
     b[3] = s32 >>> 24; b[4] = (s32 >>> 16) & 255; b[5] = (s32 >>> 8) & 255; b[6] = s32 & 255;
