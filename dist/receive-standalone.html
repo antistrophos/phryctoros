@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- single-file build 2026-08-27 — regenerate with build_standalone.py -->
+<!-- single-file build 2026-08-29 — regenerate with build_standalone.py -->
 
 <html lang="en">
 <head>
@@ -1266,18 +1266,35 @@
      content-switch interlock itself, confirmed automatically because the tag
      and the assembly seal are the same bits. Cadence [T,1,T,2,T,3,T,4,T,5]:
      50 bytes = 400 bits per cycle; at M=4/F=2 the tag lasts 1.07 s and
-     recurs every 2.67 s, the full envelope every 13.3 s. */
+     recurs every 2.67 s, the full envelope every 13.3 s.
+       WHITENED under the rotor ruling (2026-08-28, fountain.chunkMask): the
+     stream carries FOUR envelope cycles, one per rotor step — data chunks
+     XOR the (rot, idx) mask so no chunk is a constant symbol run and repeats
+     decorrelate across cycles. Anchors carry the rotor in the clear
+     (0xC0 + rot*8 + idx); the CRC8 is computed over anchor + CLEAR bytes
+     BEFORE masking, so it validates the de-whitened content and binds the
+     rotor bits. Rot 0 = the identity = the legacy cycle byte-for-byte; it
+     rides LAST so short loops prefer whitened cycles. Tag chunks are never
+     masked (their payload is a CRC16, already white) and keep the bare 0xC0.
+     Every quarter is a complete envelope cycle: per-air-second chunk
+     coverage, tag cadence, and envelope latency are unchanged. */
   function beaconChunkStream(envBytes) {
     var F = FN();
-    var buf = new Uint8Array(50), o = 0;
-    for (var i = 1; i <= 5; i++) {
-      buf[o] = 0xC0; buf[o + 1] = envBytes[18]; buf[o + 2] = envBytes[19];
-      buf[o + 3] = F.crc8(buf.subarray(o, o + 3), 3);
-      o += 4;
-      buf[o] = 0xC0 | i;
-      for (var j = 0; j < 4; j++) buf[o + 1 + j] = envBytes[4 * (i - 1) + j];
-      buf[o + 5] = F.crc8(buf.subarray(o, o + 5), 5);
-      o += 6;
+    var buf = new Uint8Array(200), o = 0;
+    var rotOrder = [1, 2, 3, 0];
+    for (var r = 0; r < rotOrder.length; r++) {
+      var rot = rotOrder[r];
+      for (var i = 1; i <= 5; i++) {
+        buf[o] = 0xC0; buf[o + 1] = envBytes[18]; buf[o + 2] = envBytes[19];
+        buf[o + 3] = F.crc8(buf.subarray(o, o + 3), 3);
+        o += 4;
+        buf[o] = 0xC0 + rot * 8 + i;
+        for (var j = 0; j < 4; j++) buf[o + 1 + j] = envBytes[4 * (i - 1) + j];
+        buf[o + 5] = F.crc8(buf.subarray(o, o + 5), 5);
+        var mk = F.chunkMask(rot, i);
+        for (var m = 0; m < 4; m++) buf[o + 1 + m] ^= mk[m];
+        o += 6;
+      }
     }
     return buf;
   }
@@ -2905,16 +2922,24 @@
   }
 
   /* CHUNKED framing scan — D-ring ruling 2 (emission.beaconChunkStream is the
-     writer): tag chunks [0xC0][crc16][crc8] and data chunks [0xC0|idx 1–5]
-     [4 envelope bytes][crc8]. Chunks assemble from ANYWHERE in the stream —
-     chunking is the fold done at the emitter — so a window covering one cycle
-     in pieces still yields the envelope. Per-chunk check is only magic nibble
-     + CRC8 (12 bits), so nothing here is trusted alone: the caller accepts a
-     chunked alignment ONLY when the assembled envelope passes its CRC16 seal,
-     and the fast tag is exactly that seal (bytes 18–19), so tag sightings are
-     confirmed the moment assembly succeeds. Same-index chunks that disagree
-     mark the slot conflicted (first-seen kept — assembly then fails the seal
-     unless the first was right; the counters surface it). */
+     writer): tag chunks [0xC0][crc16][crc8] and data chunks
+     [0xC0 + rot*8 + idx 1–5][4 envelope bytes XOR mask(rot, idx)][crc8].
+     Chunks assemble from ANYWHERE in the stream — chunking is the fold done
+     at the emitter — so a window covering one cycle in pieces still yields
+     the envelope. THE ROTOR (whitening ruling 2026-08-28): the anchor names
+     the mask in the clear; de-whiten FIRST, then check the CRC8, which the
+     writer computed over anchor + clear bytes — a corrupted rotor bit
+     de-whitens wrongly and dies here instead of mis-banking. Rot 0 is the
+     identity, so every legacy clip walks this same path unchanged; banking,
+     dedup, and assembly all see CLEAR bytes, so sightings from different
+     rotor cycles accumulate on one entry. Tag chunks are rot-less (bare 0xC0
+     only — 0xC8/0xD0/0xD8 are no one's anchor). Per-chunk check is only the
+     anchor + CRC8 (12 bits), so nothing here is trusted alone: the caller
+     accepts a chunked alignment ONLY when the assembled envelope passes its
+     CRC16 seal, and the fast tag is exactly that seal (bytes 18–19), so tag
+     sightings are confirmed the moment assembly succeeds. Same-index chunks
+     that disagree mark the slot conflicted (first-seen kept — assembly then
+     fails the seal unless the first was right; the counters surface it). */
   function beaconChunkScan(decoded, lag, M) {
     var F = (typeof module !== "undefined" && module.exports) ? require("./fountain.js") : global.OC.fountain;
     var bytes = beaconBytes(decoded, lag, M);
@@ -2922,9 +2947,10 @@
     var data = {}, counts = [0, 0, 0, 0, 0, 0], conflicts = 0, tags = {};
     for (var at = 0; at < nBytes; at++) {
       var h = bytes[at];
-      if (h === null || (h & 0xF0) !== 0xC0) continue;
-      var idx = h & 15;
+      if (h === null || h < 0xC0 || h > 0xDF) continue;
+      var hv = h - 0xC0, rot = hv >> 3, idx = hv & 7;
       if (idx === 0) {
+        if (rot !== 0) continue;
         if (at + 3 >= nBytes) continue;
         var t = [bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]];
         if (t.some(function (x) { return x === null; })) continue;
@@ -2938,6 +2964,8 @@
         var d = [bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3], bytes[at + 4], bytes[at + 5]];
         if (d.some(function (x) { return x === null; })) continue;
         var du = new Uint8Array(d);
+        var mk = F.chunkMask(rot, idx);
+        for (var uq = 0; uq < 4; uq++) du[1 + uq] ^= mk[uq];
         if (F.crc8(du, 5) !== du[5]) continue;
         var key = "" + idx;
         if (data[key]) {
@@ -5699,6 +5727,41 @@
              ftype: ftype, text: bytesToText(out) };
   }
 
+  /* CHUNK WHITENING — the rotor (ruled 2026-08-28). The beacon's data chunks
+     XOR a fixed 4-byte mask per (rotor, idx): chunk content is positional,
+     and a 1-up envelope guarantees zero regions (tile/grid, freeze-0) whose
+     constant symbol runs are the demodulator's weakest case at ANY SNR — the
+     missing-index conviction (idx 5 never passed CRC8 across ~45 s of held
+     windows). The rotor steps once per emitted envelope cycle, so repeats
+     decorrelate: each cycle airs a different symbol pattern over the same
+     clear bytes, and one clean catch per index suffices. Rot 0 is the
+     identity, which makes every legacy clip a valid rot-0 stream — one code
+     path, no era gate anywhere. The anchor byte carries the rotor in the
+     clear (0xC0 + rot*8 + idx) and the chunk CRC8 spans anchor + CLEAR
+     bytes, so a corrupted rotor bit de-whitens wrongly and dies at the CRC
+     instead of mis-banking. Masks come from mulberry32(909) — the QR cells'
+     seed — with constant words re-drawn (a constant mask cannot break a
+     constant run). Pure integer math, stable across engines; TH9 pins the
+     table's CRC16 so drift screams. */
+  var CHUNK_ROT_N = 4;
+  var CHUNK_MASKS = (function () {
+    var t = new Uint8Array(CHUNK_ROT_N * 5 * 4); // rot-0 block stays zero: the identity
+    var rng = P().mulberry32(909);
+    for (var rot = 1; rot < CHUNK_ROT_N; rot++)
+      for (var idx = 1; idx <= 5; idx++) {
+        var o = (rot * 5 + (idx - 1)) * 4, constant = true;
+        while (constant) {
+          for (var j = 0; j < 4; j++) t[o + j] = Math.floor(rng() * 256) & 255;
+          constant = t[o] === t[o + 1] && t[o] === t[o + 2] && t[o] === t[o + 3];
+        }
+      }
+    return t;
+  })();
+  function chunkMask(rot, idx) {
+    var o = ((rot & 3) * 5 + (idx - 1)) * 4;
+    return CHUNK_MASKS.subarray(o, o + 4);
+  }
+
   function bytesToText(bytes) {
     var s = "";
     for (var i = 0; i < bytes.length; i++) {
@@ -5717,7 +5780,7 @@
   var API = { encodeCarousels: encodeCarousels, collect: collect, crcAlign: crcAlign, assemble: assemble,
               geom: geom, ringD: ringD, carouselLen: carouselLen, ringCarouselLen: ringCarouselLen, subsetFor: subsetFor,
               isHeaderSlot: isHeaderSlot, parseHeader: parseHeader, HEADER_EVERY: HEADER_EVERY,
-              crc8: crc8, crc16: crc16, toGray: toGray, fromGray: fromGray,
+              crc8: crc8, crc16: crc16, toGray: toGray, fromGray: fromGray, chunkMask: chunkMask,
               selfFrame: selfFrame, unframe: unframe, tileSeed: tileSeed,
               textToBytes: textToBytes, bytesToText: bytesToText, MAGIC: MAGIC };
   if (typeof module !== "undefined" && module.exports) module.exports = API;

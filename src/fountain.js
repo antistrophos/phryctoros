@@ -603,6 +603,41 @@
              ftype: ftype, text: bytesToText(out) };
   }
 
+  /* CHUNK WHITENING — the rotor (ruled 2026-08-28). The beacon's data chunks
+     XOR a fixed 4-byte mask per (rotor, idx): chunk content is positional,
+     and a 1-up envelope guarantees zero regions (tile/grid, freeze-0) whose
+     constant symbol runs are the demodulator's weakest case at ANY SNR — the
+     missing-index conviction (idx 5 never passed CRC8 across ~45 s of held
+     windows). The rotor steps once per emitted envelope cycle, so repeats
+     decorrelate: each cycle airs a different symbol pattern over the same
+     clear bytes, and one clean catch per index suffices. Rot 0 is the
+     identity, which makes every legacy clip a valid rot-0 stream — one code
+     path, no era gate anywhere. The anchor byte carries the rotor in the
+     clear (0xC0 + rot*8 + idx) and the chunk CRC8 spans anchor + CLEAR
+     bytes, so a corrupted rotor bit de-whitens wrongly and dies at the CRC
+     instead of mis-banking. Masks come from mulberry32(909) — the QR cells'
+     seed — with constant words re-drawn (a constant mask cannot break a
+     constant run). Pure integer math, stable across engines; TH9 pins the
+     table's CRC16 so drift screams. */
+  var CHUNK_ROT_N = 4;
+  var CHUNK_MASKS = (function () {
+    var t = new Uint8Array(CHUNK_ROT_N * 5 * 4); // rot-0 block stays zero: the identity
+    var rng = P().mulberry32(909);
+    for (var rot = 1; rot < CHUNK_ROT_N; rot++)
+      for (var idx = 1; idx <= 5; idx++) {
+        var o = (rot * 5 + (idx - 1)) * 4, constant = true;
+        while (constant) {
+          for (var j = 0; j < 4; j++) t[o + j] = Math.floor(rng() * 256) & 255;
+          constant = t[o] === t[o + 1] && t[o] === t[o + 2] && t[o] === t[o + 3];
+        }
+      }
+    return t;
+  })();
+  function chunkMask(rot, idx) {
+    var o = ((rot & 3) * 5 + (idx - 1)) * 4;
+    return CHUNK_MASKS.subarray(o, o + 4);
+  }
+
   function bytesToText(bytes) {
     var s = "";
     for (var i = 0; i < bytes.length; i++) {
@@ -621,7 +656,7 @@
   var API = { encodeCarousels: encodeCarousels, collect: collect, crcAlign: crcAlign, assemble: assemble,
               geom: geom, ringD: ringD, carouselLen: carouselLen, ringCarouselLen: ringCarouselLen, subsetFor: subsetFor,
               isHeaderSlot: isHeaderSlot, parseHeader: parseHeader, HEADER_EVERY: HEADER_EVERY,
-              crc8: crc8, crc16: crc16, toGray: toGray, fromGray: fromGray,
+              crc8: crc8, crc16: crc16, toGray: toGray, fromGray: fromGray, chunkMask: chunkMask,
               selfFrame: selfFrame, unframe: unframe, tileSeed: tileSeed,
               textToBytes: textToBytes, bytesToText: bytesToText, MAGIC: MAGIC };
   if (typeof module !== "undefined" && module.exports) module.exports = API;

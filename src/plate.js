@@ -325,16 +325,24 @@
   }
 
   /* CHUNKED framing scan — D-ring ruling 2 (emission.beaconChunkStream is the
-     writer): tag chunks [0xC0][crc16][crc8] and data chunks [0xC0|idx 1–5]
-     [4 envelope bytes][crc8]. Chunks assemble from ANYWHERE in the stream —
-     chunking is the fold done at the emitter — so a window covering one cycle
-     in pieces still yields the envelope. Per-chunk check is only magic nibble
-     + CRC8 (12 bits), so nothing here is trusted alone: the caller accepts a
-     chunked alignment ONLY when the assembled envelope passes its CRC16 seal,
-     and the fast tag is exactly that seal (bytes 18–19), so tag sightings are
-     confirmed the moment assembly succeeds. Same-index chunks that disagree
-     mark the slot conflicted (first-seen kept — assembly then fails the seal
-     unless the first was right; the counters surface it). */
+     writer): tag chunks [0xC0][crc16][crc8] and data chunks
+     [0xC0 + rot*8 + idx 1–5][4 envelope bytes XOR mask(rot, idx)][crc8].
+     Chunks assemble from ANYWHERE in the stream — chunking is the fold done
+     at the emitter — so a window covering one cycle in pieces still yields
+     the envelope. THE ROTOR (whitening ruling 2026-08-28): the anchor names
+     the mask in the clear; de-whiten FIRST, then check the CRC8, which the
+     writer computed over anchor + clear bytes — a corrupted rotor bit
+     de-whitens wrongly and dies here instead of mis-banking. Rot 0 is the
+     identity, so every legacy clip walks this same path unchanged; banking,
+     dedup, and assembly all see CLEAR bytes, so sightings from different
+     rotor cycles accumulate on one entry. Tag chunks are rot-less (bare 0xC0
+     only — 0xC8/0xD0/0xD8 are no one's anchor). Per-chunk check is only the
+     anchor + CRC8 (12 bits), so nothing here is trusted alone: the caller
+     accepts a chunked alignment ONLY when the assembled envelope passes its
+     CRC16 seal, and the fast tag is exactly that seal (bytes 18–19), so tag
+     sightings are confirmed the moment assembly succeeds. Same-index chunks
+     that disagree mark the slot conflicted (first-seen kept — assembly then
+     fails the seal unless the first was right; the counters surface it). */
   function beaconChunkScan(decoded, lag, M) {
     var F = (typeof module !== "undefined" && module.exports) ? require("./fountain.js") : global.OC.fountain;
     var bytes = beaconBytes(decoded, lag, M);
@@ -342,9 +350,10 @@
     var data = {}, counts = [0, 0, 0, 0, 0, 0], conflicts = 0, tags = {};
     for (var at = 0; at < nBytes; at++) {
       var h = bytes[at];
-      if (h === null || (h & 0xF0) !== 0xC0) continue;
-      var idx = h & 15;
+      if (h === null || h < 0xC0 || h > 0xDF) continue;
+      var hv = h - 0xC0, rot = hv >> 3, idx = hv & 7;
       if (idx === 0) {
+        if (rot !== 0) continue;
         if (at + 3 >= nBytes) continue;
         var t = [bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]];
         if (t.some(function (x) { return x === null; })) continue;
@@ -358,6 +367,8 @@
         var d = [bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3], bytes[at + 4], bytes[at + 5]];
         if (d.some(function (x) { return x === null; })) continue;
         var du = new Uint8Array(d);
+        var mk = F.chunkMask(rot, idx);
+        for (var uq = 0; uq < 4; uq++) du[1 + uq] ^= mk[uq];
         if (F.crc8(du, 5) !== du[5]) continue;
         var key = "" + idx;
         if (data[key]) {

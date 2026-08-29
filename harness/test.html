@@ -1126,6 +1126,94 @@ async function main() {
       " · wrong key → ok " + wrongKey.ok + " (" + (wrongKey.reason || "no reason") + ")");
   }
 
+  await tick("TH9: the rotor — chunk whitening steps per cycle, legacy is rot 0…");
+  {
+    // The whitening ruling (2026-08-28): chunk content is positional, so a
+    // 1-up envelope guarantees near-constant chunks (tile/grid zeros,
+    // freeze-0) — the demodulator's weakest case at any SNR (the missing-
+    // index conviction: idx 5 never passed CRC8 in ~45 s of held windows).
+    // The stream now carries FOUR envelope cycles, one rotor step each: data
+    // bytes XOR a fixed (rot, idx) mask, the anchor names the rotor in the
+    // clear (0xC0 + rot*8 + idx), the CRC8 spans anchor + CLEAR bytes, and
+    // rot 0 is the identity — every legacy clip is a valid rot-0 stream
+    // through the ONE code path.
+    const p9 = OC.profile.profileV3(undefined, { session32: 0x0DD5EED9 });
+    const env9 = OC.emission.envelopeBytes(p9, { K: 7, len: 11, pcrc: 0x5A5A, capability: 1 });
+    const st9 = OC.emission.beaconChunkStream(env9);
+    const okLen = st9.length === 200;
+    // (a) anchor walk: quarters ride rot order [1,2,3,0] (identity LAST so
+    // short loops prefer whitened cycles); tag anchors stay bare 0xC0
+    const rotOrder = [1, 2, 3, 0];
+    let okAnchors = true;
+    for (let q = 0; q < 4; q++) for (let i = 1; i <= 5; i++) {
+      const base = q * 50 + (i - 1) * 10;
+      if (st9[base] !== 0xC0 || st9[base + 4] !== 0xC0 + rotOrder[q] * 8 + i) okAnchors = false;
+    }
+    // (b) the rot-0 quarter IS the legacy cycle, byte for byte (old writer inline)
+    const legacy = new Uint8Array(50);
+    { let o = 0;
+      for (let i = 1; i <= 5; i++) {
+        legacy[o] = 0xC0; legacy[o + 1] = env9[18]; legacy[o + 2] = env9[19];
+        legacy[o + 3] = OC.fountain.crc8(legacy.subarray(o, o + 3), 3);
+        o += 4;
+        legacy[o] = 0xC0 | i;
+        for (let j = 0; j < 4; j++) legacy[o + 1 + j] = env9[4 * (i - 1) + j];
+        legacy[o + 5] = OC.fountain.crc8(legacy.subarray(o, o + 5), 5);
+        o += 6;
+      }
+    }
+    let okLegacy = true;
+    for (let k = 0; k < 50; k++) if (st9[150 + k] !== legacy[k]) okLegacy = false;
+    // (c) masked quarters differ from clear on EVERY data chunk's wire word
+    let okMasked = true;
+    for (let q = 0; q < 3; q++) for (let i = 1; i <= 5; i++) {
+      const o = q * 50 + (i - 1) * 10 + 4;
+      let same = true;
+      for (let j = 0; j < 4; j++) if (st9[o + 1 + j] !== env9[4 * (i - 1) + j]) same = false;
+      if (same) okMasked = false;
+    }
+    // (d) the scan accumulates cross-rotor sightings on CLEAR bytes: 4 per
+    // idx, seal, tag ×20 (tags rot-less and never masked). THIS deterministic
+    // stream also carries a pinned specimen of the widened anchor window's
+    // priced residual: at byte 165 (a session byte, 0xD5, in the rot-0
+    // quarter) a rot-2/idx-5 candidate chance-passes CRC8 — first-seen-real
+    // wins the slot, the CONFLICT COUNTER surfaces it, and the seal stands.
+    // counts[5] = 4 real + the alias; conflicts = 1. The dilution cost and
+    // its defense, live in one draw.
+    const dec9 = Array.from(OC.emission.beaconPack(st9, 4), (s, i) => ({ i, s, resid: 0 }));
+    const scan9 = OC.plate.beaconChunkScan(dec9, 0, 4);
+    let envSame = scan9.sealed;
+    if (envSame) for (let k = 0; k < 20; k++) if (scan9.envelope[k] !== env9[k]) envSame = false;
+    const okScan = scan9.sealed && envSame && scan9.conflicts === 1 && scan9.tagSightings === 20 &&
+                   [1, 2, 3, 4].every(i => scan9.chunkCounts[i] === 4) && scan9.chunkCounts[5] === 5;
+    // (e) a corrupted rotor bit de-whitens wrongly and dies at the CRC —
+    // never banked, never a NEW conflict (the idx-5 alias rides along); the
+    // other quarters still seal
+    const st9c = new Uint8Array(st9);
+    st9c[24] ^= 0x08; // rot-1 idx-3 anchor 0xCB → 0xC3 (now claims rot 0)
+    const decC = Array.from(OC.emission.beaconPack(st9c, 4), (s, i) => ({ i, s, resid: 0 }));
+    const scanC = OC.plate.beaconChunkScan(decC, 0, 4);
+    const okCorrupt = scanC.sealed && scanC.chunkCounts[3] === 3 && scanC.conflicts === 1;
+    // (f) the table: rot 0 identity, no constant words, CRC16 pinned —
+    // mulberry32(909) is pure integer math, so drift anywhere screams here
+    let okId = true, okWords = true;
+    const all = [];
+    for (let rot = 0; rot < 4; rot++) for (let i = 1; i <= 5; i++) {
+      const mk = OC.fountain.chunkMask(rot, i);
+      for (let j = 0; j < 4; j++) all.push(mk[j]);
+      if (rot === 0 && (mk[0] | mk[1] | mk[2] | mk[3]) !== 0) okId = false;
+      if (rot > 0 && mk[0] === mk[1] && mk[0] === mk[2] && mk[0] === mk[3]) okWords = false;
+    }
+    const tabCrc = OC.fountain.crc16(new Uint8Array(all));
+    const okTab = okId && okWords && tabCrc === 0xB3CA;
+    record("TH9 the rotor: the stream carries four cycles at rot order 1,2,3,0 with the identity LAST, the rot-0 quarter is the legacy cycle byte-for-byte (one code path, no era gate), every masked data chunk differs from clear on the wire, the scan accumulates cross-rotor sightings on clear bytes and seals THROUGH a pinned chance-CRC8 alias that the conflict counter surfaces, a flipped rotor bit dies at the CRC instead of mis-banking, and the mask table pins to its CRC16",
+      okLen && okAnchors && okLegacy && okMasked && okScan && okCorrupt && okTab,
+      "len " + st9.length + " anchors " + okAnchors + " legacy≡rot0 " + okLegacy + " masked " + okMasked +
+      " · scan seal " + scan9.sealed + " counts " + JSON.stringify(scan9.chunkCounts) + " conflicts " + scan9.conflicts +
+      " tag ×" + scan9.tagSightings + " · rot-bit flip → idx3 ×" + scanC.chunkCounts[3] + " sealed " + scanC.sealed +
+      " · table crc 0x" + tabCrc.toString(16) + " (pin 0xb3ca) id " + okId + " words " + okWords);
+  }
+
   // Determinism spot-check: dtrig render of one frame is identical across two runs.
   await tick("determinism: dtrig double-render…");
   {

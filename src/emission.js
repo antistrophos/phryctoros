@@ -211,18 +211,35 @@
      content-switch interlock itself, confirmed automatically because the tag
      and the assembly seal are the same bits. Cadence [T,1,T,2,T,3,T,4,T,5]:
      50 bytes = 400 bits per cycle; at M=4/F=2 the tag lasts 1.07 s and
-     recurs every 2.67 s, the full envelope every 13.3 s. */
+     recurs every 2.67 s, the full envelope every 13.3 s.
+       WHITENED under the rotor ruling (2026-08-28, fountain.chunkMask): the
+     stream carries FOUR envelope cycles, one per rotor step — data chunks
+     XOR the (rot, idx) mask so no chunk is a constant symbol run and repeats
+     decorrelate across cycles. Anchors carry the rotor in the clear
+     (0xC0 + rot*8 + idx); the CRC8 is computed over anchor + CLEAR bytes
+     BEFORE masking, so it validates the de-whitened content and binds the
+     rotor bits. Rot 0 = the identity = the legacy cycle byte-for-byte; it
+     rides LAST so short loops prefer whitened cycles. Tag chunks are never
+     masked (their payload is a CRC16, already white) and keep the bare 0xC0.
+     Every quarter is a complete envelope cycle: per-air-second chunk
+     coverage, tag cadence, and envelope latency are unchanged. */
   function beaconChunkStream(envBytes) {
     var F = FN();
-    var buf = new Uint8Array(50), o = 0;
-    for (var i = 1; i <= 5; i++) {
-      buf[o] = 0xC0; buf[o + 1] = envBytes[18]; buf[o + 2] = envBytes[19];
-      buf[o + 3] = F.crc8(buf.subarray(o, o + 3), 3);
-      o += 4;
-      buf[o] = 0xC0 | i;
-      for (var j = 0; j < 4; j++) buf[o + 1 + j] = envBytes[4 * (i - 1) + j];
-      buf[o + 5] = F.crc8(buf.subarray(o, o + 5), 5);
-      o += 6;
+    var buf = new Uint8Array(200), o = 0;
+    var rotOrder = [1, 2, 3, 0];
+    for (var r = 0; r < rotOrder.length; r++) {
+      var rot = rotOrder[r];
+      for (var i = 1; i <= 5; i++) {
+        buf[o] = 0xC0; buf[o + 1] = envBytes[18]; buf[o + 2] = envBytes[19];
+        buf[o + 3] = F.crc8(buf.subarray(o, o + 3), 3);
+        o += 4;
+        buf[o] = 0xC0 + rot * 8 + i;
+        for (var j = 0; j < 4; j++) buf[o + 1 + j] = envBytes[4 * (i - 1) + j];
+        buf[o + 5] = F.crc8(buf.subarray(o, o + 5), 5);
+        var mk = F.chunkMask(rot, i);
+        for (var m = 0; m < 4; m++) buf[o + 1 + m] ^= mk[m];
+        o += 6;
+      }
     }
     return buf;
   }
