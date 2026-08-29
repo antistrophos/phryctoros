@@ -453,6 +453,28 @@ async function seekWindow(v, geo, tA, tB, capFps, emitFps, onStep) {
    no lock it degrades to a chunked classic pass (same coverage, nothing
    lost); with locks exhausted and the peel still short it sweeps what's
    unvisited before declaring the clip dry. */
+/* FIELD TELEMETRY (2026-08-29): every harvest accumulates a structured log —
+   per-window receipts (text + rows + lease events), settings, and the final
+   verdict — and posts it to serve.py -> harness/results/field-<stamp>.json,
+   with a download link as the file:// / standalone fallback. Field takes
+   stop needing screenshots: the whole forensic record is a file. */
+const stripHtml = s => String(s).replace(/<[^>]*>/g, "");
+function postFieldLog(logObj) {
+  const body = JSON.stringify(logObj, null, 1);
+  try {
+    const stamp = String(logObj.started || "").replace(/[^0-9]/g, "").slice(0, 14) || String(Date.now());
+    fetch("/harness-result?page=field-" + stamp, { method: "POST", body }).catch(() => {});
+  } catch (e) {}
+  try {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([body], { type: "application/json" }));
+    a.download = "harvest-log-" + String(logObj.started || Date.now()).replace(/[^0-9]/g, "").slice(0, 14) + ".json";
+    a.textContent = "⬇ harvest log (JSON)";
+    $("harvest").appendChild(a);
+    $("harvest").appendChild(document.createElement("br"));
+  } catch (e) {}
+}
+
 async function harvestDecode(v, geo, file) {
   const profile = currentProfile(), R = profile.frame_rate_hz, capFps = captureFps();
   const HV = OC.harvest;
@@ -508,6 +530,16 @@ async function harvestDecode(v, geo, file) {
   const t0Wall = performance.now();
   const visited = [], ctxLocks = {}, grown = {};
   let seeks = 0, wrun = 0, pa = peelAll();
+  const fieldLog = {
+    kind: "harvest", started: new Date().toISOString(),
+    clip: (file && file.name) || "camera",
+    duration_s: Math.round(durS * 10) / 10,
+    settings: ($("pasteStr") && $("pasteStr").value) || undefined,
+    dring: ($("m_dring") && $("m_dring").value) || undefined,
+    tiling: window.ocTiling || 1, cap_fps: capFps, emit_fps: R,
+    windows_cfg: { min_s: minWinF / R, max_s: maxWinF / R, boot_s: bootF / R },
+    windows: [], notes: [], final: null
+  };
   // Windows worth seeking, planned per (context locks × its content ledger),
   // earliest first; contexts whose ledger already peels plan nothing.
   const nextPlanned = (visitedArr) => {
@@ -620,7 +652,8 @@ async function harvestDecode(v, geo, file) {
     const res = await decodeP;
     let line = "w" + wrun + " [" + (wf0 / R).toFixed(1) + "–" + (wf1 / R).toFixed(1) + " s] " + cap.seeks + " seeks";
     let lockedAny = false;
-    if (res.error) line += " — <span class='bad'>" + res.error + "</span>";
+    const wRec = { w: wrun, t0: +(wf0 / R).toFixed(1), t1: +(wf1 / R).toFixed(1), seeks: cap.seeks };
+    if (res.error) { line += " — <span class='bad'>" + res.error + "</span>"; wRec.error = stripHtml(res.error); }
     else {
       const got = HV.leaseObserve(st, lease, res, profile, wrun);
       let added = 0, dup = 0, quarantined = 0, conflicts = 0;
@@ -693,6 +726,23 @@ async function harvestDecode(v, geo, file) {
         (conflicts ? ", <span class='bad'>" + conflicts + " byte-conflicts</span>" : "") +
         ") — " + peelBrief(pa);
       $("results").innerHTML = layerSummary(res);
+      wRec.added = added; wRec.dup = dup;
+      if (quarantined) wRec.quarantined = quarantined;
+      if (conflicts) wRec.conflicts = conflicts;
+      wRec.locked = lockedAny;
+      wRec.rows = res.emitters.map((em, ei) => ({
+        e: ei, tile: em.tile, fid: em.fiducialWidthPx, reg: em.method,
+        annuli: (em.annuli || []).map(a => a && ({
+          ann: a.annulus, beacon: a.beacon || undefined, method: a.alignMethod,
+          lag: a.alignLag, carrier: a.carrierRatio, snr: a.snr_db,
+          droplets: a.dropletsPassed, framing: a.framing, tag: a.tag,
+          tagN: a.tagSightings, folded: a.folded || undefined,
+          chunkIdx: a.chunkSweep ? Object.keys(a.chunkSweep) : undefined,
+          err: a.error ? stripHtml(a.error).slice(0, 140) : undefined
+        }))
+      }));
+      wRec.events = got.events.filter(e => e.ev !== "ledger" && e.ev !== "state");
+      wRec.peel = stripHtml(peelBrief(pa));
     }
     // Adaptive growth (run-1's lock-failure lesson): a window that locks
     // NOTHING gets one doubled retry before its stretch is declared dead —
@@ -707,6 +757,8 @@ async function harvestDecode(v, geo, file) {
     } else {
       HV.markVisited(visited, wf0, wf1);
     }
+    wRec.text = stripHtml(line);
+    fieldLog.windows.push(wRec);
     $("harvest").innerHTML += line + "<br>";
     ledgerInfo();
     // Early exit: every content ledger any live context (or the operator)
@@ -724,6 +776,7 @@ async function harvestDecode(v, geo, file) {
       if (!bankLive || heldForBank >= HOLD_BANK_CAP) break;
       heldForBank++;
       const bh = Object.keys(bankState).map(t => bankState[t].have + "/5").join(", ");
+      fieldLog.notes.push({ w: wrun, note: "holding for the chunk bank (" + bh + " idx; held " + heldForBank + "/" + HOLD_BANK_CAP + ")" });
       $("harvest").innerHTML += "<span class='warn'>payload complete — holding for the chunk bank (" + bh +
         " idx; held " + heldForBank + "/" + HOLD_BANK_CAP + ")</span><br>";
     }
@@ -731,6 +784,7 @@ async function harvestDecode(v, geo, file) {
     // on an empty take = stop burning seeks (the 29-minute exhaustion of a
     // clip where nothing ever locked). Anything carried in stays banked.
     if (!everLocked && totalAdded === 0 && wrun >= 4) {
+      fieldLog.notes.push({ w: wrun, note: "dead-clip guard: nothing locks anywhere — stopped early" });
       $("harvest").innerHTML += "<span class='bad'>nothing locks anywhere after " + wrun +
         " windows — stopping early. Check the EMIT side first (HUD skip receipt, mode summary green, payload K=… line), then range/zoom.</span><br>";
       break;
@@ -760,6 +814,16 @@ async function harvestDecode(v, geo, file) {
       ") — " + seeks + " seeks of " + baseline + " (" + saved + "% skipped), wall " + wall + " s — export the store and film another take: the next harvest mines only what this one lacked" +
       (payloads ? "<br>" + payloads : "");
   $("harvest").innerHTML += receipt + "<br>";
+  fieldLog.final = {
+    done, wall_s: +wall, seeks, baseline, skipped_pct: saved,
+    visited_s: +visitedS.toFixed(1), windows: wrun,
+    peels: pa.list.map(({ key, p }) => ({
+      key, ok: p.ok === true, K: p.K, recovered: p.recovered, droplets: p.droplets,
+      text: p.ok === true ? p.text : undefined, reason: p.ok === true ? undefined : p.reason
+    })),
+    receipt: stripHtml(receipt)
+  };
+  postFieldLog(fieldLog);
   setStatus(done ? "harvest complete — early exit" : "harvest exhausted — the store holds the progress", done ? "ok" : "warn");
 }
 

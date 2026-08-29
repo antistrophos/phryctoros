@@ -1,0 +1,691 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>optical-carriage — suite 4: D-ring / beacon / lease</title>
+<style>
+  body { font: 14px/1.45 system-ui, sans-serif; margin: 1.2rem; background: #14161a; color: #d8dce2; }
+  h1 { font-size: 1.15rem; } code { color: #9ecbff; }
+  table { border-collapse: collapse; margin: .6rem 0; }
+  td, th { border: 1px solid #333; padding: .25rem .6rem; font-size: 13px; }
+  .pass { color: #7ce38b; } .fail { color: #ff8b8b; } .info { color: #c0a6f7; }
+  #log div { margin: .1rem 0; }
+  pre { background: #0d0f12; padding: .8rem; overflow: auto; max-height: 340px; }
+  canvas { border: 1px solid #333; image-rendering: pixelated; }
+</style>
+</head>
+<body>
+<h1>optical-carriage — suite page 4: the D-ring / beacon / lease family</h1>
+<p>Suite page 4 — T22e0/i/r/s/t/u/v/w/y/z/f4: the control plane's development home, split from test-v3.html (2026-08-29) so a parked run costs half, the heap stays low, and <code>?only=T22z</code> (comma-list ok) iterates one case without the archaeology in front of it. Filtered runs post to <code>results/v3dring-partial.json</code> and title as PARTIAL — only the unfiltered run certifies. Pages: <a href="test.html">test.html</a> · <a href="test-v3.html">test-v3.html</a> · <a href="test-saddle.html">test-saddle.html</a>.</p>
+<div id="status" class="info">loading…</div>
+<div id="log"></div>
+<h3>Summary</h3>
+<pre id="results-json">(pending)</pre>
+
+<script src="../src/prng.js"></script>
+<script src="../src/dtrig.js"></script>
+<script src="../src/geom.js"></script>
+<script src="../src/flicker.js"></script>
+<script src="../src/profile.js"></script>
+<script src="../src/emission.js"></script>
+<script src="../src/register.js"></script>
+<script src="../src/plate.js"></script>
+<script src="../src/saddle.js"></script>
+<script src="../src/sample.js"></script>
+<script src="../src/conic.js"></script>
+<script src="../src/transform.js"></script>
+<script src="../src/separate.js"></script>
+<script src="../src/rowtime.js"></script>
+<script src="../src/demap.js"></script>
+<script src="../src/fountain.js"></script>
+<script src="../src/harvest.js"></script>
+<script src="../src/ser.js"></script>
+<script src="../src/degrade.js"></script>
+<script src="../src/pipeline.js"></script>
+
+<script src="suite-lib.js"></script>
+<script>
+"use strict";
+window.SUITE_PAGE = 'v3dring';
+
+async function main() {
+  const OC = window.OC;
+
+  if (caseOn("T22e0")) {
+  await tick("T22e0: freeze 0 — the v4-preview trial (no countdown, no QR, rotation from frame 0)…");
+  {
+    // Rulings 1+4 pulled forward (2026-08-27): freeze_s === 0 is legal — the
+    // countdown face never exists, the QR is never rendered, and the whole
+    // loop is emission airtime. Values in (0,1) stay illegal: a freeze too
+    // short to settle is worse than none. b[13]=0 self-describes the trial
+    // on the wire; the receiver needs nothing (mid-loop framing never used
+    // the onset anchor, and sustained static now means genuine stall).
+    const p0 = OC.profile.profileV3(undefined, { countdown: { freeze_s: 0, loop_s: 60 } });
+    const v0 = OC.profile.validate(p0);
+    const pHalf = OC.profile.profileV3(undefined, { countdown: { freeze_s: 0.5, loop_s: 60 } });
+    const vHalf = OC.profile.validate(pHalf);
+    const fps0 = p0.frame_rate_hz, loopF0 = Math.round(60 * fps0);
+    let everFroze = false, effOk = true;
+    for (const f of [0, 1, 2, loopF0 - 1, loopF0, loopF0 + 1, loopF0 * 2 + 5]) {
+      const tl = OC.emission.timeline(p0, f);
+      if (tl.freeze) everFroze = true;
+      if (tl.eff !== f) effOk = false;   // no freeze ⟹ eff ≡ wall frame, seam-free
+    }
+    const env0 = OC.emission.envelopeBytes(p0, null);
+    let seq0 = OC.emission.renderSequence(p0, 5, {});
+    const fA = seq0.frames[0].img, fB = seq0.frames[2].img;
+    let diff = 0;
+    for (let i = 0; i < fA.data.length; i += 997) diff += Math.abs(fA.data[i] - fB.data[i]);
+    seq0 = null;
+    record("T22e0 freeze 0 (the v4-preview trial): the validator admits exactly 0 and refuses (0,1), the timeline never freezes and eff runs continuous through the loop boundary, b[13] declares 0, and frame 0 is already rotating",
+      !!(v0.ok && vHalf.ok === false && !everFroze && effOk && env0[13] === 0 && diff > 0),
+      "v(0) " + v0.ok + (v0.errors.length ? " [" + v0.errors[0].slice(0, 60) + "]" : "") +
+      " · v(0.5) refused " + (vHalf.ok === false) +
+      " · froze " + everFroze + " · eff≡wall " + effOk + " · b13 " + env0[13] +
+      " · frame0 motion " + (diff > 0 ? "yes" : "NO"));
+  }
+  }
+
+  if (caseOn("T22i")) {
+  await tick("T22i: beacon round-trip — the control channel through the standard chain…");
+  {
+    const p3 = OC.profile.profileV3();
+    // Short synthetic envelope: the demod is framing-agnostic (magic+len+CRC8),
+    // so a 4-byte payload proves the loop in 280 frames instead of 770.
+    const envShort = new Uint8Array([0xE5, 0x01, 0x02, 0x03]);
+    let seqB = OC.emission.renderSequence(p3, 280, { envBytes: envShort });
+    const resB = OC.pipeline.decodeSequence(seqB.frames, p3, { beacon: true });
+    seqB = null; // ~1.1 GB — release before the T23 renders (the heap-edge lesson)
+    const emB = resB.error ? null : resB.emitters[0];
+    const rowB = emB && emB.annuli.find(a => a.beacon);
+    const hex = rowB && rowB.envelope;
+    record("T22i beacon: rides the ring pair's outer edge as a fifth channel, preamble-locks, and the framed envelope decodes byte-exact",
+      !!(rowB && !rowB.error && hex === "e5010203" && Math.abs((rowB.carrierRatio || 0) - 1) < 0.4),
+      rowB ? "lock " + rowB.alignMethod + "@" + rowB.alignLag + " carrier " + rowB.carrierRatio + "× envelope " + hex + " at byte " + rowB.envelopeAt
+           : "no beacon row: " + JSON.stringify(resB).slice(0, 120));
+  }
+  }
+
+  if (caseOn("T22r")) {
+  await tick("T22r: beacon mid-loop join — the control channel frames on itself…");
+  {
+    // (a) Default beacon (M=2, F=4), the short synthetic envelope (7 framed
+    // bytes = 56 symbols = 224 frames per carousel). The capture starts at
+    // emission frame 250 — past the preamble, off the symbol grid (250 = 62·4+2)
+    // — so nothing preamble-locks; the aligner must find the offset AND the
+    // bit phase, and with an unsealed envelope its bar is ≥2 identical frames
+    // (the carousel's own repetition). Frame starts at 32+56·4·k: 256, 480 —
+    // both complete inside [250, 710).
+    const pA = OC.profile.profileV3(undefined, { render: { size_px: 640, scale_px_per_unit: 100 } });
+    const envShortA = new Uint8Array([0xE5, 0x01, 0x02, 0x03]);
+    let seqA = OC.emission.renderSequence(pA, 710, { envBytes: envShortA });
+    let slA = seqA.frames.slice(250);
+    seqA = null;
+    const rA = OC.pipeline.decodeSequence(slA, pA, { beacon: true });
+    slA = null;
+    const rowA = rA.error ? null : rA.emitters[0].annuli.find(a => a.beacon);
+    const okA = !!(rowA && !rowA.error && rowA.alignMethod === "framed" && rowA.envelope === "e5010203" &&
+                   rowA.envelopeFrames >= 2);
+    // (b) A SEALED v1 envelope (session32, preset, K, tiling…) through the
+    // verified path — CRC8 + the envelope's CRC16 accept a single frame. The
+    // beacon runs the negotiable M=4 at F=2 (the paced control-ring variant:
+    // 23 bytes = 92 symbols = 184 frames per carousel) so two complete frames
+    // fit a field-scale render. Frame starts at 16+184k: 200, 384.
+    const pB = OC.profile.profileV3(undefined, {
+      beacon: { rotation: { M: 4, frames_per_symbol: 2 } }, session32: 0xC0FFEE42,
+      render: { size_px: 448, scale_px_per_unit: 70 } });
+    const vB = OC.profile.validate(pB);
+    const infoB = { K: 7, len: 13, pcrc: 0x1234, capability: 1 };
+    const envB = OC.emission.envelopeBytes(pB, infoB);
+    const parsedB = OC.plate.parseEnvelope(envB);
+    const envBad = new Uint8Array(envB); envBad[5] ^= 0x10;           // one session bit → CRC16 must refuse
+    let seqB2 = OC.emission.renderSequence(pB, 580, { payloadInfo: infoB });
+    let slB = seqB2.frames.slice(190);
+    // (c) THE FOLD: ≥1 period observed but NO contiguous frame — [210, 440) is
+    // 230 frames (1.25 periods of 184) and the frame starts at 200 and 384 both
+    // fall outside it. Every carousel position was still seen once, so folding
+    // the symbols modulo the period recovers the frame (the 5 ft field clip's
+    // case: 246 clean symbols, period 184, no contiguous frame).
+    let slC = seqB2.frames.slice(210, 440);
+    seqB2 = null;
+    const rB = OC.pipeline.decodeSequence(slB, pB, { beacon: true });
+    slB = null;
+    const rowB2 = rB.error ? null : rB.emitters[0].annuli.find(a => a.beacon);
+    const fB = rowB2 && rowB2.envelopeFields;
+    const okB = !!(vB.ok && parsedB && parsedB.session32 === 0xC0FFEE42 && parsedB.K === 7 && parsedB.len === 13 &&
+                   parsedB.pcrc === 0x1234 && parsedB.preset === "resilient" && parsedB.tiling === 1 &&
+                   OC.plate.parseEnvelope(envBad) === null &&
+                   rowB2 && !rowB2.error && rowB2.alignMethod === "framed" && !rowB2.folded && fB &&
+                   fB.session32 === 0xC0FFEE42 && fB.K === 7 && fB.loop_s === pB.countdown.loop_s);
+    const rC = OC.pipeline.decodeSequence(slC, pB, { beacon: true });
+    slC = null;
+    const rowC = rC.error ? null : rC.emitters[0].annuli.find(a => a.beacon);
+    const fC = rowC && rowC.envelopeFields;
+    const okC = !!(rowC && !rowC.error && rowC.alignMethod === "framed" && rowC.folded === true && fC &&
+                   fC.session32 === 0xC0FFEE42 && fC.K === 7 && fC.pcrc === 0x1234 && rowC.foldAgree === 1);
+    record("T22r beacon mid-loop join: a capture that never saw the preamble still frames the control carousel — (a) default M=2/F=4, short unsealed envelope, off-grid start, accepted on ≥2 identical frames; (b) sealed v1 envelope at M=4/F=2, accepted on CRC8+CRC16 from ONE contiguous frame, session32/K/len/pcrc/preset/tiling parsed off the air and a flipped session bit refused; (c) ≥1 period but NO contiguous frame — the symbols FOLD modulo the period and the sealed frame is recovered from the doubled ring with its repeats agreeing 100%",
+      okA && okB && okC,
+      "(a) " + (rowA ? "lock " + rowA.alignMethod + " off " + rowA.alignOffset + " phase " + rowA.alignLag + " frames " + rowA.envelopeFrames + " env " + rowA.envelope + (rowA.error ? " ERR " + rowA.error : "")
+                     : "no beacon row: " + JSON.stringify(rA).slice(0, 100)) +
+      " · (b) " + (rowB2 ? "lock " + rowB2.alignMethod + " off " + rowB2.alignOffset + " phase " + rowB2.alignLag + " frames " + rowB2.envelopeFrames +
+                           " fields " + JSON.stringify(fB) + (rowB2.error ? " ERR " + rowB2.error : "")
+                         : "no beacon row: " + JSON.stringify(rB).slice(0, 100)) +
+      " · (c) " + (rowC ? "lock " + rowC.alignMethod + (rowC.folded ? " FOLDED agree " + rowC.foldAgree + "/" + rowC.foldCompared : " not folded") + " off " + rowC.alignOffset + " phase " + rowC.alignLag +
+                          " symbols " + rowC.symbols + " session " + (fC ? fC.session32.toString(16) : "—") + (rowC.error ? " ERR " + rowC.error : "")
+                        : "no beacon row: " + JSON.stringify(rC).slice(0, 100)) +
+      " · validate " + vB.ok + " · parse " + JSON.stringify(parsedB));
+  }
+  }
+
+  if (caseOn("T22s")) {
+  await tick("T22s: chunked D-ring framing (ruling 2) — tag chunks, assembly, M=8, framing auto-detect…");
+  {
+    // The one long control frame becomes droplet-shaped chunks: tag chunks
+    // [0xC0][crc16][crc8] (4 B — THE TAG IS THE ENVELOPE'S SEAL) interleaved
+    // with data chunks [0xC0|idx][4 env bytes][crc8] (6 B, idx 1–5), cycle
+    // [T,1,T,2,T,3,T,4,T,5] = 50 B. Chunks assemble from anywhere — chunking
+    // is the fold done at the emitter — and a chunked alignment is accepted
+    // ONLY when the assembled envelope passes its CRC16 (per-chunk checks are
+    // 12 bits, never trusted alone).
+    const mk = (dring, n, slice0, framing) => {
+      const p = OC.profile.profileV3(undefined, { session32: 0x5EED7A61, render: { size_px: 448, scale_px_per_unit: 70 } });
+      OC.profile.applyDring(p, dring);
+      if (framing === "frame") delete p.beacon.framing;   // (c): v0 frame at the trial M/F
+      const v = OC.profile.validate(p);
+      const info = { K: 9, len: 17, pcrc: 0x7E57, capability: 1 };
+      const expTag = (() => { const e = OC.emission.envelopeBytes(p, info); return ((e[18] << 8) | e[19]); })();
+      let seq = OC.emission.renderSequence(p, n, { payloadInfo: info });
+      let sl = seq.frames.slice(slice0);
+      seq = null;
+      const r = OC.pipeline.decodeSequence(sl, p, { beacon: true });
+      sl = null;
+      const row = r.error ? null : r.emitters[0].annuli.find(a => a.beacon);
+      return { v, row, expTag, err: r.error };
+    };
+    // (a) chunked M=4/F=2 mid-loop (cycle = 200 symbols = 400 frames; the
+    //     capture is 1.1 cycles and starts past the 16-frame preamble)
+    const A = mk("c42", 500, 50);
+    const fA = A.row && A.row.envelopeFields;
+    const okA = !!(A.v.ok && A.row && !A.row.error && A.row.alignMethod === "framed" && A.row.framing === "chunked" &&
+                   fA && fA.session32 === 0x5EED7A61 && fA.K === 9 && fA.pcrc === 0x7E57 &&
+                   A.row.tag === A.expTag.toString(16).padStart(4, "0") && A.row.tagSightings >= 2 && !A.row.folded);
+    // (b) chunked M=8/F=2 — the A/B config: 3-bit symbols (cycle 134 symbols
+    //     = 268 frames), validator now admits beacon M=8 for the trial
+    const B = mk("c82", 400, 30);
+    const fB2 = B.row && B.row.envelopeFields;
+    const okB = !!(B.v.ok && B.row && !B.row.error && B.row.framing === "chunked" &&
+                   fB2 && fB2.session32 === 0x5EED7A61 && fB2.K === 9);
+    // (c) framing auto-detect: a v0-FRAMED emission at the trial M=4/F=2,
+    //     decoded by the same receiver (whose profile declares chunked) —
+    //     beaconAlign scans both framings, so the declaration is emit-side only
+    const C = mk("c42", 420, 30, "frame");
+    const fC = C.row && C.row.envelopeFields;
+    const okC = !!(C.row && !C.row.error && C.row.alignMethod === "framed" && C.row.framing === "frame" &&
+                   fC && fC.session32 === 0x5EED7A61);
+    record("T22s chunked D-ring (ruling 2): a mid-loop capture assembles the envelope from tag+data chunks sealed by its CRC16, the tag chunk (= the seal bytes) is sighted repeatedly at 1.07 s a pass, the M=8/F=2 A/B config packs 3-bit symbols and validates, and a v0-framed emission at the same M/F still reads — the receiver scans both framings, so framing is an emitter-side choice only",
+      okA && okB && okC,
+      "(a) " + (A.row ? A.row.alignMethod + "/" + A.row.framing + " tag " + A.row.tag + " ×" + A.row.tagSightings +
+                        " sess " + (fA && fA.session32.toString(16)) + (A.row.error ? " ERR " + A.row.error : "")
+                      : "no row: " + JSON.stringify(A.err).slice(0, 80)) +
+      " · (b) " + (B.row ? B.row.alignMethod + "/" + B.row.framing + " sess " + (fB2 && fB2.session32.toString(16)) +
+                           " validate " + B.v.ok + (B.row.error ? " ERR " + B.row.error : "")
+                         : "no row: " + JSON.stringify(B.err).slice(0, 80)) +
+      " · (c) " + (C.row ? C.row.alignMethod + "/" + C.row.framing + " sess " + (fC && fC.session32.toString(16)) +
+                           (C.row.error ? " ERR " + C.row.error : "")
+                         : "no row: " + JSON.stringify(C.err).slice(0, 80)));
+  }
+  }
+
+  if (caseOn("T22t")) {
+  await tick("T22t: the D-ring at A-inner (ruling 1b) — relocation, per-tile identity, static breaker…");
+  {
+    // Ruling 1b: the control betas move from the breaker pair (designated
+    // tile only) to band A's inner boundary on EVERY tile — identity is
+    // announced (b[16] per tile), the breaker renders STATIC and stays one
+    // generation as the derived-identity degrade rung. Budget: 0.025 control
+    // class, pinch 0.255, donut quiet exactly 0.125 (the validator's amended
+    // floor). The decoder side is the same chain with a relocated descriptor
+    // (r0 1.05, crossing "down" — the flipped sampler).
+    const msgT = "DRING";
+    // (a) 1-up: payload AND control channel in one mid-loop capture — the
+    //     wiggling band floor must not disturb registration or the data rings.
+    const pA = OC.profile.profileV3(undefined, { session32: 0xD41A6001, render: { size_px: 448, scale_px_per_unit: 70 } });
+    OC.profile.applyDring(pA, "a42");
+    const vA = OC.profile.validate(pA);
+    let seqA = OC.emission.renderSequence(pA, 500, { payloadBytes: OC.fountain.textToBytes(msgT) });
+    let slA = seqA.frames.slice(50);
+    seqA = null;
+    const rA = OC.pipeline.decodeSequence(slA, pA, { payload: true, beacon: true });
+    slA = null;
+    const emA = rA.error ? null : rA.emitters[0];
+    const bA = emA && emA.annuli.find(a => a.beacon);
+    const fA = bA && bA.envelopeFields;
+    const okA = !!(vA.ok && emA && emA.payload && emA.payload.ok === true && emA.payload.text === msgT &&
+                   bA && !bA.error && bA.alignMethod === "framed" && bA.framing === "chunked" &&
+                   fA && fA.session32 === 0xD41A6001 && fA.tile === 0);
+    // (b) 2-up: EVERY tile carries the ring, each announcing ITS OWN index —
+    //     announced identity must agree with the breaker-derived tile, and the
+    //     pooled peel must still complete on the static-breaker lattice.
+    const pB = OC.profile.profileV3(undefined, { tiling: 2, session32: 0xD41A6002, render: { scale_px_per_unit: 70 } });
+    OC.profile.applyDring(pB, "a42");
+    const vB2 = OC.profile.validate(pB);
+    let seqB = OC.emission.renderSequence(pB, 500, { payloadBytes: OC.fountain.textToBytes(msgT) });
+    let slB = seqB.frames.slice(50);
+    seqB = null;
+    const rB2 = OC.pipeline.decodeSequence(slB, pB, { payload: true, beacon: true });
+    slB = null;
+    const emsB = rB2.error ? [] : rB2.emitters;
+    const beaconRows = emsB.map(em => ({ derived: em.tile, row: em.annuli.find(a => a.beacon) }))
+                           .filter(x => x.row && x.row.envelopeFields);
+    const announced = beaconRows.map(x => x.row.envelopeFields.tile).sort().join(",");
+    const agreeB = beaconRows.every(x => x.row.envelopeFields.tile === x.derived &&
+                                         x.row.envelopeFields.session32 === 0xD41A6002 &&
+                                         x.row.framing === "chunked");
+    const okB = !!(vB2.ok && emsB.length === 2 && beaconRows.length === 2 && announced === "0,1" && agreeB &&
+                   rB2.pooled && rB2.pooled.ok === true && rB2.pooled.text === msgT);
+    // (c) the class bound: one hair over 0.025 at A-inner must refuse
+    const pC = OC.profile.profileV3(undefined, {});
+    OC.profile.applyDring(pC, "a42");
+    pC.beacon.amplitudes = [0.011, 0.008, 0.007];
+    const vC = OC.profile.validate(pC);
+    const okC = !!(vC.ok === false && vC.errors.some(e => /geometry-priced class/.test(e)));
+    record("T22t D-ring at A-inner (ruling 1b): the control contour rides band A's floor on every tile with the breaker static, a 1-up mid-loop capture carries payload AND the chunked envelope together, a 2-up's tiles each ANNOUNCE their own index (b[16]) agreeing with breaker-derived identity while the pooled peel completes, the amended budget validates at exactly 0.125 quiet, and 0.001 over the 0.025 control class refuses",
+      okA && okB && okC,
+      "(a) validate " + vA.ok + " payload " + JSON.stringify(emA && emA.payload && emA.payload.text) +
+      " beacon " + (bA ? bA.alignMethod + "/" + bA.framing + " tile " + (fA && fA.tile) + " sess " + (fA && fA.session32.toString(16)) + (bA.error ? " ERR " + bA.error : "") : "none") +
+      " · (b) validate " + vB2.ok + " emitters " + emsB.length + " announced [" + announced + "] agree " + agreeB +
+      " pooled " + JSON.stringify(rB2.pooled && { ok: rB2.pooled.ok, text: rB2.pooled.text }) +
+      " · (c) refused " + okC + (vC.errors.length ? " (" + vC.errors[0].slice(0, 60) + "…)" : ""));
+  }
+  }
+
+  if (caseOn("T22u")) {
+  await tick("T22u: the lease, optically — bind, restart-pooling, content switch, the tag heartbeat…");
+  {
+    // End-to-end through real renders: (a) a sealed emission BINDS and banks;
+    // a second emission with a NEW session and the SAME payload pools into
+    // the SAME content ledger (droplets are session-independent — the
+    // restart/choir case); (b) the SAME session with NEW content is a new
+    // tag, a new context and a new ledger, the old one untouched; (c) a
+    // capture too short to seal (under one envelope cycle) still holds the
+    // lease through TAG CONFIRMATION — grace resumes to bound and banks.
+    const HVu = OC.harvest;
+    const mkP = (sess) => { const p = OC.profile.profileV3(undefined, { session32: sess,
+      render: { size_px: 448, scale_px_per_unit: 70 } }); OC.profile.applyDring(p, "a42"); return p; };
+    const p1 = mkP(0x1EA5E001), p2 = mkP(0x1EA5E002), p3 = mkP(0x1EA5E001);
+    const st = HVu.createStore(p1), lease = HVu.leaseCreate({ operator: true });
+    const dec = (p, frames, expectTag) => OC.pipeline.decodeSequence(frames, p,
+      { payload: true, beacon: true, beaconAlign: expectTag ? { expectTag } : undefined });
+    let seq1 = OC.emission.renderSequence(p1, 700, { payloadBytes: OC.fountain.textToBytes("LEASE") });
+    const r1 = dec(p1, seq1.frames.slice(50, 500));
+    const shortSl = seq1.frames.slice(500, 690);   // 190 frames < the 400-frame envelope cycle
+    seq1 = null;
+    const o1 = HVu.leaseObserve(st, lease, r1, p1, 1);
+    const tag1 = Object.keys(st.contexts)[0];
+    const key1 = tag1 && st.contexts[tag1].contentKey;
+    const peel1 = tag1 && HVu.tryPeelStore(st, lease, key1, p1);
+    const okA1 = !!(tag1 && o1.events.some(e => e.ev === "bind") && st.contexts[tag1].state === "bound" &&
+                    peel1 && peel1.ok === true && peel1.text === "LEASE");
+    let seq2 = OC.emission.renderSequence(p2, 500, { payloadBytes: OC.fountain.textToBytes("LEASE") });
+    const r2 = dec(p2, seq2.frames.slice(50));
+    seq2 = null;
+    HVu.leaseObserve(st, lease, r2, p2, 2);
+    const tags2 = Object.keys(st.contexts);
+    const tag2 = tags2.find(t => t !== tag1);
+    const okA2 = !!(tags2.length === 2 && tag2 && st.contexts[tag2].contentKey === key1 &&
+                    Object.keys(st.ledgers).length === 1);
+    // (b) same session, new content
+    const beforeB = HVu.counts(st.ledgers[key1]).droplets;
+    let seq3 = OC.emission.renderSequence(p3, 500, { payloadBytes: OC.fountain.textToBytes("SWITCHED") });
+    const r3 = dec(p3, seq3.frames.slice(50));
+    seq3 = null;
+    HVu.leaseObserve(st, lease, r3, p3, 3);
+    const tag3 = Object.keys(st.contexts).find(t => t !== tag1 && t !== tag2);
+    const key3 = tag3 && st.contexts[tag3].contentKey;
+    const peel3 = tag3 && HVu.tryPeelStore(st, lease, key3, p3);
+    const okB = !!(tag3 && key3 !== key1 && Object.keys(st.ledgers).length === 2 &&
+                   HVu.counts(st.ledgers[key1]).droplets === beforeB &&
+                   peel3 && peel3.ok === true && peel3.text === "SWITCHED" &&
+                   st.contexts[tag1].state === "grace"); // its plate sealed a different tag that window
+    // (c) the heartbeat: too short to seal, but the KNOWN tag confirms —
+    // grace resumes to bound and the window banks direct
+    const r4 = dec(p1, shortSl, tag1);
+    const row4 = r4.error ? null : r4.emitters[0].annuli.find(a => a.beacon);
+    const o4 = HVu.leaseObserve(st, lease, r4, p1, 4);
+    const okC = !!(row4 && row4.tagConfirmed === true && row4.tag === tag1 && !row4.envelopeFields &&
+                   st.contexts[tag1].state === "bound" &&
+                   o4.events.some(e => e.ev === "bank" && e.tag === tag1));
+    record("T22u the lease optically: a sealed a42 emission binds and its ledger peels; a NEW session with the same payload pools into the SAME content ledger (restart/choir); the SAME session with new content splits tag, context and ledger with the old peel untouched (the old context drops to grace); and a capture too short to seal holds the lease by CONFIRMING the known tag — grace resumes to bound and banks direct",
+      okA1 && okA2 && okB && okC,
+      "(a) bind " + tag1 + " peel " + JSON.stringify(peel1 && { ok: peel1.ok, text: peel1.text }) +
+      " · pool " + tag2 + "→" + (tag2 && st.contexts[tag2].contentKey) + " ledgers " + Object.keys(st.ledgers).length +
+      " · (b) " + tag3 + "→" + key3 + " old " + beforeB + "=" + HVu.counts(st.ledgers[key1]).droplets +
+      " peel " + JSON.stringify(peel3 && { ok: peel3.ok, text: peel3.text }) + " ctx1 " + st.contexts[tag1].state +
+      " · (c) " + (row4 ? "confirmed " + row4.tagConfirmed + " tag " + row4.tag + " ×" + row4.tagSightings + " ctx1 " + st.contexts[tag1].state
+                        : "no beacon row"));
+  }
+  }
+
+  if (caseOn("T22v")) {
+  await tick("T22v: chunk banking across windows — the envelope assembled from sub-cycle captures…");
+  {
+    // The first a42 field clip's lesson: the envelope cycle is 13.3 s and
+    // harvest windows are 8–12 s, so NO single window can seal — the beacon
+    // read "no lock" forever while the data rings decoded happily. Chunks
+    // are droplets of the control plane: three ~6 s windows, none holding a
+    // whole cycle, must BANK their partial chunk sets and bind the moment
+    // the majority set assembles under the CRC16 seal — with the operator
+    // rung's droplets adopted into the content ledger at that instant.
+    const HVv = OC.harvest;
+    const pV = OC.profile.profileV3(undefined, { session32: 0x0C7A6BA9, render: { size_px: 448, scale_px_per_unit: 70 } });
+    OC.profile.applyDring(pV, "a42");
+    const stV = HVv.createStore(pV), lsV = HVv.leaseCreate({ operator: true });
+    // Slices OVERLAP by one chunk length (48 frames): a chunk straddling a
+    // window boundary dies to edge erasure exactly like a droplet does (the
+    // field36 edge-truncation lesson at the control plane) — the first cut of
+    // this test tiled the windows edge-to-edge and chunk 3 was never whole.
+    let seqV = OC.emission.renderSequence(pV, 620, { payloadBytes: OC.fountain.textToBytes("LEASE") });
+    const slices = [seqV.frames.slice(64, 280), seqV.frames.slice(232, 448), seqV.frames.slice(400, 616)];
+    seqV = null;
+    const evAll = [];
+    let sealedInWindow = false, bankSealAt = 0;
+    slices.forEach((sl, i) => {
+      const r = OC.pipeline.decodeSequence(sl, pV, { payload: true, beacon: true });
+      const row = r.error ? null : r.emitters[0].annuli.find(a => a && (a.beacon || a.annulus === "beacon"));
+      if (row && row.envelopeFields) sealedInWindow = true;   // a sub-cycle window must NOT seal alone
+      const o = HVv.leaseObserve(stV, lsV, r, pV, i + 1);
+      evAll.push(o.events.map(e => e.ev));
+      if (!bankSealAt && o.events.some(e => e.ev === "bank-seal")) bankSealAt = i + 1;
+    });
+    const tagV = Object.keys(stV.contexts)[0];
+    const ctxV = tagV && stV.contexts[tagV];
+    const peelV = ctxV && HVv.tryPeelStore(stV, lsV, ctxV.contentKey, pV);
+    record("T22v chunk banking: three sub-cycle windows (180 frames each against a 400-frame envelope cycle) never seal alone, their chunk sweeps bank across windows, the majority set ASSEMBLES + BINDS mid-clip, the operator rung's droplets adopt into the content ledger, and the payload peels from the union",
+      !!(!sealedInWindow && bankSealAt > 0 && ctxV && ctxV.state !== "clipped" &&
+         ctxV.session32 === 0x0C7A6BA9 && Object.keys(stV.ledgers).length === 1 &&
+         peelV && peelV.ok === true && peelV.text === "LEASE"),
+      "bank-seal at w" + bankSealAt + " (sealed-in-window " + sealedInWindow + ") · ctx " + tagV +
+      " session " + (ctxV && (ctxV.session32 >>> 0).toString(16)) + " state " + (ctxV && ctxV.state) +
+      " · ledgers " + Object.keys(stV.ledgers).length +
+      " · peel " + JSON.stringify(peelV && { ok: peelV.ok, text: peelV.text }) +
+      " · events " + JSON.stringify(evAll));
+  }
+  }
+
+  if (caseOn("T22w")) {
+  await tick("T22w: A-inner amplitude re-split trials — the class re-aimed at the tracker…");
+  {
+    // The field said the a-inner ring under-resolves at range; trackPhase
+    // EXCLUDES k=1 from the phase estimate (F5b — centering error rides the
+    // k=1 coefficient), so the default split spends 0.010 of the 0.025 class
+    // on a branch guide. The trial codes re-split the SAME class toward the
+    // harmonics the tracker actually weights, (k·a)².
+    // (a) shapes: both codes keep the class sum at exactly 0.025 and validate.
+    const pR = OC.profile.profileV3(undefined, {});
+    OC.profile.applyDring(pR, "a42r");
+    const sumR = pR.beacon.amplitudes.reduce((s, a) => s + a, 0);
+    const vR = OC.profile.validate(pR);
+    const okR = !!(vR.ok && pR.beacon.placement === "a-inner" && pR.beacon.framing === "chunked" &&
+                   pR.beacon.rotation.M === 4 && pR.beacon.rotation.frames_per_symbol === 2 &&
+                   pR.beacon.harmonics.join(",") === "1,2,3" &&
+                   pR.beacon.amplitudes.join(",") === "0.005,0.005,0.015" &&
+                   Math.abs(sumR - 0.025) < 1e-12);
+    const pX0 = OC.profile.profileV3(undefined, {});
+    OC.profile.applyDring(pX0, "a42x");
+    const sumX = pX0.beacon.amplitudes.reduce((s, a) => s + a, 0);
+    const vX = OC.profile.validate(pX0);
+    const okX = !!(vX.ok && pX0.beacon.placement === "a-inner" && pX0.beacon.harmonics.join(",") === "1,2,3,5" &&
+                   pX0.beacon.phases_deg.length === 4 && Math.abs(sumX - 0.025) < 1e-12);
+    // (b) list hygiene: toggling codes on ONE live profile (the emit select)
+    //     must never carry a previous trial's split forward.
+    const pH = OC.profile.profileV3(undefined, {});
+    OC.profile.applyDring(pH, "a42x");
+    OC.profile.applyDring(pH, "a42");
+    const backA = pH.beacon.harmonics.join(",") === "1,2,3" &&
+                  pH.beacon.amplitudes.join(",") === "0.01,0.008,0.007";
+    OC.profile.applyDring(pH, "f24");
+    const backF = JSON.stringify(pH.beacon) === JSON.stringify(OC.profile.profileV3(undefined, {}).beacon);
+    // (c) a42x optically: k=5 has never ridden the beacon ladder — a 1-up
+    //     mid-loop capture in T22s's shape (identity-only envelope, beacon-only
+    //     decode; payload+beacon coexistence at a-inner is T22t's pin) must
+    //     assemble the chunked envelope through the standard chain. Structure,
+    //     not SNR: synthetic frames are noise-free; the dB claims are the
+    //     FIELD A/B's to earn.
+    const pW = OC.profile.profileV3(undefined, { session32: 0xA42E0001, render: { size_px: 448, scale_px_per_unit: 70 } });
+    OC.profile.applyDring(pW, "a42x");
+    const infoW = { K: 9, len: 17, pcrc: 0x7E57, capability: 1 };
+    const expTagW = (() => { const e = OC.emission.envelopeBytes(pW, infoW); return ((e[18] << 8) | e[19]); })();
+    let seqW = OC.emission.renderSequence(pW, 500, { payloadInfo: infoW });
+    let slW = seqW.frames.slice(50);
+    seqW = null;
+    const rW = OC.pipeline.decodeSequence(slW, pW, { beacon: true });
+    slW = null;
+    const bW = rW.error ? null : rW.emitters[0].annuli.find(a => a.beacon);
+    const fW = bW && bW.envelopeFields;
+    const okW = !!(bW && !bW.error && bW.alignMethod === "framed" && bW.framing === "chunked" &&
+                   fW && fW.session32 === 0xA42E0001 && fW.K === 9 && fW.pcrc === 0x7E57 && fW.tile === 0 &&
+                   bW.tag === expTagW.toString(16).padStart(4, "0"));
+    record("T22w A-inner amplitude re-split: a42r concentrates the 0.025 class k≥2-heavy and a42x climbs the ladder to k=5, both validate at exactly the class sum, toggling codes on one live profile restores the default lists (no stale split rides the emit select), and a42x assembles the chunked envelope through the standard chain",
+      okR && okX && backA && backF && okW,
+      "(a) a42r " + vR.ok + " [" + pR.beacon.amplitudes + "] sum " + sumR.toFixed(3) +
+      " · a42x " + vX.ok + " k[" + pX0.beacon.harmonics + "] [" + pX0.beacon.amplitudes + "] sum " + sumX.toFixed(3) +
+      " · (b) a42x→a42 restores " + backA + ", →f24 byte-identical " + backF +
+      " · (c) a42x optical: " + (bW ? (bW.alignMethod || "?") + "/" + bW.framing + " tag " + bW.tag +
+                    " tile " + (fW && fW.tile) + " sess " + (fW && (fW.session32 >>> 0).toString(16)) +
+                    (bW.error ? " ERR " + bW.error : "") : "no row: " + JSON.stringify(rW.error).slice(0, 80)));
+  }
+  }
+
+  if (caseOn("T22y")) {
+  await tick("T22y: the a42g geometry trial — the ring moves in, the class rises to what the geometry prices…");
+  {
+    // 2026-08-27 (the QR retired emit-side): floor 1.00, quiet_r 0.80 (the
+    // breaker's own outer edge), class 0.075 k3-heavy. Quiet width lands ON
+    // the 0.125 floor, pinch stays at the frozen 0.255 exactly, no data edge
+    // moves. The validator's class bound is now geometry-priced: the frozen
+    // default still prices 0.025 byte-for-byte.
+    const pG = OC.profile.profileV3(undefined, {});
+    OC.profile.applyDring(pG, "a42g");
+    const vG = OC.profile.validate(pG);
+    const sumG = pG.beacon.amplitudes.reduce((s, a) => s + a, 0);
+    const okG = !!(vG.ok && pG.bands[0].lo.fixed === 1.00 && pG.plate.quiet_r === 0.80 &&
+                   pG.beacon.placement === "a-inner" && pG.beacon.rotation.M === 4 &&
+                   pG.beacon.amplitudes.join(",") === "0.012,0.018,0.045" &&
+                   Math.abs(sumG - 0.075) < 1e-12);
+    // one hair over the geometry-priced class refuses
+    const pGo = OC.profile.profileV3(undefined, {});
+    OC.profile.applyDring(pGo, "a42g");
+    pGo.beacon.amplitudes = [0.012, 0.018, 0.046];
+    const vGo = OC.profile.validate(pGo);
+    const okGo = !!(vGo.ok === false && vGo.errors.some(e => /geometry-priced class/.test(e)));
+    // toggle hygiene one level up: a42g → a42 restores the frozen geometry
+    const pH2 = OC.profile.profileV3(undefined, {});
+    OC.profile.applyDring(pH2, "a42g");
+    OC.profile.applyDring(pH2, "a42");
+    const backG = pH2.bands[0].lo.fixed === 1.05 && pH2.plate.quiet_r === 0.90 &&
+                  pH2.beacon.amplitudes.join(",") === "0.01,0.008,0.007";
+    // optical end-to-end at the new geometry: the wider band A and the
+    // 0.045 k3 contour must register, seal, and peel through the standard
+    // chain (T22s's shape: identity-only envelope, beacon-only decode).
+    const pW2 = OC.profile.profileV3(undefined, { session32: 0xA4260001, render: { size_px: 448, scale_px_per_unit: 70 } });
+    OC.profile.applyDring(pW2, "a42g");
+    const infoG = { K: 9, len: 17, pcrc: 0x7E57, capability: 1 };
+    const expTagG = (() => { const e = OC.emission.envelopeBytes(pW2, infoG); return ((e[18] << 8) | e[19]); })();
+    let seqG = OC.emission.renderSequence(pW2, 500, { payloadInfo: infoG });
+    let slG = seqG.frames.slice(50);
+    seqG = null;
+    const rG = OC.pipeline.decodeSequence(slG, pW2, { beacon: true });
+    slG = null;
+    const bG = rG.error ? null : rG.emitters[0].annuli.find(a => a.beacon);
+    const fG = bG && bG.envelopeFields;
+    const okW2 = !!(bG && !bG.error && bG.alignMethod === "framed" && bG.framing === "chunked" &&
+                    fG && fG.session32 === 0xA4260001 && bG.tag === expTagG.toString(16).padStart(4, "0"));
+    record("T22y a42g geometry trial: floor 1.00 / quiet 0.80 / class 0.075 k3-heavy validates with quiet ON the 0.125 floor and pinch at the frozen 0.255, one hair over the geometry-priced class refuses, toggling back to a42 restores the frozen geometry, and the relocated ring seals the chunked envelope through the standard chain",
+      okG && okGo && backG && okW2,
+      "(a) validate " + vG.ok + " floor " + pG.bands[0].lo.fixed + " quiet " + pG.plate.quiet_r + " sum " + sumG.toFixed(3) +
+      " · (b) over-class refused " + okGo +
+      " · (c) a42g→a42 restores " + backG +
+      " · (d) optical: " + (bG ? (bG.alignMethod || "?") + "/" + bG.framing + " tag " + bG.tag +
+                    " sess " + (fG && (fG.session32 >>> 0).toString(16)) + (bG.error ? " ERR " + bG.error : "") : "no row: " + JSON.stringify(rG.error).slice(0, 80)));
+  }
+  }
+
+  if (caseOn("T22z")) {
+  await tick("T22z: the center revision (a42q) — three-section quadrant center, identity by variant…");
+  {
+    // v4 clause 2′ (practitioner's proposal): bullseye AND breaker retire
+    // into one three-section quadrant target; the designated tile carries
+    // the VARIANT (every section flipped) — identity by shape, the count
+    // asymmetry ends. a42q = a42g's proven geometry + this one new variable.
+    const q3over = { countdown: { freeze_s: 0, loop_s: 60 }, plate: { corner_style: "quadrant" } };
+    // (a) validator: a42q at freeze 0 validates; at the default freeze it
+    //     REFUSES (no countdown face may exist over the target); toggling
+    //     back to a42 restores the bullseye center and the frozen geometry.
+    const pQ = OC.profile.profileV3(undefined, Object.assign({ session32: 0xA42C0001, render: { size_px: 448, scale_px_per_unit: 70 } }, q3over));
+    OC.profile.applyDring(pQ, "a42q");
+    const vQ = OC.profile.validate(pQ);
+    const pQf = OC.profile.profileV3(undefined, { plate: { corner_style: "quadrant" } });
+    OC.profile.applyDring(pQf, "a42q");
+    const vQf = OC.profile.validate(pQf);
+    const pQh = OC.profile.profileV3(undefined, q3over);
+    OC.profile.applyDring(pQh, "a42q");
+    OC.profile.applyDring(pQh, "a42");
+    const backQ = pQh.plate.center_style === "bullseye" && pQh.plate.quiet_r === 0.90 && pQh.bands[0].lo.fixed === 1.05;
+    // a44q = the same plate at F=4 (the rate lever): validates, F carries
+    const pR4 = OC.profile.profileV3(undefined, q3over);
+    OC.profile.applyDring(pR4, "a44q");
+    const vR4 = OC.profile.validate(pR4);
+    const okA2 = !!(vQ.ok && pQ.plate.center_style === "quadrant3" && pQ.plate.quiet_r === 0.80 &&
+                    vQf.ok === false && vQf.errors.some(e => /freeze_s 0/.test(e)) && backQ &&
+                    vR4.ok && pR4.beacon.rotation.frames_per_symbol === 4 && pR4.plate.center_style === "quadrant3");
+    // (b) the variant differs from the plain target on rendered pixels
+    const p2q = OC.profile.profileV3(undefined, Object.assign({ tiling: 2, session32: 0xA42C0002, render: { scale_px_per_unit: 50 } }, q3over));
+    OC.profile.applyDring(p2q, "a42q");
+    let seq2q = OC.emission.renderSequence(p2q, 2, {});
+    const f2q = seq2q.frames[0].img;
+    seq2q = null;
+    const pitchPx = (p2q.tile_pitch || 7.2) * 50;
+    const c0x = Math.round(0.5 * pitchPx), c1x = Math.round(1.5 * pitchPx), cy0 = Math.round(0.5 * pitchPx);
+    let dVar = 0, nVar = 0;
+    for (let dy = -20; dy <= 20; dy += 2) for (let dx = -20; dx <= 20; dx += 2) {
+      const a0v = f2q.data[(cy0 + dy) * f2q.w + (c0x + dx)];
+      const a1v = f2q.data[(cy0 + dy) * f2q.w + (c1x + dx)];
+      dVar += Math.abs(a0v - a1v); nVar++;
+    }
+    const okB2 = dVar / nVar > 0.02;  // tile-0 (variant) vs tile-1 (plain) centers differ
+    // (c) 1-up optical: the chunked envelope seals through the standard
+    //     chain with the new center (corners carry registration)
+    const infoQ = { K: 9, len: 17, pcrc: 0x7E57, capability: 1 };
+    const expTagQ = (() => { const e = OC.emission.envelopeBytes(pQ, infoQ); return ((e[18] << 8) | e[19]); })();
+    let seqQ = OC.emission.renderSequence(pQ, 500, { payloadInfo: infoQ });
+    let slQ = seqQ.frames.slice(50);
+    seqQ = null;
+    const rQ = OC.pipeline.decodeSequence(slQ, pQ, { beacon: true });
+    slQ = null;
+    const bQ = rQ.error ? null : rQ.emitters[0].annuli.find(a => a.beacon);
+    const fQ = bQ && bQ.envelopeFields;
+    const okC2 = !!(bQ && !bQ.error && bQ.alignMethod === "framed" && bQ.framing === "chunked" &&
+                    fQ && fQ.session32 === 0xA42C0001 && bQ.tag === expTagQ.toString(16).padStart(4, "0"));
+    // (d) 2-up: the designated tile is read from the VARIANT (no breaker
+    //     anywhere), announced identity agrees, and the pooled peel completes
+    const msgQ = "QCENT";
+    let seqD = OC.emission.renderSequence(p2q, 500, { payloadBytes: OC.fountain.textToBytes(msgQ) });
+    let slD = seqD.frames.slice(50);
+    seqD = null;
+    const rD = OC.pipeline.decodeSequence(slD, p2q, { payload: true, beacon: true });
+    slD = null;
+    const emsD = rD.error ? [] : rD.emitters;
+    const beaconRowsD = emsD.map(em => ({ derived: em.tile, row: em.annuli.find(a => a.beacon) }))
+                            .filter(x => x.row && x.row.envelopeFields);
+    const announcedD = beaconRowsD.map(x => x.row.envelopeFields.tile).sort().join(",");
+    const agreeD = beaconRowsD.every(x => x.row.envelopeFields.tile === x.derived);
+    const okD2 = !!(emsD.length === 2 && rD.designatedTile !== undefined && announcedD === "0,1" && agreeD &&
+                    rD.pooled && rD.pooled.ok === true && rD.pooled.text === msgQ);
+    record("T22z the center revision (a42q): validator admits the target only at freeze 0 and restores the bullseye on toggle, the designated VARIANT differs from the plain target on pixels, the chunked envelope seals through the standard chain with the new center, and a 2-up derives its designated tile from the variant with the pooled peel completing",
+      okA2 && okB2 && okC2 && okD2,
+      "(a) v(q3) " + vQ.ok + " v(freeze3) refused " + (vQf.ok === false) + " restores " + backQ +
+      " a44q " + vR4.ok + "/F" + pR4.beacon.rotation.frames_per_symbol + "/" + pR4.plate.center_style +
+      " · (b) variant-vs-plain px " + (dVar / nVar).toFixed(3) +
+      " · (c) " + (bQ ? (bQ.alignMethod || "?") + "/" + bQ.framing + " tag " + bQ.tag + (bQ.error ? " ERR " + bQ.error : "") : "no row: " + JSON.stringify(rQ.error).slice(0, 60)) +
+      " · (d) emitters " + emsD.length + " designated " + rD.designatedTile + " announced [" + announcedD + "] agree " + agreeD +
+      " pooled " + JSON.stringify(rD.pooled && { ok: rD.pooled.ok, text: rD.pooled.text }));
+  }
+  }
+
+  if (caseOn("T22f4")) {
+  await tick("T22f4: the v4 geometry dividend (a42v) — floor 0.95, class 0.090, family 4 announced…");
+  {
+    // v4 clause 3 (ruled 2026-08-28): the full step past the a42g bridge.
+    // quiet_r 0.70 = the target rim + its 0.10 moat exactly; floor 0.95;
+    // class 0.090 (both walls carry margin: quiet width 0.160 vs the 0.125
+    // floor, class vs the 0.125 ceiling). The version signal b[1]=4 rides
+    // the envelope — the tag moves, as the content-switch interlock
+    // requires. Geometry past the bridge without the signal REFUSES.
+    const v4over = { countdown: { freeze_s: 0, loop_s: 60 }, plate: { corner_style: "quadrant" } };
+    // (a) validator + wire: a42v validates with the ruled numbers; b[1] = 4;
+    //     the tag differs from a42q's at the same session (family under CRC)
+    const pV4 = OC.profile.profileV3(undefined, Object.assign({ session32: 0xA42F0004, render: { size_px: 448, scale_px_per_unit: 70 } }, v4over));
+    OC.profile.applyDring(pV4, "a42v");
+    const vV4 = OC.profile.validate(pV4);
+    const sumV4 = pV4.beacon.amplitudes.reduce((a, b) => a + b, 0);
+    const infoF = { K: 9, len: 17, pcrc: 0x7E57, capability: 1 };
+    const envV4 = OC.emission.envelopeBytes(pV4, infoF);
+    const pQ4 = OC.profile.profileV3(undefined, Object.assign({ session32: 0xA42F0004 }, v4over));
+    OC.profile.applyDring(pQ4, "a42q");
+    const envQ4 = OC.emission.envelopeBytes(pQ4, infoF);
+    const tagDiffers = ((envV4[18] << 8) | envV4[19]) !== ((envQ4[18] << 8) | envQ4[19]);
+    const okA = !!(vV4.ok && pV4.plate.quiet_r === 0.70 && pV4.bands[0].lo.fixed === 0.95 &&
+                   pV4.plate.center_style === "quadrant3" && Math.abs(sumV4 - 0.090) < 1e-9 &&
+                   pV4.family === 4 && envV4[1] === 4 && envQ4[1] === 3 && tagDiffers);
+    // (b) the family gate: the same geometry WITHOUT the version signal
+    //     refuses; family on a non-quadrant3 plate refuses; the class
+    //     ceiling (0.125) still prices — 0.126 refuses
+    const pNo = OC.profile.profileV3(undefined, v4over);
+    OC.profile.applyDring(pNo, "a42q");
+    pNo.bands[0].lo.fixed = 0.95; pNo.plate.quiet_r = 0.70;   // past the bridge, no signal
+    const vNo = OC.profile.validate(pNo);
+    const pWr = OC.profile.profileV3(undefined, v4over);
+    OC.profile.applyDring(pWr, "a42g");
+    pWr.family = 4;                                            // family on a bullseye-center plate
+    const vWr = OC.profile.validate(pWr);
+    const pOv = OC.profile.profileV3(undefined, v4over);
+    OC.profile.applyDring(pOv, "a42v");
+    pOv.beacon.amplitudes = [0.020, 0.030, 0.076];             // sum 0.126 > the 0.125 ceiling
+    const vOv = OC.profile.validate(pOv);
+    const okB = !!(vNo.ok === false && vNo.errors.some(e => /family-4 version signal/.test(e)) &&
+                   vWr.ok === false && vWr.errors.some(e => /quadrant3/.test(e)) &&
+                   vOv.ok === false && vOv.errors.some(e => /geometry-priced class/.test(e)));
+    // (c) toggle: a42v → a42 restores the frozen plate AND family 3 on the wire
+    const pTg = OC.profile.profileV3(undefined, v4over);
+    OC.profile.applyDring(pTg, "a42v");
+    OC.profile.applyDring(pTg, "a42");
+    const envTg = OC.emission.envelopeBytes(pTg, infoF);
+    const okC = pTg.plate.quiet_r === 0.90 && pTg.bands[0].lo.fixed === 1.05 &&
+                pTg.family === undefined && envTg[1] === 3;
+    // (d) optical: the chunked envelope seals at the new geometry through
+    //     the standard chain, and FAMILY 4 reads from the air
+    const expTagF = ((envV4[18] << 8) | envV4[19]);
+    let seqF = OC.emission.renderSequence(pV4, 500, { payloadInfo: infoF });
+    let slF = seqF.frames.slice(50);
+    seqF = null;
+    const rF = OC.pipeline.decodeSequence(slF, pV4, { beacon: true });
+    slF = null;
+    const bF = rF.error ? null : rF.emitters[0].annuli.find(a => a.beacon);
+    const fF = bF && bF.envelopeFields;
+    const okD = !!(bF && !bF.error && bF.alignMethod === "framed" && bF.framing === "chunked" &&
+                   fF && fF.session32 === 0xA42F0004 && fF.family === 4 &&
+                   bF.tag === expTagF.toString(16).padStart(4, "0"));
+    record("T22f4 the v4 dividend (a42v): floor 0.95 / quiet 0.70 / class 0.090 validates with margin on both walls and announces family 4 (the tag moves under the CRC), the same geometry without the version signal refuses, the 0.125 ceiling still prices, toggling back restores the frozen plate at family 3, and the sealed envelope reads FAMILY 4 off the air",
+      okA && okB && okC && okD,
+      "(a) v " + vV4.ok + " quiet " + pV4.plate.quiet_r + " floor " + pV4.bands[0].lo.fixed + " sum " + sumV4.toFixed(3) +
+      " b1 " + envV4[1] + "/" + envQ4[1] + " tagDiff " + tagDiffers +
+      " · (b) no-signal " + (vNo.ok === false) + " wrong-plate " + (vWr.ok === false) + " over-ceiling " + (vOv.ok === false) +
+      " · (c) restores " + okC +
+      " · (d) " + (bF ? (bF.alignMethod || "?") + "/" + bF.framing + " fam " + (fF && fF.family) + " tag " + bF.tag + (bF.error ? " ERR " + bF.error : "") : "no row: " + JSON.stringify(rF.error).slice(0, 60)));
+  }
+  }
+
+}
+
+suiteStart(main);
+</script>
