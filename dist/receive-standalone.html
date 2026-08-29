@@ -1049,6 +1049,8 @@
         p.beacon.amplitudes = [0.012, 0.018, 0.045];
         if (code === "a44q") p.beacon.rotation.frames_per_symbol = 4;
       } else if (code === "a42v") {
+        // Contract technical/phryctoros-v4-contract.md (the edition, folded
+        // 2026-08-29; the draft chain is superseded).
         // THE v4 GEOMETRY DIVIDEND (clause 3, ruled 2026-08-28): the full
         // step past the a42g bridge — quiet_r 0.70 (the target rim + its
         // 0.10 moat exactly), floor 0.95, class 0.090 = a42q's k3-heavy
