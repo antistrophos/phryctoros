@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>optical-carriage — capture registry (standards vs field evidence)</title>
+<style>
+  body { font: 14px/1.45 system-ui, sans-serif; margin: 1.2rem; background: #14161a; color: #d8dce2; }
+  h1 { font-size: 1.15rem; } h2 { font-size: 1.0rem; margin: 1.2rem 0 .4rem; color: #c0a6f7; }
+  .ok { color: #7ce38b; } .bad { color: #ff8b8b; } .warn { color: #ffd27c; } .info { color: #c0a6f7; } .dim { color: #7a8494; }
+  table { border-collapse: collapse; margin: .4rem 0; }
+  th, td { border: 1px solid #2a2e36; padding: .2rem .5rem; text-align: left; font-size: 13px; }
+  th { background: #1b1e24; cursor: default; }
+  tr.cap { cursor: pointer; } tr.cap:hover { background: #1b1e24; } tr.sel { background: #232836; }
+  input, select, button, textarea { background: #0d0f12; color: #d8dce2; border: 1px solid #2a2e36; padding: .15rem .4rem; font: inherit; }
+  input[type=number] { width: 5.5rem; }
+  button { cursor: pointer; } button:hover { border-color: #c0a6f7; }
+  fieldset { border: 1px solid #2a2e36; margin: .5rem 0; }
+  svg { background: #0d0f12; border: 1px solid #2a2e36; }
+  .chip { display: inline-block; padding: 0 .4rem; border-radius: .6rem; font-size: 12px; border: 1px solid #2a2e36; }
+  #status { margin: .4rem 0; }
+  label { margin-right: .7rem; }
+</style>
+</head>
+<body>
+<h1>capture registry — proposed standards against the evidence</h1>
+<p class="dim">Each capture record = one harvest log (synthetic / render-export / camera) + the physical
+conditions the log cannot know (distance, angle, zoom, lighting, device, mount). Metrics are extracted
+from the log, never typed by hand: per-ring lock duty and first lock, wire rate (avg/peak), decoded
+goodput, exit-vs-loop, bind/seal windows. The registry itself is <code>results/registry.json</code> —
+saved through the same POST lane every instrument uses, with a download backup; commit it when it is
+worth keeping. Ingest from the server's own posted logs (scan), from downloaded
+<code>harvest-log-*.json</code> files, or by paste.</p>
+
+<div id="status" class="info">loading registry…</div>
+<p>
+  <button id="scanBtn">scan server field logs</button>
+  <input id="fileIn" type="file" accept=".json" multiple>
+  <button id="pasteBtn">paste a log…</button>
+  <button id="saveBtn">save registry</button>
+  <span id="saveNote" class="dim"></span>
+</p>
+
+<h2>standards</h2>
+<div id="standards"></div>
+
+<h2>captures</h2>
+<div id="captures"></div>
+
+<fieldset id="editBox" style="display:none">
+  <legend>capture <span id="editId" class="info"></span></legend>
+  <label>type <select id="e_type"><option>camera</option><option>export</option><option>synthetic</option></select></label>
+  <label>mount <select id="e_mount"><option></option><option>tripod</option><option>handheld</option><option>braced</option><option>synthetic</option></select></label>
+  <label>distance (ft) <input id="e_dist" type="number" step="0.1"></label>
+  <label>angle (°) <input id="e_angle" type="number" step="1"></label>
+  <label>zoom (×) <input id="e_zoom" type="number" step="0.1"></label>
+  <label>lux <input id="e_lux" type="number" step="1"></label>
+  <label>lighting <input id="e_light" style="width:10rem" placeholder="e.g. indoor lamp, dusk"></label>
+  <label>device <input id="e_dev" style="width:10rem" placeholder="e.g. Pixel 11 Pro XL"></label>
+  <br><label style="vertical-align:top">notes <textarea id="e_notes" rows="2" cols="60"></textarea></label>
+  <br><button id="e_apply">apply</button> <button id="e_remove" class="bad">remove capture</button>
+  <div id="editRings" class="dim" style="margin-top:.4rem"></div>
+</fieldset>
+
+<h2>analysis</h2>
+<p>
+  <label>x <select id="axX"></select></label>
+  <label>y <select id="axY"></select></label>
+  <label><input id="axLog" type="checkbox"> log–log</label>
+  <label>only <select id="axCode"><option value="">all codes</option></select></label>
+  <span id="fitOut" class="info"></span>
+</p>
+<svg id="plot" width="680" height="380"></svg>
+<p class="dim">The falloff question: with log–log on and a dB metric on y, the fitted slope per decade
+÷ 10 is the power-law exponent — inverse-square reads as n ≈ 2. fid px is the geometric distance
+proxy (fid ∝ 1/d at fixed zoom), so y vs fid with log–log on answers the same question without a
+tape measure.</p>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+let reg = { version: 1, standards: {}, captures: [] };
+let selId = null;
+
+/* ---------- settings + extraction (pure; the selftest pins these) ---------- */
+function parseSettings(s) {
+  const kv = {};
+  String(s || "").split(/\s+/).forEach(t => { const m = t.match(/^([a-z_]+)=(.*)$/i); if (m) kv[m[1]] = m[2]; });
+  return kv;
+}
+function dropletBits(prof) { return /hr/.test(prof || "") || (prof || "") === "v2" || (prof || "") === "v2p" ? 48 : 24; }
+function inferType(clip) {
+  if (/^synthetic:/.test(clip || "")) return "synthetic";
+  if (/\.webm$/i.test(clip || "")) return "export";
+  return "camera";
+}
+/* One harvest log -> one capture record. Metrics only from the log; the
+   physical block starts empty (synthetic pre-fills itself). */
+function extractCapture(log) {
+  if (!log || log.kind !== "harvest" || !Array.isArray(log.windows)) return null;
+  const kv = parseSettings(log.settings);
+  const bits = dropletBits(kv.prof);
+  const rings = {};     // ann -> aggregation
+  let visitedSum = 0, exitT1 = 0, wirePeak = 0, dropletsAdded = 0;
+  let bindW = null, sealW = null, bindT1 = null, tagSeen = 0, winsAfterBind = 0;
+  const fids = [];
+  log.windows.forEach(w => {
+    const span = Math.max(0.01, (w.t1 || 0) - (w.t0 || 0));
+    visitedSum += span;
+    if ((w.t1 || 0) > exitT1) exitT1 = w.t1;
+    dropletsAdded += w.added || 0;
+    const r = (w.added || 0) * bits / span;
+    if (r > wirePeak) wirePeak = r;
+    (w.events || []).forEach(e => {
+      if (e.ev === "bind" || e.ev === "rebind") { if (bindW === null) { bindW = w.w; bindT1 = w.t1; } }
+      if (e.ev === "bank-seal" && sealW === null) sealW = w.w;
+    });
+    if (bindW !== null && w.w >= bindW) winsAfterBind++;
+    (w.rows || []).forEach(row => {
+      if (row.fid) fids.push(row.fid);
+      (row.annuli || []).forEach(a => {
+        if (!a) return;
+        const key = a.beacon ? "beacon" : String(a.ann);
+        const g = rings[key] || (rings[key] = { lockedSpan: 0, span: 0, firstLock: null, snrTopSum: 0, snrN: 0, carr: [], snrByK: {} });
+        g.span += span;
+        const locked = !!a.method;
+        if (locked) {
+          g.lockedSpan += span;
+          if (g.firstLock === null || (w.t0 || 0) < g.firstLock) g.firstLock = w.t0 || 0;
+        }
+        if (a.carrier != null) g.carr.push(a.carrier);
+        if (a.snr) {
+          let top = -Infinity;
+          for (const k in a.snr) {
+            const kk = +k;
+            (g.snrByK[kk] = g.snrByK[kk] || []).push(a.snr[k]);
+            if (kk >= 2 && a.snr[k] > top) top = a.snr[k];
+          }
+          if (top > -Infinity) { g.snrTopSum += top; g.snrN++; }
+        }
+        if (a.beacon && (a.tagN || a.tag)) tagSeen++;
+      });
+    });
+  });
+  const ringOut = {};
+  for (const key in rings) {
+    const g = rings[key];
+    const mean = arr => arr.length ? arr.reduce((s, x) => s + x, 0) / arr.length : null;
+    const cm = mean(g.carr);
+    const sd = g.carr.length > 1 ? Math.sqrt(g.carr.reduce((s, x) => s + (x - cm) * (x - cm), 0) / (g.carr.length - 1)) : 0;
+    const byK = {};
+    for (const k in g.snrByK) byK[k] = +(mean(g.snrByK[k])).toFixed(1);
+    ringOut[key] = {
+      lock_duty: +(g.lockedSpan / Math.max(0.01, g.span)).toFixed(3),
+      first_lock_s: g.firstLock,
+      snr_top_mean: g.snrN ? +(g.snrTopSum / g.snrN).toFixed(1) : null,
+      carrier_mean: cm != null ? +cm.toFixed(3) : null,
+      carrier_sd: +sd.toFixed(3),
+      snr_by_k: byK
+    };
+  }
+  const fin = log.final || {};
+  const peel = (fin.peels || []).find(p => p.ok) || (fin.peels || [])[0] || {};
+  const lenFromKey = peel.key && peel.key !== "operator" ? +String(peel.key).split(":")[2] : null;
+  const dataDuties = [], dataSnrs = [];
+  for (const key in ringOut) if (key !== "beacon") { dataDuties.push(ringOut[key].lock_duty); dataSnrs.push(ringOut[key].snr_top_mean); }
+  const mean0 = a => a.length ? a.reduce((s, x) => s + (x || 0), 0) / a.length : null;
+  const durS = log.duration_s || exitT1 || 1;
+  return {
+    id: log.started || (log.clip + "@" + durS),
+    started: log.started, clip: log.clip,
+    type: inferType(log.clip),
+    dring: log.dring || kv.dring || "(none)", prof: kv.prof || "?",
+    settings: log.settings || "", cap_fps: log.cap_fps, emit_fps: log.emit_fps,
+    duration_s: durS,
+    metrics: {
+      windows: log.windows.length, visited_s: +visitedSum.toFixed(1),
+      exit_t1: +exitT1.toFixed(1), exit_ratio: +(exitT1 / durS).toFixed(3),
+      wall_s: fin.wall_s, seeks: fin.seeks, skipped_pct: fin.skipped_pct,
+      bind_w: bindW, seal_w: sealW, bind_t1: bindT1,
+      peel_ok: peel.ok === true, validatedBy: peel.validatedBy || null,
+      K: peel.K || null, recovered: peel.recovered || null, len: lenFromKey,
+      droplets_total: dropletsAdded,
+      wire_avg_bps: +((dropletsAdded * bits) / Math.max(0.01, visitedSum)).toFixed(1),
+      wire_peak_bps: +wirePeak.toFixed(1),
+      goodput_bps: peel.ok === true && lenFromKey ? +((lenFromKey * 8) / Math.max(0.01, exitT1)).toFixed(1) : null,
+      tag_hold: winsAfterBind ? +(tagSeen / winsAfterBind).toFixed(2) : null,
+      data_lock_duty: dataDuties.length ? +mean0(dataDuties).toFixed(3) : null,
+      data_snr_mean: dataSnrs.length ? +(+mean0(dataSnrs)).toFixed(1) : null,
+      beacon_snr_top: ringOut.beacon ? ringOut.beacon.snr_top_mean : null,
+      beacon_lock_duty: ringOut.beacon ? ringOut.beacon.lock_duty : null,
+      fid_px_mean: fids.length ? +(fids.reduce((s, x) => s + x, 0) / fids.length).toFixed(1) : null,
+      rings: ringOut
+    },
+    physical: log.clip && /^synthetic:/.test(log.clip)
+      ? { mount: "synthetic", lighting: "—" }
+      : { mount: log.harness && log.harness.handheld ? "handheld" : "tripod" },
+    verdictLine: (fin.receipt || "").slice(0, 200)
+  };
+}
+
+/* ---------- persistence ---------- */
+async function loadRegistry() {
+  try {
+    const r = await fetch("results/registry.json", { cache: "no-store" });
+    if (r.ok) { const j = await r.json(); if (j && Array.isArray(j.captures)) reg = j; }
+  } catch (e) {}
+  render();
+  $("status").textContent = "registry: " + reg.captures.length + " capture(s), " +
+    Object.keys(reg.standards).length + " tracked standard(s)";
+}
+async function saveRegistry() {
+  const body = JSON.stringify(reg, null, 1);
+  let ok = false;
+  try { const r = await fetch("/harness-result?page=registry", { method: "POST", body }); ok = r.ok || r.status === 204; } catch (e) {}
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([body], { type: "application/json" }));
+  a.download = "registry-" + new Date().toISOString().slice(0, 10) + ".json";
+  a.textContent = "⬇ backup";
+  $("saveNote").innerHTML = ok ? "saved to results/registry.json — " : "<span class='bad'>server save failed</span> — ";
+  $("saveNote").appendChild(a);
+}
+
+/* ---------- ingest ---------- */
+function ingest(objs) {
+  let added = 0, dup = 0, skipped = 0;
+  objs.forEach(o => {
+    // a registry backup re-imports wholesale
+    if (o && Array.isArray(o.captures)) {
+      o.captures.forEach(c => { if (!reg.captures.find(x => x.id === c.id)) { reg.captures.push(c); added++; } else dup++; });
+      Object.assign(reg.standards, o.standards || {});
+      return;
+    }
+    const c = extractCapture(o);
+    if (!c) { skipped++; return; }
+    const ex = reg.captures.find(x => x.id === c.id);
+    if (ex) { dup++; return; }
+    reg.captures.push(c); added++;
+    if (!reg.standards[c.dring]) reg.standards[c.dring] = { status: "proposed", note: "" };
+  });
+  reg.captures.sort((a, b) => String(b.started).localeCompare(String(a.started)));
+  render();
+  $("status").textContent = "ingest: +" + added + " capture(s), " + dup + " already known, " + skipped + " not harvest logs";
+  return { added, dup, skipped };
+}
+async function scanServer() {
+  $("status").textContent = "scanning results/ for field logs…";
+  let names = [];
+  try {
+    const r = await fetch("results/", { cache: "no-store" });
+    const html = await r.text();
+    names = Array.from(html.matchAll(/href="(field-[0-9]+\.json)"/g)).map(m => m[1]);
+  } catch (e) { $("status").textContent = "scan failed: " + e; return null; }
+  const logs = [];
+  for (const n of names) {
+    try { const r2 = await fetch("results/" + n, { cache: "no-store" }); if (r2.ok) logs.push(await r2.json()); } catch (e) {}
+  }
+  const res = ingest(logs);
+  $("status").textContent = "scan: " + names.length + " server log(s) — " + $("status").textContent.replace(/^ingest: /, "");
+  return res;
+}
+$("scanBtn").onclick = scanServer;
+$("fileIn").onchange = async () => {
+  const objs = [];
+  for (const f of $("fileIn").files) { try { objs.push(JSON.parse(await f.text())); } catch (e) {} }
+  ingest(objs); $("fileIn").value = "";
+};
+$("pasteBtn").onclick = () => {
+  const t = prompt("paste a harvest log (JSON):");
+  if (!t) return;
+  try { ingest([JSON.parse(t)]); } catch (e) { $("status").textContent = "paste: not JSON — " + e.message; }
+};
+$("saveBtn").onclick = saveRegistry;
+
+/* ---------- rendering ---------- */
+const fmt = (x, d) => x == null ? "—" : (typeof x === "number" ? x.toFixed(d == null ? 1 : d) : String(x));
+const PALETTE = ["#7ce38b", "#79b8ff", "#ffd27c", "#ff8bd2", "#c0a6f7", "#ff8b8b", "#7cE3d8", "#d2ff7c"];
+function codeColor(code) {
+  const codes = Array.from(new Set(reg.captures.map(c => c.dring))).sort();
+  return PALETTE[Math.max(0, codes.indexOf(code)) % PALETTE.length];
+}
+function render() {
+  // standards
+  const byCode = {};
+  reg.captures.forEach(c => (byCode[c.dring] = byCode[c.dring] || []).push(c));
+  const codes = Object.keys(Object.assign({}, byCode, reg.standards)).sort();
+  let sh = "<table><tr><th>standard</th><th>status</th><th>captures (syn/exp/cam)</th><th>peels</th><th>best bind t₁</th><th>beacon SNR (cam)</th><th>note</th></tr>";
+  codes.forEach(code => {
+    const cs = byCode[code] || [];
+    const st = reg.standards[code] || (reg.standards[code] = { status: "proposed", note: "" });
+    const n = t => cs.filter(c => c.type === t).length;
+    const peels = cs.filter(c => c.metrics.peel_ok).length;
+    const binds = cs.filter(c => c.metrics.bind_t1 != null).map(c => c.metrics.bind_t1);
+    const camSnr = cs.filter(c => c.type === "camera" && c.metrics.beacon_snr_top != null).map(c => c.metrics.beacon_snr_top);
+    sh += "<tr><td><span class='chip' style='border-color:" + codeColor(code) + ";color:" + codeColor(code) + "'>" + code + "</span></td>" +
+      "<td><select data-code='" + code + "' class='stSel'>" +
+      ["proposed", "trial", "field-verified", "adopted", "refuted", "retired"].map(s => "<option" + (s === st.status ? " selected" : "") + ">" + s + "</option>").join("") +
+      "</select></td>" +
+      "<td>" + n("synthetic") + " / " + n("export") + " / " + n("camera") + "</td>" +
+      "<td>" + peels + "/" + cs.length + "</td>" +
+      "<td>" + (binds.length ? Math.min.apply(null, binds).toFixed(1) + " s" : "—") + "</td>" +
+      "<td>" + (camSnr.length ? (camSnr.reduce((s, x) => s + x, 0) / camSnr.length).toFixed(1) + " dB" : "—") + "</td>" +
+      "<td><input class='stNote' data-code='" + code + "' value=\"" + (st.note || "").replace(/"/g, "&quot;") + "\" style='width:14rem'></td></tr>";
+  });
+  $("standards").innerHTML = sh + "</table>";
+  document.querySelectorAll(".stSel").forEach(el => el.onchange = () => { reg.standards[el.dataset.code].status = el.value; });
+  document.querySelectorAll(".stNote").forEach(el => el.onchange = () => { reg.standards[el.dataset.code].note = el.value; });
+
+  // captures
+  let ch = "<table><tr><th>started</th><th>code</th><th>type</th><th>clip</th><th>bind/seal w</th><th>exit/loop</th>" +
+    "<th>goodput</th><th>wire avg/peak</th><th>beacon SNR</th><th>data SNR</th><th>fid px</th><th>dist</th><th>angle</th><th>zoom</th><th>peel</th></tr>";
+  reg.captures.forEach(c => {
+    const m = c.metrics, p = c.physical || {};
+    ch += "<tr class='cap" + (c.id === selId ? " sel" : "") + "' data-id=\"" + c.id + "\">" +
+      "<td>" + String(c.started || "").replace("T", " ").slice(0, 19) + "</td>" +
+      "<td style='color:" + codeColor(c.dring) + "'>" + c.dring + "</td>" +
+      "<td>" + c.type + "</td><td class='dim'>" + String(c.clip || "").slice(0, 34) + "</td>" +
+      "<td>" + fmt(m.bind_w, 0) + "/" + fmt(m.seal_w, 0) + "</td>" +
+      "<td>" + fmt(m.exit_t1) + "/" + fmt(c.duration_s, 0) + " (" + Math.round((m.exit_ratio || 0) * 100) + "%)</td>" +
+      "<td>" + fmt(m.goodput_bps) + " bps</td>" +
+      "<td>" + fmt(m.wire_avg_bps, 0) + "/" + fmt(m.wire_peak_bps, 0) + "</td>" +
+      "<td>" + fmt(m.beacon_snr_top) + "</td><td>" + fmt(m.data_snr_mean) + "</td>" +
+      "<td>" + fmt(m.fid_px_mean, 0) + "</td>" +
+      "<td>" + fmt(p.distance_ft) + "</td><td>" + fmt(p.angle_deg, 0) + "</td><td>" + fmt(p.zoom_x) + "</td>" +
+      "<td>" + (m.peel_ok ? "<span class='ok'>✓ " + (m.validatedBy || "") + "</span>" : "<span class='warn'>" + fmt(m.recovered, 0) + "/" + fmt(m.K, 0) + "</span>") + "</td></tr>";
+  });
+  $("captures").innerHTML = ch + "</table>";
+  document.querySelectorAll("tr.cap").forEach(el => el.onclick = () => selectCap(el.dataset.id));
+
+  // chart controls
+  const xs = [["distance_ft", "distance (ft)"], ["angle_deg", "angle (°)"], ["zoom_x", "zoom (×)"], ["lux", "lux"], ["fid_px_mean", "fid px (distance proxy)"]];
+  const ys = [["beacon_snr_top", "beacon top SNR (dB)"], ["data_snr_mean", "data SNR mean (dB)"],
+    ["beacon_lock_duty", "beacon lock duty"], ["data_lock_duty", "data lock duty"],
+    ["goodput_bps", "goodput (bps)"], ["wire_avg_bps", "wire avg (bps)"],
+    ["exit_ratio", "exit / loop"], ["bind_t1", "time to bind (s)"], ["tag_hold", "tag hold rate"]];
+  const keep = (sel, opts) => {
+    const cur = sel.value;
+    sel.innerHTML = opts.map(([v, l]) => "<option value='" + v + "'>" + l + "</option>").join("");
+    if (opts.find(([v]) => v === cur)) sel.value = cur;
+  };
+  keep($("axX"), xs); keep($("axY"), ys);
+  const codeSel = $("axCode"), curC = codeSel.value;
+  codeSel.innerHTML = "<option value=''>all codes</option>" + codes.map(c => "<option" + (c === curC ? " selected" : "") + ">" + c + "</option>").join("");
+  drawPlot();
+}
+function selectCap(id) {
+  selId = id;
+  const c = reg.captures.find(x => x.id === id);
+  if (!c) return;
+  $("editBox").style.display = "";
+  $("editId").textContent = c.dring + " · " + (c.clip || "") + " · " + (c.started || "");
+  const p = c.physical || (c.physical = {});
+  $("e_type").value = c.type; $("e_mount").value = p.mount || "";
+  $("e_dist").value = p.distance_ft != null ? p.distance_ft : "";
+  $("e_angle").value = p.angle_deg != null ? p.angle_deg : "";
+  $("e_zoom").value = p.zoom_x != null ? p.zoom_x : "";
+  $("e_lux").value = p.lux != null ? p.lux : "";
+  $("e_light").value = p.lighting || ""; $("e_dev").value = p.device || ""; $("e_notes").value = p.notes || "";
+  $("editRings").innerHTML = "<b>rings:</b> " + Object.keys(c.metrics.rings).sort().map(k => {
+    const g = c.metrics.rings[k];
+    return k + " [duty " + g.lock_duty + ", first " + fmt(g.first_lock_s) + " s, top " + fmt(g.snr_top_mean) +
+      " dB, carrier " + fmt(g.carrier_mean, 2) + "±" + fmt(g.carrier_sd, 2) + "]";
+  }).join(" · ") + "<br><span class='dim'>" + (c.verdictLine || "") + "</span>";
+  render();
+}
+$("e_apply").onclick = () => {
+  const c = reg.captures.find(x => x.id === selId);
+  if (!c) return;
+  const num = v => v === "" ? undefined : +v;
+  c.type = $("e_type").value;
+  c.physical = {
+    mount: $("e_mount").value || undefined, distance_ft: num($("e_dist").value),
+    angle_deg: num($("e_angle").value), zoom_x: num($("e_zoom").value), lux: num($("e_lux").value),
+    lighting: $("e_light").value || undefined, device: $("e_dev").value || undefined, notes: $("e_notes").value || undefined
+  };
+  render(); $("status").textContent = "applied — remember to save";
+};
+$("e_remove").onclick = () => {
+  reg.captures = reg.captures.filter(x => x.id !== selId);
+  selId = null; $("editBox").style.display = "none"; render();
+};
+
+/* ---------- the scatter + fit ---------- */
+function ptsFor(xKey, yKey, only) {
+  return reg.captures.map(c => {
+    const x = xKey === "fid_px_mean" ? c.metrics.fid_px_mean : (c.physical || {})[xKey];
+    const y = c.metrics[yKey];
+    return x != null && y != null && (!only || c.dring === only)
+      ? { x, y, code: c.dring, label: c.dring + " " + (c.clip || "") + " (" + x + ", " + y + ")" } : null;
+  }).filter(Boolean);
+}
+function drawPlot() {
+  const xKey = $("axX").value, yKey = $("axY").value, lg = $("axLog").checked, only = $("axCode").value;
+  const svg = $("plot"); const W = 680, H = 380, L = 55, B = 34, T = 12, Rm = 12;
+  const pts = ptsFor(xKey, yKey, only).filter(p => !lg || (p.x > 0));
+  let out = "";
+  if (pts.length) {
+    const tx = p => lg ? Math.log10(p.x) : p.x;
+    const xs = pts.map(tx), ys2 = pts.map(p => p.y);
+    let x0 = Math.min.apply(null, xs), x1 = Math.max.apply(null, xs);
+    let y0 = Math.min.apply(null, ys2), y1 = Math.max.apply(null, ys2);
+    if (x1 - x0 < 1e-9) { x0 -= 0.5; x1 += 0.5; } if (y1 - y0 < 1e-9) { y0 -= 0.5; y1 += 0.5; }
+    const px = v => L + (v - x0) / (x1 - x0) * (W - L - Rm);
+    const py = v => H - B - (v - y0) / (y1 - y0) * (H - B - T);
+    for (let i = 0; i <= 4; i++) {
+      const xv = x0 + (x1 - x0) * i / 4, yv = y0 + (y1 - y0) * i / 4;
+      out += "<line x1='" + px(xv) + "' y1='" + (H - B) + "' x2='" + px(xv) + "' y2='" + T + "' stroke='#22262e'/>" +
+        "<text x='" + px(xv) + "' y='" + (H - B + 14) + "' fill='#7a8494' font-size='10' text-anchor='middle'>" +
+        (lg ? "10^" + xv.toFixed(2) : xv.toFixed(1)) + "</text>" +
+        "<line x1='" + L + "' y1='" + py(yv) + "' x2='" + (W - Rm) + "' y2='" + py(yv) + "' stroke='#22262e'/>" +
+        "<text x='" + (L - 4) + "' y='" + (py(yv) + 3) + "' fill='#7a8494' font-size='10' text-anchor='end'>" + yv.toFixed(1) + "</text>";
+    }
+    // least squares
+    if (pts.length >= 3) {
+      const n = pts.length;
+      const mx = xs.reduce((s, v) => s + v, 0) / n, my = ys2.reduce((s, v) => s + v, 0) / n;
+      let sxx = 0, sxy = 0, syy = 0;
+      for (let i = 0; i < n; i++) { sxx += (xs[i] - mx) ** 2; sxy += (xs[i] - mx) * (ys2[i] - my); syy += (ys2[i] - my) ** 2; }
+      if (sxx > 1e-12) {
+        const m = sxy / sxx, b = my - m * mx, r2 = syy > 1e-12 ? (sxy * sxy) / (sxx * syy) : 1;
+        out += "<line x1='" + px(x0) + "' y1='" + py(m * x0 + b) + "' x2='" + px(x1) + "' y2='" + py(m * x1 + b) +
+          "' stroke='#c0a6f7' stroke-dasharray='5 4'/>";
+        const isDb = /snr/.test(yKey);
+        $("fitOut").textContent = "fit: slope " + m.toFixed(2) + (lg ? " per decade" : "") + ", R² " + r2.toFixed(2) +
+          (lg && isDb ? " ⟹ power ∝ x^" + (m / 10).toFixed(2) + " (inverse-square reads −2.0)" : "");
+      }
+    } else $("fitOut").textContent = pts.length + " point(s) — a fit needs 3";
+    pts.forEach(p => {
+      out += "<circle cx='" + px(tx(p)) + "' cy='" + py(p.y) + "' r='4.5' fill='" + codeColor(p.code) +
+        "' fill-opacity='.85'><title>" + p.label.replace(/&/g, "&amp;").replace(/</g, "&lt;") + "</title></circle>";
+    });
+  } else { $("fitOut").textContent = "no points — annotate physicals (or pick fid px as x)"; }
+  svg.innerHTML = out;
+}
+["axX", "axY", "axLog", "axCode"].forEach(id => $(id).onchange = drawPlot);
+
+/* ---------- selftest (the runner's lane) ---------- */
+(async function () {
+  await loadRegistry();
+  const q = new URLSearchParams(location.search);
+  if (!q.get("selftest")) return;
+  const res = await scanServer() || { added: 0, dup: 0 };
+  const withCaps = reg.captures.length;
+  const c0 = reg.captures[0];
+  const asserts = [
+    { name: "server scan ingests or already holds field logs", ok: withCaps > 0 },
+    { name: "extraction populated the ring block (data rings + beacon)", ok: !!(c0 && c0.metrics.rings && Object.keys(c0.metrics.rings).length >= 2) },
+    { name: "settings parsed to a dring code", ok: !!(c0 && c0.dring && c0.dring !== "(none)") },
+    { name: "a peeled capture carries finite goodput", ok: reg.captures.some(c => c.metrics.peel_ok && isFinite(c.metrics.goodput_bps)) }
+  ];
+  const fails = asserts.filter(a => !a.ok).length;
+  const body = JSON.stringify({ selftest: true, passes: asserts.length - fails, fails, asserts, captures: withCaps, ingested: res.added }, null, 1);
+  try { await fetch("/harness-result?page=registry-selftest", { method: "POST", body }); } catch (e) {}
+  if (q.get("return") === "runner") setTimeout(() => { location.href = "runner.html"; }, 1200);
+})();
+</script>
+</body>
+</html>

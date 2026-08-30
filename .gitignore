@@ -2,7 +2,12 @@
 clips/
 
 # Per-run suite verdicts posted by the pages (machine-local artifacts).
-harness/results/
+# Contents-not-directory so the ONE curated file below can be re-included:
+# git cannot negate a path inside an ignored directory.
+harness/results/*
+# The capture registry is curated evidence (physical annotations + standards
+# status), not a machine artifact — commit it when it is worth keeping.
+!harness/results/registry.json
 
 # Runner job queue (machine-local agent<->browser channel; see runner.html).
 harness/jobs/
