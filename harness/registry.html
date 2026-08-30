@@ -58,6 +58,10 @@ worth keeping. Ingest from the server's own posted logs (scan), from downloaded
   <label>device <input id="e_dev" style="width:10rem" placeholder="e.g. Pixel 11 Pro XL"></label>
   <br><label style="vertical-align:top">notes <textarea id="e_notes" rows="2" cols="60"></textarea></label>
   <br><button id="e_apply">apply</button> <button id="e_remove" class="bad">remove capture</button>
+  <span style="margin-left:1.2rem">re-run: <button id="e_emit">↻ open emitter (armed)</button>
+  <button id="e_ingest">↻ re-ingest clip</button>
+  <label><input id="e_carry" type="checkbox"> carry this capture's store</label>
+  <span id="e_rrNote" class="dim"></span></span>
   <div id="editRings" class="dim" style="margin-top:.4rem"></div>
 </fieldset>
 
@@ -192,6 +196,8 @@ function extractCapture(log) {
       rings: ringOut
     },
     take: log.take || undefined,
+    store: log.store_name || undefined,
+    msg: peel.ok === true && peel.text ? peel.text : undefined,
     // The take card's physicals ride inside the fieldLog itself (the console
     // lane) — inherit them verbatim; otherwise infer what the log can know.
     physical: log.physical ? log.physical
@@ -364,6 +370,12 @@ function selectCap(id) {
     return k + " [duty " + g.lock_duty + ", first " + fmt(g.first_lock_s) + " s, top " + fmt(g.snr_top_mean) +
       " dB, carrier " + fmt(g.carrier_mean, 2) + "±" + fmt(g.carrier_sd, 2) + "]";
   }).join(" · ") + "<br><span class='dim'>" + (c.verdictLine || "") + "</span>";
+  $("e_emit").disabled = $("e_ingest").disabled = !c.settings;
+  $("e_carry").checked = false;
+  $("e_carry").disabled = !c.store;
+  $("e_rrNote").textContent = !c.settings ? " — no settings recorded, cannot re-arm"
+    : c.store ? " — store on disk: " + c.store
+    : " — no store posted for this capture (pre-lane), carry unavailable";
   render();
 }
 $("e_apply").onclick = () => {
@@ -381,6 +393,36 @@ $("e_apply").onclick = () => {
 $("e_remove").onclick = () => {
   reg.captures = reg.captures.filter(x => x.id !== selId);
   selId = null; $("editBox").style.display = "none"; render();
+};
+
+/* The re-run lane (2026-08-30): the capture record carries the canonical
+   settings string VERBATIM, so re-arming replays provenance, not a
+   reconstruction. Emit gets the settings + the decoded payload text (the
+   peel is the message, byte-faithful) + the take id; re-ingest gets the
+   settings + the same physicals + the expected clip name, and optionally
+   this capture's posted store — the next harvest then mines only what
+   this one lacked. */
+function rearmUrls(c, carry) {
+  if (!c || !c.settings) return null;
+  const s = encodeURIComponent(c.settings);
+  const tk = encodeURIComponent(c.take || c.id);
+  return {
+    emit: "emit.html?settings=" + s + "&take=" + tk + (c.msg ? "&msg=" + encodeURIComponent(c.msg) : ""),
+    ingest: "receive.html?settings=" + s + "&take=" + tk +
+      "&phys=" + encodeURIComponent(JSON.stringify(c.physical || {})) +
+      (c.clip ? "&clip=" + encodeURIComponent(c.clip) : "") +
+      (carry && c.store ? "&store=" + encodeURIComponent(c.store) : "")
+  };
+}
+$("e_emit").onclick = () => {
+  const c = reg.captures.find(x => x.id === selId);
+  const u = rearmUrls(c, false);
+  if (u) window.open(u.emit, "_blank");
+};
+$("e_ingest").onclick = () => {
+  const c = reg.captures.find(x => x.id === selId);
+  const u = rearmUrls(c, $("e_carry").checked);
+  if (u) window.open(u.ingest, "_blank");
 };
 
 /* ---------- the scatter + fit ---------- */
@@ -447,14 +489,18 @@ function drawPlot() {
   const c0 = reg.captures[0];
   const asserts = [
     { name: "server scan ingests or already holds field logs", ok: withCaps > 0 },
-    { name: "extraction populated the ring block (data rings + beacon)", ok: !!(c0 && c0.metrics.rings && Object.keys(c0.metrics.rings).length >= 2) },
+    // Over the corpus, not captures[0]: a carried-store run legitimately has
+    // an EMPTY ring block (zero windows, zero seeks) and can be the newest.
+    { name: "extraction populated a ring block (data rings + beacon) somewhere", ok: reg.captures.some(c => c.metrics.rings && Object.keys(c.metrics.rings).length >= 2) },
     { name: "settings parsed to a dring code", ok: !!(c0 && c0.dring && c0.dring !== "(none)") },
     { name: "a peeled capture carries finite goodput", ok: reg.captures.some(c => c.metrics.peel_ok && isFinite(c.metrics.goodput_bps)) }
   ];
   const fails = asserts.filter(a => !a.ok).length;
   const tagged = reg.captures.filter(c => c.take);
+  const stored = reg.captures.find(c => c.store);
   const body = JSON.stringify({ selftest: true, passes: asserts.length - fails, fails, asserts, captures: withCaps, ingested: res.added,
-    takeTagged: tagged.length, sampleTake: tagged[0] ? { take: tagged[0].take, physical: tagged[0].physical } : null }, null, 1);
+    takeTagged: tagged.length, sampleTake: tagged[0] ? { take: tagged[0].take, physical: tagged[0].physical } : null,
+    sampleRearm: stored ? { id: stored.id, store: stored.store, urls: rearmUrls(stored, true) } : null }, null, 1);
   try { await fetch("/harness-result?page=registry-selftest", { method: "POST", body }); } catch (e) {}
   if (q.get("return") === "runner") setTimeout(() => { location.href = "runner.html"; }, 1200);
 })();

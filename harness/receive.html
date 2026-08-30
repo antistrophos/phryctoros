@@ -844,6 +844,15 @@ async function harvestDecode(v, geo, file) {
     })),
     receipt: stripHtml(receipt)
   };
+  // The ending STORE persists beside the log (2026-08-30, the registry's
+  // re-run lane): a later re-ingest can carry it and mine only what this
+  // harvest lacked — the 92/93 case's missing block costs one more take of
+  // exactly one block. The log records the name so the registry can offer it.
+  try {
+    const stStamp = String(fieldLog.started || "").replace(/[^0-9]/g, "").slice(0, 14);
+    fieldLog.store_name = "store-" + stStamp + ".json";
+    fetch("/harness-result?page=store-" + stStamp, { method: "POST", body: HV.serializeStore(st) }).catch(() => {});
+  } catch (e) {}
   postFieldLog(fieldLog);
   setStatus(done ? "harvest complete — early exit" : "harvest exhausted — the store holds the progress", done ? "ok" : "warn");
   return fieldLog;
@@ -900,6 +909,9 @@ function synthSource(msg, loopS) {
   const code = q.get("synth");
   if (!code) return;
   window.addEventListener("load", async () => {
+    // The take-card intake may be carrying a prior store (async fetch) —
+    // wait for it, or this run races past the carry and opens fresh.
+    try { await window.ocIntakeReady; } catch (e) {}
     const loopS = Math.max(30, +q.get("loop") || 180);
     const msg = q.get("msg") || "When IBM discovered that it was not in the business of making office equipment or business machines, but that it was in the business of processing information, then it began to navigate with clear vision.";
     let verdict;
@@ -929,7 +941,7 @@ function synthSource(msg, loopS) {
       }));
       const asserts = [
         { name: "driver finished (early exit or clean exhaustion)", ok: fin.done === true },
-        { name: "a context bound (the lease exercised)", ok: bound },
+        { name: "a context bound (or a carried store completed without seeking)", ok: bound || fin.windows === 0 },
         { name: "peel complete + content-validated", ok: !!okPeel },
         { name: "decoded text matches the emitted message byte-for-byte", ok: !!okPeel && okPeel.text === msg }
       ];
@@ -1309,13 +1321,29 @@ $("pasteStr").addEventListener("keydown", e => { if (e.key === "Enter") $("apply
    the log becomes the complete record and the registry inherits the
    annotations with no re-typing. The twin lane (?synth=) passes take WITHOUT
    phys — camera physicals on a synthetic run would be a lie. */
-(function () {
+// The ready promise: the synthetic lane awaits it before starting its
+// harvest — the store fetch below is async, and a headless run otherwise
+// races past it and opens a fresh store (caught by the store-lane e2e:
+// run 2 took 2 windows where a carried store completes in zero).
+window.ocIntakeReady = (async function () {
   const q = new URLSearchParams(location.search);
   const s = q.get("settings");
   if (s) {
     $("pasteStr").value = s;
     $("applyStrBtn").click();
     if ($("m_harvest")) $("m_harvest").checked = true;
+  }
+  // The registry's re-run lane: &store=<results name> carries a prior
+  // harvest's exported store (posted beside its fieldLog) so this run mines
+  // only what that one lacked; &clip=<name> names the expected file — the
+  // browser cannot pick it itself, but the operator shouldn't have to
+  // remember which PXL it was.
+  let carried = null;
+  if (q.get("store")) {
+    try {
+      const rs = await fetch("results/" + q.get("store").replace(/[^A-Za-z0-9_.-]/g, ""), { cache: "no-store" });
+      if (rs.ok) { store = OC.harvest.parseStore(await rs.text()); ledgerInfo(); carried = OC.harvest.storeCounts(store); }
+    } catch (e) {}
   }
   if (q.get("take")) {
     let phys = null;
@@ -1324,7 +1352,9 @@ $("pasteStr").addEventListener("keydown", e => { if (e.key === "Enter") $("apply
     const el = document.createElement("div");
     el.style.cssText = "margin:.4rem 0;padding:.4rem .7rem;border:1px solid #7ce38b;color:#7ce38b;font-weight:600";
     el.textContent = "TAKE " + q.get("take") + (s ? " — receiver armed from the card; pick the clip file to ingest" : "") +
-      (phys ? " (physicals attached: " + Object.keys(phys).filter(k => phys[k] != null).join(", ") + ")" : "");
+      (q.get("clip") ? " — expecting clip " + q.get("clip") : "") +
+      (phys ? " (physicals attached: " + Object.keys(phys).filter(k => phys[k] != null).join(", ") + ")" : "") +
+      (carried ? " — STORE CARRIED: " + carried.droplets + " droplets, the harvest mines only what it lacks" : "");
     document.body.insertBefore(el, document.body.firstChild.nextSibling);
   }
 })();
