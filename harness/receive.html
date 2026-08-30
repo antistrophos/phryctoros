@@ -936,7 +936,15 @@ function synthSource(msg, loopS) {
     } catch (e) {
       verdict = { synth: true, dring: code, passes: 0, fails: 1, error: String(e.stack || e).slice(0, 1200) };
     }
-    try { await fetch("/harness-result?page=synth-harvest", { method: "POST", body: JSON.stringify(verdict, null, 1) }); } catch (e) {}
+    const vBody = JSON.stringify(verdict, null, 1);
+    try { await fetch("/harness-result?page=synth-harvest", { method: "POST", body: vBody }); } catch (e) {}
+    // Per-code baseline (the cert-path ruling, 2026-08-30): the fixed name is
+    // last-write-wins for the runner's reporter; this one PERSISTS per config
+    // so a later camera take has "what good looks like" to be held against —
+    // pipeline faults get caught here, before the encoding-vs-capture
+    // question can even be asked. Error verdicts overwrite too: a stale
+    // green baseline is worse than an honest red one.
+    try { await fetch("/harness-result?page=synth-harvest-" + encodeURIComponent(code), { method: "POST", body: vBody }); } catch (e) {}
     if (q.get("return") === "runner") setTimeout(() => { location.href = "runner.html"; }, 1200);
   });
 })();
