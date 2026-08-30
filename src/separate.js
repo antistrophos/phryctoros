@@ -11,6 +11,12 @@
   "use strict";
 
   var TAU = Math.PI * 2;
+  // The k1-free anchor's trust gate: the coprime pair's internal disagreement
+  // must sit under this to steer the estimate. 0.30 rad ≈ 17° — the (2,3)
+  // pair's best NOISELESS wrong pairing lands π/3 ≈ 60° apart, and the true
+  // pairing's err is the two rungs' summed φ-noise (a few degrees at working
+  // SNR), so the band between is wide on both sides.
+  var PAIR_AGREE = 0.30;
 
   function wrap(x) { x = x % TAU; if (x > Math.PI) x -= TAU; if (x <= -Math.PI) x += TAU; return x; }
 
@@ -26,12 +32,17 @@
       if (iA < 0) iA = j;
       else if (iB < 0) { iB = j; break; }
     }
+    // Returns { phi, err }: err is the coprime pair's INTERNAL disagreement —
+    // the per-frame guide's trust gate reads it (a wrong branch pairing of
+    // (2,3) can land no closer than ~π/3 even noiseless, so a small err is
+    // the pair agreeing on the one φ per turn they jointly admit). Infinity
+    // when no pair exists to disagree.
     if (iA < 0) {
       var j1 = ks.indexOf(1);
-      return j1 >= 0 ? wrap(psis[j1] - spec.arg[1]) : 0;
+      return { phi: j1 >= 0 ? wrap(psis[j1] - spec.arg[1]) : 0, err: Infinity };
     }
     var kA = ks[iA], tA = psis[iA] - spec.arg[kA];
-    if (iB < 0) return wrap((tA) / kA);
+    if (iB < 0) return { phi: wrap((tA) / kA), err: Infinity };
     var kB = ks[iB], tB = psis[iB] - spec.arg[kB];
     var best = null;
     for (var m = 0; m < kA; m++) {
@@ -41,7 +52,7 @@
       var err = Math.abs(wrap(candB - cand));
       if (!best || err < best.err) best = { cand: cand, err: err };
     }
-    return wrap(best.cand);
+    return { phi: wrap(best.cand), err: best.err };
   }
 
   /* series: array of { f, spec } (spec from transform.dft; null for invalid frames)
@@ -62,6 +73,13 @@
     var magSum = {}, magN = 0;
     var prevF = -1, prevPhi = 0;
     var firstValid = -1;
+    // The k1-free anchor CHAIN (turn-count repair): the last self-agreeing
+    // anchor's absolute value and frame. Across a gap of ≤ 2 frames the
+    // deviation-bounded step window is narrower than a full turn, so the
+    // next agreeing anchor's turn count resolves UNIQUELY against the chain
+    // — independent of a prediction a vote-poisoned frame may have dragged
+    // past π (which is exactly when pred-nearest slips a turn).
+    var lastAgF = -99, lastAgAbs = null;
 
     for (var s = 0; s < series.length; s++) {
       var fr = series[s];
@@ -70,14 +88,14 @@
       if (firstValid < 0) firstValid = f;
       var pred;
       if (prevF < 0) {
-        pred = initialAnchor(spec, ks, psis);
+        pred = initialAnchor(spec, ks, psis).phi;
       } else if (f - prevF > 1) {
         gapAfter[prevF] = f - prevF;
         // Post-gap re-acquisition: nominal-only continuity carries up to 45°·gap of
         // deviation surprise — at gap 2 that is k=2's whole branch window. Re-anchor
         // absolutely (joint k≥2 vote), keeping only the turn count from continuity.
         var cont = prevPhi + omega * (f - prevF) / fps;
-        var anch = initialAnchor(spec, ks, psis);
+        var anch = initialAnchor(spec, ks, psis).phi;
         pred = anch + TAU * Math.round((cont - anch) / TAU);
       } else {
         pred = prevPhi + omega * (f - prevF) / fps;
@@ -111,12 +129,60 @@
         // Its replacement: re-anchor absolutely on the k2/k3 coprime pair
         // (initialAnchor — the same joint vote the post-gap path trusts),
         // take the turn count from the prediction, and blend 50/50 exactly
-        // as the k1 guide did. The pair's joint ambiguity is a full turn
-        // and the prediction is never half a turn out, so the branch is
-        // safe — and the anchor inputs are EMITTED harmonics, not the
-        // centering-polluted k=1 the old guide steered by.
+        // as the k1 guide did — the anchor inputs are EMITTED harmonics,
+        // not the centering-polluted k=1 the old guide steered by.
+        //
+        // THE GATE (2026-08-30, the first camera A/B's lesson): blended
+        // UNCONDITIONALLY, the anchor mis-branches in bursts at camera
+        // noise — carriers 0.60–1.03× with cold framing never landing
+        // while isolated tag chunks pass between glitches (three takes,
+        // both k-split codes). Trust the pair ONLY when it agrees with
+        // ITSELF: err ≤ PAIR_AGREE, safely under the (2,3) pair's ~π/3
+        // noiseless wrong-branch floor and safely over the summed
+        // per-rung φ-noise at working SNR. A non-agreeing frame COASTS
+        // on the prediction (the (k·mag)² votes below still correct).
+        //
+        // A self-agreeing anchor is then trusted at ONE of two strengths,
+        // split at the constellation's legitimate deviation cap (π/F for
+        // the largest symbol step + nominal-and-noise margin): inside it,
+        // the smooth 50/50 blend; BEYOND it, the prediction cannot
+        // legitimately be that wrong but a vote-poisoned track can — so
+        // re-center absolutely, keeping only the turn count (the post-gap
+        // re-acquisition philosophy, per frame). The first cut of this
+        // gate REJECTED far anchors instead, and T22kc(e)'s burst fixture
+        // rediscovered the field's 0.43× under-run in vitro: one garbaged
+        // rung's LADDER votes drag the estimate past the cap, and the
+        // rejection then locks out its own recovery — a ratchet. The pair's
+        // full-turn joint ambiguity is what licenses the re-center: no
+        // wrong pairing can agree with itself within PAIR_AGREE.
         var anch2 = initialAnchor(spec, ks, psis);
-        est = (pred + (anch2 + TAU * Math.round((pred - anch2) / TAU))) / 2;
+        if (anch2.err <= PAIR_AGREE) {
+          var F2 = annulus.rotation.frames_per_symbol;
+          // Turn count: prefer the ANCHOR CHAIN when the last self-agreeing
+          // anchor is ≤ 2 frames back — the per-frame step is bounded by
+          // [ω/fps − π(1−2/M)/F, ω/fps + π/F], and over ≤ 2 frames that
+          // window (+0.3 rad margin each side) spans less than 2π, so
+          // exactly one turn fits. T22kc(e)'s fixture caught pred-nearest
+          // slipping whole turns here: a poisoned frame drags the
+          // prediction past π and the very next (correct) anchor gets
+          // wrapped onto the wrong turn. Ambiguous or stale chain falls
+          // back to pred-nearest.
+          var guided2 = anch2.phi + TAU * Math.round((pred - anch2.phi) / TAU);
+          var dfA = f - lastAgF;
+          if (lastAgAbs !== null && dfA >= 1 && dfA <= 2) {
+            var stepLo = (omega / fps - Math.PI * (1 - 2 / annulus.rotation.M) / F2) * dfA - 0.3;
+            var stepHi = (omega / fps + Math.PI / F2) * dfA + 0.3;
+            var baseN = Math.round((pred - anch2.phi) / TAU), pickG = null, hits = 0;
+            for (var nn = baseN - 2; nn <= baseN + 2; nn++) {
+              var stp = anch2.phi + TAU * nn - lastAgAbs;
+              if (stp >= stepLo && stp <= stepHi) { hits++; pickG = anch2.phi + TAU * nn; }
+            }
+            if (hits === 1) guided2 = pickG;
+          }
+          lastAgF = f; lastAgAbs = guided2;
+          var devCap = Math.PI / F2 + 0.35;
+          est = Math.abs(guided2 - pred) <= devCap ? (pred + guided2) / 2 : guided2;
+        }
       }
       var estAcc = est * W;
       var usable = 0;

@@ -773,8 +773,48 @@ async function main() {
     const okD = !!(bK && !bK.error && bK.alignMethod === "framed" && bK.framing === "chunked" &&
                    fK && fK.session32 === 0xA42C0005 && fK.K === 9 && fK.pcrc === 0x7E57 &&
                    bK.tag === expTagK.toString(16).padStart(4, "0"));
-    record("T22kc the k-split rescue: a42k [2,3,5] no-k1 at the full 0.075 class and a42c at Σ 0.050 both validate on a42q's plate with the claimed (k·a)² arithmetic, the flicker report now carries beacon rows (k5 nominal 3.75 Hz flagged in-band; v2 unchanged), toggling restores a42q's lists then f24 byte-identical, and the k1-free ladder assembles the chunked envelope optically through the standard chain",
-      okA && okB && backQ2 && backF2 && okD,
+    // (e) THE ANCHOR GATE (2026-08-30, the first camera A/B's lesson): the
+    //     unconditional per-frame pair anchor mis-branched in BURSTS on real
+    //     photons — carriers 0.60–1.03×, tag chunks passing between glitches,
+    //     cold framing never landing (three takes, both codes). The gate
+    //     trusts the pair only when it agrees with itself (err ≤ 0.30 rad vs
+    //     the (2,3) pair's ~π/3 wrong-branch floor) AND lands inside the
+    //     constellation's deviation cap of the prediction; rejected frames
+    //     coast and the votes still correct. Pure-machine pin: a k1-free
+    //     series at the beacon's own constellation (M=4/F=2 — the 90°/frame
+    //     symbol-2 steps that bit lap 1) with 20% of frames carrying a
+    //     garbaged k2 arg (the anchor's own first rung) must hold absolute
+    //     phase on the clean frames AND advance at carrier ≈ 1.0 — the
+    //     anti-under-run assertion.
+    const annG = { boundary: { harmonics: [2, 3, 5], amplitudes: [0.015, 0.02, 0.04], phases_deg: [0, 45, 90] },
+                   rotation: { nominal_hz: 0.75, rate_tier_fps: 30, M: 4, gray: true, frames_per_symbol: 2, seed: 7 } };
+    const profG = { frame_rate_hz: 30 };
+    const TAU_ = Math.PI * 2;
+    const wrapG = x => { x = x % TAU_; if (x > Math.PI) x -= TAU_; if (x <= -Math.PI) x += TAU_; return x; };
+    const NG = 240;
+    const symsG = OC.prng.symbolStream(7, NG, 4);
+    const psisG = [0, Math.PI / 4, Math.PI / 2];
+    let phiT = 0;
+    const truePhi = new Float64Array(NG), seriesG = [];
+    for (let fg = 0; fg < NG; fg++) {
+      truePhi[fg] = phiT;
+      const magG = {}, argG = {};
+      [2, 3, 5].forEach((k, j) => { magG[k] = annG.boundary.amplitudes[j]; argG[k] = psisG[j] - k * phiT; });
+      if (fg % 5 === 3) argG[2] += Math.PI;   // a mis-read k2 — the pair's own first rung
+      seriesG.push({ f: fg, spec: { mag: magG, arg: argG } });
+      phiT += TAU_ * 0.75 / 30 + wrapG(symsG[Math.floor(fg / 2)] * TAU_ / 4) / 2;
+    }
+    const trkG = OC.separate.trackPhase(seriesG, annG, profG);
+    let okNG = 0, cleanNG = 0;
+    for (let fg = 10; fg < NG; fg++) {
+      if (fg % 5 === 3) continue;
+      cleanNG++;
+      if (Math.abs(wrapG(trkG.phi[fg] - truePhi[fg])) < 0.15) okNG++;
+    }
+    const advG = (trkG.phi[NG - 1] - trkG.phi[10]) / (truePhi[NG - 1] - truePhi[10]);
+    const okE2 = okNG / cleanNG >= 0.95 && advG > 0.97 && advG < 1.03;
+    record("T22kc the k-split rescue: a42k [2,3,5] no-k1 at the full 0.075 class and a42c at Σ 0.050 both validate on a42q's plate with the claimed (k·a)² arithmetic, the flicker report now carries beacon rows (k5 nominal 3.75 Hz flagged in-band; v2 unchanged), toggling restores a42q's lists then f24 byte-identical, the k1-free ladder assembles the chunked envelope optically through the standard chain, and the GATED pair anchor holds carrier ≈ 1.0 through 20% garbaged-k2 frames (the camera burst pin)",
+      okA && okB && backQ2 && backF2 && okD && okE2,
       "(a) a42k v " + vK.ok + " [" + pK.beacon.amplitudes + "] sum " + sumK.toFixed(3) + " ×" + ratioK.toFixed(2) +
       " · a42c v " + vC.ok + " [" + pC.beacon.amplitudes + "] sum " + sumC.toFixed(3) + " ×" + ratioC.toFixed(2) +
       " · (b) beacon rows " + bRowsK.length + "/" + bRowsQ.length + "/v2:" + bRowsV2.length +
@@ -782,7 +822,8 @@ async function main() {
       " · (c) →a42q restores " + backQ2 + ", →f24 byte-identical " + backF2 +
       " · (d) " + (bK ? (bK.alignMethod || "?") + "/" + bK.framing + " tag " + bK.tag +
                     " sess " + (fK && (fK.session32 >>> 0).toString(16)) + (bK.error ? " ERR " + bK.error : "")
-                  : "no row: " + JSON.stringify(rK.error).slice(0, 60)));
+                  : "no row: " + JSON.stringify(rK.error).slice(0, 60)) +
+      " · (e) gate: clean-frame hold " + okNG + "/" + cleanNG + ", advance ×" + advG.toFixed(3));
   }
   }
 
