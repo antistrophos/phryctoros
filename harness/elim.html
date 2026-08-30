@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>optical-carriage — liar elimination (store forensics)</title>
+<style>
+  body { font: 14px/1.45 system-ui, sans-serif; margin: 1.2rem; background: #14161a; color: #d8dce2; }
+  h1 { font-size: 1.15rem; }
+  .pass { color: #7ce38b; } .fail { color: #ff8b8b; } .info { color: #c0a6f7; }
+  pre { background: #0d0f12; padding: .8rem; overflow: auto; max-height: 480px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h1>liar elimination — exported-store forensics</h1>
+<p>Leave-one-out re-assembly over an exported store's operator ledger: when a fully-recovered
+bare peel fails validation or framing, exactly the assemblies that exclude the chance-passed
+CRC8 liar succeed. Load with <code>?store=&lt;url&gt;</code> (default
+<code>results/elim-store.json</code>). The verdict POSTs to
+<code>results/elim.json</code>. This is layer 1 of the bare-peel hardening, as an instrument.</p>
+<div id="status" class="info">loading…</div>
+<pre id="out">(pending)</pre>
+
+<script src="../src/prng.js"></script>
+<script src="../src/dtrig.js"></script>
+<script src="../src/geom.js"></script>
+<script src="../src/flicker.js"></script>
+<script src="../src/profile.js"></script>
+<script src="../src/emission.js"></script>
+<script src="../src/register.js"></script>
+<script src="../src/plate.js"></script>
+<script src="../src/saddle.js"></script>
+<script src="../src/sample.js"></script>
+<script src="../src/conic.js"></script>
+<script src="../src/transform.js"></script>
+<script src="../src/separate.js"></script>
+<script src="../src/rowtime.js"></script>
+<script src="../src/demap.js"></script>
+<script src="../src/fountain.js"></script>
+<script src="../src/harvest.js"></script>
+<script src="../src/ser.js"></script>
+<script src="../src/degrade.js"></script>
+<script src="../src/pipeline.js"></script>
+
+<script>
+"use strict";
+const $s = document.getElementById("status"), $o = document.getElementById("out");
+function post(body) {
+  try { fetch("/harness-result?page=elim", { method: "POST", body }).catch(() => {}); } catch (e) {}
+}
+function printable(t) {
+  let n = 0;
+  for (let i = 0; i < t.length; i++) { const c = t.charCodeAt(i); if (c >= 32 && c < 127) n++; }
+  return t.length ? n / t.length : 0;
+}
+async function main() {
+  const url = new URLSearchParams(location.search).get("store") || "results/elim-store.json";
+  $s.textContent = "fetching " + url + "…";
+  const st = await fetch(url).then(r => r.json());
+  const led = st.ledgers && st.ledgers.operator;
+  if (!led) { $s.textContent = "no operator ledger in the store"; $s.className = "fail"; return; }
+  const p = OC.profile.profileV3();
+  const seeds = Object.keys(led.rings);
+  const mkRings = (exSeed, exC) => seeds.map(seed => ({
+    seed: +seed,
+    droplets: Object.keys(led.rings[seed])
+      .filter(c => !(+seed === exSeed && +c === exC))
+      .map(c => ({ c: +c, bytes: new Uint8Array([
+        parseInt(led.rings[seed][c].slice(0, 2), 16),
+        parseInt(led.rings[seed][c].slice(2, 4), 16)]) }))
+  }));
+  const base = OC.fountain.assemble(mkRings(null, null), p);
+  const result = { base: { ok: base.ok, reason: base.reason || null, K: base.K, recovered: base.recovered }, hits: [], tried: 0 };
+  $s.textContent = "baseline: ok " + base.ok + " (" + (base.reason || "—") + ") — eliminating…";
+  // The product path first: fountain's own elimination (layer 1) — singles
+  // with the validation ladder as oracle, then suspect-set pairs/triples.
+  const prod = OC.fountain.assembleEliminating(mkRings(null, null), p);
+  if (prod.ok === true && printable(prod.text) > 0.9) {
+    result.hits.push({ seed: "product", c: prod.excluded ? prod.excluded.join(",") : "?", wire: "", text: prod.text });
+    result.product = { excluded: prod.excluded, tried: prod.eliminationTried, validatedBy: prod.validatedBy || null };
+  }
+  if (base.ok === true) {
+    result.note = "baseline already assembles — nothing to eliminate";
+  } else if (result.hits.length) {
+    result.note = "recovered by fountain.assembleEliminating";
+  } else {
+    for (const seed of seeds) {
+      const cs = Object.keys(led.rings[seed]);
+      for (const c of cs) {
+        if (+c % 8 === 0) continue; // header slots — uniform, checked via K consistency
+        result.tried++;
+        const r = OC.fountain.assemble(mkRings(+seed, +c), p);
+        if (r.ok === true && r.text && printable(r.text) > 0.9) {
+          result.hits.push({ seed: +seed, c: +c, wire: led.rings[seed][c], text: r.text });
+        }
+      }
+      $s.textContent = "eliminating… ring " + seed + " done (" + result.tried + " tried, " + result.hits.length + " hits)";
+      await new Promise(r2 => setTimeout(r2, 10));
+    }
+  }
+  const brief = {
+    base: result.base, tried: result.tried,
+    hits: result.hits.map(h => ({ seed: h.seed, c: h.c, wire: h.wire, len: h.text.length })),
+    text: result.hits.length ? result.hits[0].text : null,
+    agree: result.hits.length > 1 ? result.hits.every(h => h.text === result.hits[0].text) : undefined
+  };
+  $o.textContent = JSON.stringify(brief, null, 1);
+  $s.textContent = result.hits.length
+    ? "RECOVERED — " + result.hits.length + " exclusion(s) yield a valid frame (liar convicted)"
+    : (result.note || "no single exclusion recovers — escalate to pairs or check the header");
+  $s.className = result.hits.length ? "pass" : "fail";
+  document.title = (result.hits.length ? "ELIM RECOVERED " : "ELIM dry ") + result.hits.length;
+  post(JSON.stringify({ done: true, page: "elim", ...brief }, null, 1));
+}
+main().catch(e => { $s.textContent = "ERROR: " + (e.stack || e); $s.className = "fail"; post(JSON.stringify({ done: true, page: "elim", error: String(e) })); });
+</script>
+</body>
+</html>

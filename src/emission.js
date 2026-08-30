@@ -886,7 +886,7 @@
       // rings actually carry.
       var pInfo = opts.payloadInfo || null;
       if (!pInfo && opts.payloadBytes !== undefined && opts.payloadBytes !== null) {
-        var wireI = FN().selfFrame(opts.payloadBytes);
+        var wireI = FN().selfFrame(opts.payloadBytes, 1);
         pInfo = { K: FN().encodeCarousels(profile, opts.payloadBytes).K,
                   len: wireI.length, pcrc: FN().crc16(wireI), capability: 1 };
       }

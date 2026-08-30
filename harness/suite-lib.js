@@ -77,13 +77,20 @@ function bumpTitle(msg) {
     (msg ? " — " + String(msg).slice(0, 60) : "");
 }
 
-function postResult(page, body) {
+async function postResult(page, body) {
   // degrades silently everywhere the endpoint is absent (file:// standalone,
   // pre-restart serve.py) — the title + DOM json remain the fallback channel.
-  // Returns the fetch promise (resolved undefined on failure) so a caller
-  // can ORDER a later post after this one lands.
-  try { return fetch("/harness-result?page=" + encodeURIComponent(page), { method: "POST", body }).catch(function () {}); }
-  catch (e) { return Promise.resolve(); }
+  // Retries ×3: a sleep/wake mid-run once dropped a certification verdict
+  // while the progress heartbeat survived (2026-08-30) — the two channels
+  // must not be separable by one flaky fetch. Resolves either way so a
+  // caller can ORDER a later post after this one settles.
+  for (var att = 0; att < 3; att++) {
+    try {
+      var r = await fetch("/harness-result?page=" + encodeURIComponent(page), { method: "POST", body });
+      if (r && (r.ok || r.status === 204)) return;
+    } catch (e) {}
+    await new Promise(function (res) { setTimeout(res, 1200 * (att + 1)); });
+  }
 }
 
 let progressSeq = 0;
@@ -117,7 +124,19 @@ function suiteFinish(page) {
   // Filtered runs land in <page>-partial.json — the certification record in
   // <page>.json is never clobbered by an iteration lap.
   postResult(partial ? page + "-partial" : page, body)
-    .then(() => postProgress({ done: true, partial: partial || undefined }));
+    .then(() => postProgress({ done: true, partial: partial || undefined }))
+    .then(() => suiteReturn());
+}
+
+// ?return=runner: the runner navigated here for a suite job (each suite runs
+// TOP-LEVEL in its designed environment — an iframed suite shares the
+// runner's renderer thread and freezes it). Go back once the verdict has
+// posted; the runner picks up its pending marker and reports the job.
+function suiteReturn() {
+  try {
+    if ((new URLSearchParams(location.search)).get("return") === "runner")
+      setTimeout(function () { location.href = "runner.html"; }, 1500);
+  } catch (e) {}
 }
 
 function suiteError(page, e) {
@@ -128,7 +147,8 @@ function suiteError(page, e) {
   const body = JSON.stringify({ done: true, page, partial: partial || undefined, error: String(e.stack || e) });
   document.getElementById("results-json").textContent = body;
   postResult(partial ? page + "-partial" : page, body)
-    .then(() => postProgress({ done: true, error: true, partial: partial || undefined }));
+    .then(() => postProgress({ done: true, error: true, partial: partial || undefined }))
+    .then(() => suiteReturn());
 }
 
 function suiteStart(mainFn) {

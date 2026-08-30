@@ -241,8 +241,13 @@ async function main() {
       const dOk = p3.annuli.every((a, ai) => dAll[ai] === Math.ceil(enc.geom.dropletBits / bitsOf[a.rotation.M]));
       const m32 = p3.annuli.findIndex(a => a.rotation.M === 32);
       const padOk = dOk && (preset === "high-rate" ? dAll[m32] === 10 : true);
+      // ftype 1 = the crc16-tailed frame (the ruled wire, 2026-08-30): the
+      // bare peel validates content-borne. The AUTHORITY differs by droplet
+      // width — 48-bit headers carry the pcrc high byte and rank above the
+      // frame check; 24-bit headers carry nothing and the frame IS the check.
+      const wantBy = preset === "high-rate" ? "header-crc8" : "frame-crc16";
       record("T22a " + preset + ": self-framed payload round-trips; per-ring droplet symbols follow ceil(bits/log2 M) — D " + dAll.join("/"),
-        asm.ok === true && asm.text === msg && asm.ftype === 0 && padOk,
+        asm.ok === true && asm.text === msg && asm.ftype === 1 && asm.validatedBy === wantBy && padOk,
         JSON.stringify({ ok: asm.ok, K: asm.K, droplets: asm.droplets, text: asm.text.slice(0, 12) + "…", D: dAll.join("/"), padOk }));
     }
   }

@@ -646,7 +646,10 @@
       if (pr.adopted && !pr.rejected && store.contexts[pr.forTag] &&
           store.contexts[pr.forTag].contentKey === contentKey) adoptedIds.push(pid);
     }
-    if (!adoptedIds.length) return F().assemble(base, profile, aOpts);
+    // assembleEliminating (hardening layer 1): a completed-but-invalid peel
+    // runs the liar elimination before surrendering — leave-one-out with the
+    // validation ladder as the oracle, suspect-set pairs/triples behind it.
+    if (!adoptedIds.length) return F().assembleEliminating(base, profile, aOpts);
     var bySeed = {};
     base.forEach(function (r) { bySeed[r.seed] = { seed: r.seed, droplets: r.droplets.slice(), have: {} };
       r.droplets.forEach(function (d) { bySeed[r.seed].have[d.c] = true; }); });
@@ -661,7 +664,9 @@
     var withProv = F().assemble(union, profile, aOpts);
     if (withProv.ok === true || withProv.recovered == null || withProv.recovered !== withProv.K) return withProv;
     // completed but did not validate — the union is suspect; try bare
-    var bare = F().assemble(base, profile, aOpts);
+    // (with the liar elimination behind it: a liar in the BASE ledger is a
+    // different disease than a bad provisional, and both walls should hold)
+    var bare = F().assembleEliminating(base, profile, aOpts);
     if (bare.ok === true || (bare.recovered != null && bare.recovered !== bare.K)) {
       adoptedIds.forEach(function (pid) { lease.provisionals[pid].rejected = true; });
       bare.provisionalsRejected = adoptedIds.length;

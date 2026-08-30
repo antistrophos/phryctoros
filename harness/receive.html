@@ -505,6 +505,8 @@ async function harvestDecode(v, geo, file) {
     (p.ok === true ? "<span class='ok'>PEEL COMPLETE</span>"
       : p.K ? (p.recovered || 0) + "/" + p.K
       : "no header") +
+    (p.excluded && p.excluded.length ? " <span class='warn'>(LIAR EXCLUDED " + p.excluded.join(", ") + ")</span>" : "") +
+    (p.ok === true && !p.validatedBy ? " <span class='warn'>UNVALIDATED (bare peel — no content check)</span>" : "") +
     (p.provisionalsRejected ? " <span class='warn'>(" + p.provisionalsRejected + " provisional rejected)</span>" : "")
   ).join(" · ") || "no ledgers yet";
   const durS = v.duration, durF = Math.floor((durS - 0.06) * R);
@@ -812,7 +814,9 @@ async function harvestDecode(v, geo, file) {
   const done = pa.any && pa.allOk;
   const payloads = pa.list.filter(({ p }) => p.ok === true).map(({ key, p }) =>
     "<span class='ok' style='font-size:15px'><b>PAYLOAD" + (pa.list.length > 1 ? " [" + (key === "operator" ? "operator" : key) + "]" : "") +
-    ":</b> “" + p.text + "”</span> (" + p.recovered + "/" + p.K + " blocks, " + p.droplets + " droplets)").join("<br>");
+    ":</b> “" + p.text + "”</span> (" + p.recovered + "/" + p.K + " blocks, " + p.droplets + " droplets" +
+    (p.validatedBy ? ", validated: " + p.validatedBy : ", <span class='warn'>UNVALIDATED — bare peel</span>") +
+    (p.excluded && p.excluded.length ? ", <span class='warn'>liar excluded: " + p.excluded.join(", ") + "</span>" : "") + ")").join("<br>");
   const receipt = done
     ? "<b class='ok'>EARLY EXIT — every live ledger in hand after " + visitedS.toFixed(1) + " s of " + durS.toFixed(1) + " s</b>" +
       " — " + seeks + " seeks of " + baseline + " baseline (" + saved + "% skipped), wall " + wall + " s<br>" + payloads
@@ -825,6 +829,8 @@ async function harvestDecode(v, geo, file) {
     visited_s: +visitedS.toFixed(1), windows: wrun,
     peels: pa.list.map(({ key, p }) => ({
       key, ok: p.ok === true, K: p.K, recovered: p.recovered, droplets: p.droplets,
+      validatedBy: p.validatedBy, excluded: p.excluded,
+      headerOutvoted: p.headerOutvoted, eliminationTried: p.eliminationTried,
       text: p.ok === true ? p.text : undefined, reason: p.ok === true ? undefined : p.reason
     })),
     receipt: stripHtml(receipt)

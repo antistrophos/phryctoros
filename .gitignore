@@ -4,6 +4,9 @@ clips/
 # Per-run suite verdicts posted by the pages (machine-local artifacts).
 harness/results/
 
+# Runner job queue (machine-local agent<->browser channel; see runner.html).
+harness/jobs/
+
 __pycache__/
 *.pyc
 .DS_Store

@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- single-file build 2026-08-29 — regenerate with build_standalone.py -->
+<!-- single-file build 2026-08-30 — regenerate with build_standalone.py -->
 
 <html lang="en">
 <head>
@@ -1988,7 +1988,7 @@
       // rings actually carry.
       var pInfo = opts.payloadInfo || null;
       if (!pInfo && opts.payloadBytes !== undefined && opts.payloadBytes !== null) {
-        var wireI = FN().selfFrame(opts.payloadBytes);
+        var wireI = FN().selfFrame(opts.payloadBytes, 1);
         pInfo = { K: FN().encodeCarousels(profile, opts.payloadBytes).K,
                   len: wireI.length, pcrc: FN().crc16(wireI), capability: 1 };
       }
@@ -5408,10 +5408,23 @@
      itself, so delivery NEVER depends on envelope sighting. The 24-mode header
      is just [magic, K]; this is where its length lives. */
   function selfFrame(payloadBytes, type) {
-    var out = new Uint8Array(payloadBytes.length + 4);
+    // Frame type 1 (v4 bare-peel hardening, ruled 2026-08-30): a CRC16 of the
+    // payload rides AFTER it — outside len, so a length-only (v1) reader
+    // parses a type-1 frame unchanged and simply never sees the check, while
+    // a type-aware reader gets content-borne validation with NO identity
+    // needed: the 24-bit mode's headers carry no pcrc, and this is where the
+    // liar class (chance-passed CRC8 droplets) finally dies on bare peels.
+    var t = (type || 0) & 255;
+    var tail = t === 1 ? 2 : 0;
+    var out = new Uint8Array(payloadBytes.length + 4 + tail);
     out[0] = (payloadBytes.length >> 8) & 255; out[1] = payloadBytes.length & 255;
-    out[2] = (type || 0) & 255; out[3] = 0;
+    out[2] = t; out[3] = 0;
     out.set(payloadBytes, 4);
+    if (t === 1) {
+      var pc = crc16(payloadBytes);
+      out[4 + payloadBytes.length] = pc >> 8;
+      out[5 + payloadBytes.length] = pc & 255;
+    }
     return out;
   }
   /* Self-framing parse. This is the ONLY payload-level integrity check in
@@ -5427,7 +5440,18 @@
     var len = (bytes[0] << 8) | bytes[1];
     if (len < 1 || len > bytes.length - 4) return null;
     if (bytes[3] !== 0) return null;              // reserved byte, always 0
-    return { len: len, type: bytes[2], bytes: bytes.subarray(4, 4 + len) };
+    var fr = { len: len, type: bytes[2], bytes: bytes.subarray(4, 4 + len) };
+    if (fr.type === 1) {
+      // Type 1 carries crc16(payload) after the payload. A frame that claims
+      // type 1 but cannot fit or match its check is REFUSED content — crcOk
+      // false — never silently degraded to unchecked.
+      if (bytes.length < 4 + len + 2) fr.crcOk = false;
+      else {
+        var want = (bytes[4 + len] << 8) | bytes[5 + len];
+        fr.crcOk = crc16(fr.bytes) === want;
+      }
+    }
+    return fr;
   }
 
   /* Tile t's ring seed (v3 multi-tile): same blocks, tile-distinct subsets —
@@ -5441,7 +5465,10 @@
   function encodeCarousels(profile, payloadBytes, opts) {
     var g = geom(profile);
     var framed = !!(profile.carriage && profile.carriage.self_framing);
-    if (framed) payloadBytes = selfFrame(payloadBytes, opts && opts.type);
+    // Frame type defaults to 1 (crc16-tailed) for every new emission — the
+    // ruled wire change (2026-08-30). opts.type: 0 pins the legacy frame
+    // (era tests, A/B specimens); v1 readers parse type-1 frames unchanged.
+    if (framed) payloadBytes = selfFrame(payloadBytes, opts && opts.type !== undefined ? opts.type : 1);
     var tb = toBlocks(payloadBytes, g);
     if (tb.K > 200) throw new Error("payload too large: K=" + tb.K + " blocks (cap 200 — " + (200 * g.dataBytes) + " bytes at this droplet size)");
     var L = carouselLen(tb.K);
@@ -5656,14 +5683,17 @@
     if (res.recovered == null || res.recovered !== res.K) return res;
     var alt = declared === 2 ? 1 : 2;
     var res2 = assembleWith(perRing, profile, opts, alt);
-    // Rank: validated > honestly incomplete > completed-but-invalid. The last
-    // is EVIDENCE the rule is wrong — a correct rule with enough droplets
-    // validates, and a correct rule without them reports incomplete — so a
-    // short clip read under the wrong version (which peels to completion over
-    // the wrong blocks and fails the framing check) must not be preferred over
-    // the honest partial the right version gives. Ties go to the declared one.
-    var rank = function (r) { return r.ok === true ? 2 : (r.recovered !== r.K ? 1 : 0); };
-    if (rank(res2) > rank(res)) {
+    // The alt wins ONLY when it VALIDATES. The old rank preferred an
+    // honest-incomplete alt over a completed-but-invalid declared read —
+    // reasonable when completed-invalid could only mean "wrong subset rule",
+    // but that inference is obsolete now that completed-invalid is the
+    // LEASE'S POISON SIGNATURE: the caller's provisional rejection and the
+    // liar eliminator both trigger on it, and the alt-incomplete preference
+    // silently disarmed both (TH7d's bad leg, caught 2026-08-30 — the
+    // poisoned union came back "peel incomplete" and the rejection never
+    // fired). A genuinely mis-versioned clip still rescues itself here: at
+    // the right version it completes AND validates.
+    if (res2.ok === true) {
       res2.subsetVersion = alt;
       res2.versionFallback = true;
       return res2;
@@ -5671,10 +5701,87 @@
     return res;
   }
 
+  function byteEq(a, b) {
+    if (!a || !b || a.length !== b.length) return false;
+    for (var i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+    return true;
+  }
+
+  /* LIAR ELIMINATION (bare-peel hardening layer 1, 2026-08-30). When a peel
+     COMPLETES and fails validation or framing, the prime suspect is a
+     chance-passed CRC8 droplet (the priced 1/256 residual — the a42g
+     conviction, and the a42u field take that recovered 168/168 and refused).
+     A completed solve over TRUE equations is a linear system with one
+     solution: excluding a GOOD droplet reproduces the same bytes, excluding
+     a LIAR changes them. So: singles pass (accept the first exclusion whose
+     assembly VALIDATES — the ladder's own oracle: content key > header CRC >
+     in-frame CRC > frame parse); singles that merely CHANGE the output form
+     the suspect set, and pairs/triples search only that handful. Capped —
+     on a dry run the original result returns with the receipts attached. */
+  function assembleEliminating(perRing, profile, opts) {
+    var first = assemble(perRing, profile, opts);
+    if (first.ok === true || first.recovered == null || first.recovered !== first.K) return first;
+    var flat = [];
+    perRing.forEach(function (ring, ri) {
+      if (ring && ring.droplets) ring.droplets.forEach(function (d, di) {
+        if (!isHeaderSlot(d.c)) flat.push({ ri: ri, di: di, seed: ring.seed, c: d.c });
+      });
+    });
+    var CAP = 900, tried = 0;
+    var minus = function (exclude) {
+      return perRing.map(function (ring, ri) {
+        if (!ring || !ring.droplets) return ring;
+        var drop = null;
+        exclude.forEach(function (e) { if (e.ri === ri) { (drop = drop || {})[e.di] = 1; } });
+        if (!drop) return ring;
+        return { seed: ring.seed, droplets: ring.droplets.filter(function (_, di) { return !drop[di]; }) };
+      });
+    };
+    var accept = function (r, exc) {
+      if (r.ok !== true) return null;
+      r.excluded = exc.map(function (e) { return e.seed + ":" + e.c; });
+      r.eliminationTried = tried;
+      return r;
+    };
+    var suspects = [];
+    for (var i = 0; i < flat.length && tried < CAP; i++) {
+      tried++;
+      var r1 = assemble(minus([flat[i]]), profile, opts);
+      var a1 = accept(r1, [flat[i]]);
+      if (a1) return a1;
+      if (r1.recovered === r1.K && r1.bytes && !byteEq(r1.bytes, first.bytes)) suspects.push(flat[i]);
+    }
+    for (var a2i = 0; a2i < suspects.length; a2i++)
+      for (var b2i = a2i + 1; b2i < suspects.length && tried < CAP; b2i++) {
+        tried++;
+        var r2 = assemble(minus([suspects[a2i], suspects[b2i]]), profile, opts);
+        var a2 = accept(r2, [suspects[a2i], suspects[b2i]]);
+        if (a2) return a2;
+      }
+    if (suspects.length <= 12)
+      for (var x = 0; x < suspects.length; x++)
+        for (var y = x + 1; y < suspects.length; y++)
+          for (var z = y + 1; z < suspects.length && tried < CAP; z++) {
+            tried++;
+            var r3 = assemble(minus([suspects[x], suspects[y], suspects[z]]), profile, opts);
+            var a3 = accept(r3, [suspects[x], suspects[y], suspects[z]]);
+            if (a3) return a3;
+          }
+    first.eliminationTried = tried;
+    first.suspects = suspects.length || undefined;
+    return first;
+  }
+
   function assembleWith(perRing, profile, opts, ver) {
     var g = geom(profile);
-    var header = null;
+    // HEADER MAJORITY (bare-peel hardening, 2026-08-30): first-header-wins
+    // let one magic-byte-passing forged header poison K/len/pcrc for the
+    // whole peel (the a42g specimen actually produced one, rejected only by
+    // the magic byte). Headers recur every HEADER_EVERY slots on every ring,
+    // so tally every parsed sighting and take the majority; ties keep the
+    // first-seen. headerOutvoted surfaces how many sightings lost.
     var lt = []; // { ringSeed, c, bytes }
+    var hTally = {}, hOrder = [];
     for (var r = 0; r < perRing.length; r++) {
       var ring = perRing[r];
       if (!ring || !ring.droplets) continue;
@@ -5682,11 +5789,22 @@
         var d = ring.droplets[i];
         if (isHeaderSlot(d.c)) {
           var h = parseHeader(d.bytes, g);
-          if (h) header = header || h;
+          if (h) {
+            var hk = h.K + ":" + h.len + ":" + h.pcrc + ":" + (h.pcrcBits || 0);
+            if (!hTally[hk]) { hTally[hk] = { h: h, n: 0 }; hOrder.push(hk); }
+            hTally[hk].n++;
+          }
         } else lt.push({ ringSeed: ring.seed, c: d.c, bytes: d.bytes });
       }
     }
+    var header = null, headerVotes = 0, headerTotal = 0;
+    for (var ho = 0; ho < hOrder.length; ho++) {
+      var cand = hTally[hOrder[ho]];
+      headerTotal += cand.n;
+      if (cand.n > headerVotes) { headerVotes = cand.n; header = cand.h; }
+    }
     if (!header) return { ok: false, reason: "no header droplet yet", got: lt.length };
+    var headerOutvoted = headerTotal - headerVotes;
     var K = header.K;
     // dedupe (same ring+c seen across carousel repeats/branches)
     var seen = {}, uniq = [];
@@ -5761,17 +5879,27 @@
     // expectPcrc16 catches it all.
     var wireCrc = crc16(out);
     var expect16 = opts && opts.expectPcrc16 != null ? opts.expectPcrc16 : null;
+    var validatedBy = null;
     if (expect16 !== null && wireCrc !== expect16) { ok = false; why = "payload CRC16 mismatch (vs the content key's fingerprint)"; }
+    else if (expect16 !== null) validatedBy = "content-key-crc16";
     else if (header.pcrc !== null && header.pcrcBits === 16 && wireCrc !== header.pcrc) { ok = false; why = "payload CRC16 mismatch"; }
+    else if (header.pcrc !== null && header.pcrcBits === 16) validatedBy = "header-crc16";
     else if (header.pcrc !== null && header.pcrcBits === 8 && ((wireCrc >> 8) & 0xFF) !== header.pcrc) { ok = false; why = "payload CRC8-of-16 mismatch (the header's high byte)"; }
+    else if (header.pcrc !== null && header.pcrcBits === 8) validatedBy = "header-crc8";
     var ftype;
     if (ok && profile.carriage && profile.carriage.self_framing) {
       var fr = unframe(out);
       if (!fr) { ok = false; why = "self-framing parse failed (block 0 len16 out of range)"; }
-      else { out = fr.bytes; ftype = fr.type; }
+      else if (fr.crcOk === false) { ok = false; why = "in-frame CRC16 mismatch (frame type 1)"; }
+      else {
+        out = fr.bytes; ftype = fr.type;
+        if (fr.crcOk === true && !validatedBy) validatedBy = "frame-crc16";
+      }
     }
     return { ok: ok, reason: why, K: K, recovered: recovered, droplets: uniq.length, bytes: out,
-             ftype: ftype, text: bytesToText(out) };
+             ftype: ftype, validatedBy: ok ? validatedBy : undefined,
+             headerVotes: headerVotes, headerOutvoted: headerOutvoted || undefined,
+             text: bytesToText(out) };
   }
 
   /* CHUNK WHITENING — the rotor (ruled 2026-08-28). The beacon's data chunks
@@ -5825,6 +5953,7 @@
   }
 
   var API = { encodeCarousels: encodeCarousels, collect: collect, crcAlign: crcAlign, assemble: assemble,
+              assembleEliminating: assembleEliminating,
               geom: geom, ringD: ringD, carouselLen: carouselLen, ringCarouselLen: ringCarouselLen, subsetFor: subsetFor,
               isHeaderSlot: isHeaderSlot, parseHeader: parseHeader, HEADER_EVERY: HEADER_EVERY,
               crc8: crc8, crc16: crc16, toGray: toGray, fromGray: fromGray, chunkMask: chunkMask,
@@ -6485,7 +6614,10 @@
       if (pr.adopted && !pr.rejected && store.contexts[pr.forTag] &&
           store.contexts[pr.forTag].contentKey === contentKey) adoptedIds.push(pid);
     }
-    if (!adoptedIds.length) return F().assemble(base, profile, aOpts);
+    // assembleEliminating (hardening layer 1): a completed-but-invalid peel
+    // runs the liar elimination before surrendering — leave-one-out with the
+    // validation ladder as the oracle, suspect-set pairs/triples behind it.
+    if (!adoptedIds.length) return F().assembleEliminating(base, profile, aOpts);
     var bySeed = {};
     base.forEach(function (r) { bySeed[r.seed] = { seed: r.seed, droplets: r.droplets.slice(), have: {} };
       r.droplets.forEach(function (d) { bySeed[r.seed].have[d.c] = true; }); });
@@ -6500,7 +6632,9 @@
     var withProv = F().assemble(union, profile, aOpts);
     if (withProv.ok === true || withProv.recovered == null || withProv.recovered !== withProv.K) return withProv;
     // completed but did not validate — the union is suspect; try bare
-    var bare = F().assemble(base, profile, aOpts);
+    // (with the liar elimination behind it: a liar in the BASE ledger is a
+    // different disease than a bad provisional, and both walls should hold)
+    var bare = F().assembleEliminating(base, profile, aOpts);
     if (bare.ok === true || (bare.recovered != null && bare.recovered !== bare.K)) {
       adoptedIds.forEach(function (pid) { lease.provisionals[pid].rejected = true; });
       bare.provisionalsRejected = adoptedIds.length;
@@ -8194,6 +8328,8 @@ async function harvestDecode(v, geo, file) {
     (p.ok === true ? "<span class='ok'>PEEL COMPLETE</span>"
       : p.K ? (p.recovered || 0) + "/" + p.K
       : "no header") +
+    (p.excluded && p.excluded.length ? " <span class='warn'>(LIAR EXCLUDED " + p.excluded.join(", ") + ")</span>" : "") +
+    (p.ok === true && !p.validatedBy ? " <span class='warn'>UNVALIDATED (bare peel — no content check)</span>" : "") +
     (p.provisionalsRejected ? " <span class='warn'>(" + p.provisionalsRejected + " provisional rejected)</span>" : "")
   ).join(" · ") || "no ledgers yet";
   const durS = v.duration, durF = Math.floor((durS - 0.06) * R);
@@ -8501,7 +8637,9 @@ async function harvestDecode(v, geo, file) {
   const done = pa.any && pa.allOk;
   const payloads = pa.list.filter(({ p }) => p.ok === true).map(({ key, p }) =>
     "<span class='ok' style='font-size:15px'><b>PAYLOAD" + (pa.list.length > 1 ? " [" + (key === "operator" ? "operator" : key) + "]" : "") +
-    ":</b> “" + p.text + "”</span> (" + p.recovered + "/" + p.K + " blocks, " + p.droplets + " droplets)").join("<br>");
+    ":</b> “" + p.text + "”</span> (" + p.recovered + "/" + p.K + " blocks, " + p.droplets + " droplets" +
+    (p.validatedBy ? ", validated: " + p.validatedBy : ", <span class='warn'>UNVALIDATED — bare peel</span>") +
+    (p.excluded && p.excluded.length ? ", <span class='warn'>liar excluded: " + p.excluded.join(", ") + "</span>" : "") + ")").join("<br>");
   const receipt = done
     ? "<b class='ok'>EARLY EXIT — every live ledger in hand after " + visitedS.toFixed(1) + " s of " + durS.toFixed(1) + " s</b>" +
       " — " + seeks + " seeks of " + baseline + " baseline (" + saved + "% skipped), wall " + wall + " s<br>" + payloads
@@ -8514,6 +8652,8 @@ async function harvestDecode(v, geo, file) {
     visited_s: +visitedS.toFixed(1), windows: wrun,
     peels: pa.list.map(({ key, p }) => ({
       key, ok: p.ok === true, K: p.K, recovered: p.recovered, droplets: p.droplets,
+      validatedBy: p.validatedBy, excluded: p.excluded,
+      headerOutvoted: p.headerOutvoted, eliminationTried: p.eliminationTried,
       text: p.ok === true ? p.text : undefined, reason: p.ok === true ? undefined : p.reason
     })),
     receipt: stripHtml(receipt)

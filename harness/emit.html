@@ -675,7 +675,7 @@ function prepareV3() {
       payloadBytes = OC.fountain.textToBytes($("payloadTxt").value || " ");
       const enc = OC.fountain.encodeCarousels(profile, payloadBytes);
       carousels = enc.carousels;
-      const wire = OC.fountain.selfFrame(payloadBytes);
+      const wire = OC.fountain.selfFrame(payloadBytes, 1);
       envInfo = { K: enc.K, len: wire.length, pcrc: OC.fountain.crc16(wire), capability: 1 };
       $("payloadInfo").textContent = "K=" + enc.K + " blocks (self-framed), carousel " + enc.L +
         " droplets" + (layout.n > 1 ? " × " + layout.n + " tile-seeded carousels" : "") +
@@ -933,7 +933,7 @@ function ocCarouselInfo() {
   try {
     g = OC.fountain.geom(profile);
     let bytes = OC.fountain.textToBytes($("payloadTxt").value || " ");
-    if (profile.carriage && profile.carriage.self_framing) bytes = OC.fountain.selfFrame(bytes);
+    if (profile.carriage && profile.carriage.self_framing) bytes = OC.fountain.selfFrame(bytes, 1);
     K = Math.max(1, Math.ceil(bytes.length / g.dataBytes));
     L = OC.fountain.carouselLen(K);
   } catch (e) { el.innerHTML = "<span class='dim'>carousel: " + e.message + "</span>"; return; }

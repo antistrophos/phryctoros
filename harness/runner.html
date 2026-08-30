@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>optical-carriage — runner (agent job channel)</title>
+<style>
+  body { font: 14px/1.45 system-ui, sans-serif; margin: 1.2rem; background: #14161a; color: #d8dce2; }
+  h1 { font-size: 1.15rem; } code { color: #9ecbff; }
+  .pass { color: #7ce38b; } .fail { color: #ff8b8b; } .info { color: #c0a6f7; } .dim { color: #7a8494; }
+  pre { background: #0d0f12; padding: .8rem; overflow: auto; max-height: 380px; white-space: pre-wrap; }
+  #frame { width: 100%; height: 320px; border: 1px solid #333; background: #0d0f12; }
+</style>
+</head>
+<body>
+<h1>runner — the agent's hands inside the reference environment</h1>
+<p>Polls <code>jobs/next.json</code> (written locally by the agent through its file tools), executes,
+and POSTs results to <code>results/job-&lt;id&gt;.json</code> via the existing serve.py endpoint. Job kinds:
+<code>eval</code> (an async function body run with <code>OC</code> in scope — same trust boundary as the
+repo's own pages: anything that can write this working tree already authors the code the browser runs;
+size evals lightly — a heavy eval grinds this tab) and <code>suite</code> (this tab NAVIGATES to the
+suite page — top-level, its designed environment — and the suite returns here when done; an iframed
+suite shared this tab's renderer thread and froze it, the first field lesson of the channel). A
+<code>results/runner-status.json</code> heartbeat says the runner is armed. Keep this tab visible —
+it is the ONE tab the visibility rule applies to, and during suite jobs it will visibly become the
+suite page and come back on its own.</p>
+<div id="status" class="info">arming…</div>
+<pre id="log">(no jobs yet)</pre>
+
+<script src="../src/prng.js"></script>
+<script src="../src/dtrig.js"></script>
+<script src="../src/geom.js"></script>
+<script src="../src/flicker.js"></script>
+<script src="../src/profile.js"></script>
+<script src="../src/emission.js"></script>
+<script src="../src/register.js"></script>
+<script src="../src/plate.js"></script>
+<script src="../src/saddle.js"></script>
+<script src="../src/sample.js"></script>
+<script src="../src/conic.js"></script>
+<script src="../src/transform.js"></script>
+<script src="../src/separate.js"></script>
+<script src="../src/rowtime.js"></script>
+<script src="../src/demap.js"></script>
+<script src="../src/fountain.js"></script>
+<script src="../src/harvest.js"></script>
+<script src="../src/ser.js"></script>
+<script src="../src/degrade.js"></script>
+<script src="../src/pipeline.js"></script>
+
+<script>
+"use strict";
+const $s = document.getElementById("status"), $l = document.getElementById("log");
+const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+let lastId = null, running = false, executed = 0;
+try { lastId = localStorage.getItem("runnerLastJob") || null; } catch (e) {}
+
+function post(page, obj) {
+  const body = JSON.stringify(obj, null, 1);
+  try { return fetch("/harness-result?page=" + encodeURIComponent(page), { method: "POST", body }).catch(() => {}); }
+  catch (e) { return Promise.resolve(); }
+}
+function logLine(s) {
+  $l.textContent = (new Date().toISOString().slice(11, 19)) + "  " + s + "\n" + $l.textContent.slice(0, 8000);
+}
+function heartbeat() {
+  post("runner-status", { alive: true, t: new Date().toISOString(), lastJob: lastId, running, executed });
+}
+
+async function runEval(job) {
+  const fn = new AsyncFunction("OC", job.code);
+  const value = await fn(window.OC);
+  let out;
+  try { out = JSON.parse(JSON.stringify(value === undefined ? null : value)); }
+  catch (e) { out = String(value); }
+  return { ok: true, value: out };
+}
+
+async function runSuite(job) {
+  // Navigate this tab to the suite (top-level — the designed environment);
+  // suiteFinish/suiteError bounce back here via ?return=runner, and the
+  // pending marker below lets the reloaded runner report the job.
+  const page = String(job.page || "").replace(/[^a-z0-9-]/gi, "");
+  try { sessionStorage.setItem("runnerPendingSuite", JSON.stringify({ id: job.id, page: page, note: job.note, t: Date.now() })); } catch (e) {}
+  const qs = "?return=runner" + (job.only ? "&only=" + encodeURIComponent(job.only) : "");
+  $s.textContent = "handing this tab to " + page + ".html — it returns when the suite posts";
+  await new Promise(r => setTimeout(r, 400));
+  location.href = page + ".html" + qs;
+  await new Promise(r => setTimeout(r, 60000));
+  return { ok: false, error: "navigation to " + page + " did not take over" };
+}
+
+async function reportPendingSuite() {
+  let pend = null;
+  try { pend = JSON.parse(sessionStorage.getItem("runnerPendingSuite") || "null"); } catch (e) {}
+  if (!pend) return;
+  try { sessionStorage.removeItem("runnerPendingSuite"); } catch (e) {}
+  let verdict = { ok: false, error: "suite results not found" };
+  // page FILENAME → the SUITE_PAGE name its results post under
+  const RESULTS_NAME = { "test": "v2", "test-v3": "v3", "test-v3-dring": "v3dring", "test-saddle": "saddle" };
+  for (let att = 0; att < 4; att++) {
+    try {
+      const resp = await fetch("results/" + (RESULTS_NAME[pend.page] || pend.page) + ".json", { cache: "no-store" });
+      if (!resp.ok) { verdict.error = "results fetch HTTP " + resp.status; }
+      else {
+        const r = await resp.json();
+        verdict = { ok: r.fails === 0 && !r.error, passes: r.passes, fails: r.fails, error: r.error };
+        break;
+      }
+    } catch (e) { verdict.error = String(e).slice(0, 200); }
+    await new Promise(r2 => setTimeout(r2, 1500 * (att + 1)));
+  }
+  verdict.id = pend.id; verdict.kind = "suite"; verdict.page = pend.page; verdict.note = pend.note;
+  verdict.wall_s = Math.round((Date.now() - pend.t) / 1000);
+  executed++;
+  await post("job-" + String(pend.id).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 30), verdict);
+  logLine("suite " + pend.page + " → " + (verdict.ok ? "GREEN " + verdict.passes + "P" : "FAIL " + (verdict.fails != null ? verdict.fails + "F" : verdict.error)));
+  heartbeat();
+}
+
+async function poll() {
+  if (running) return;
+  let job = null;
+  try {
+    const r = await fetch("jobs/next.json", { cache: "no-store" });
+    if (!r.ok) return;
+    job = await r.json();
+  } catch (e) { return; }
+  if (!job || !job.id || job.id === lastId) return;
+  running = true;
+  lastId = job.id;
+  try { localStorage.setItem("runnerLastJob", lastId); } catch (e) {}
+  $s.textContent = "running job " + job.id + " (" + job.kind + ")…";
+  logLine("job " + job.id + " (" + job.kind + (job.note ? ": " + job.note : "") + ")");
+  let result;
+  const t0 = Date.now();
+  try {
+    if (job.kind === "eval") result = await runEval(job);
+    else if (job.kind === "suite") result = await runSuite(job);
+    else result = { ok: false, error: "unknown kind " + job.kind };
+  } catch (e) {
+    result = { ok: false, error: String(e.stack || e).slice(0, 2000) };
+  }
+  result.id = job.id; result.kind = job.kind; result.note = job.note;
+  result.wall_s = result.wall_s || Math.round((Date.now() - t0) / 1000);
+  executed++;
+  await post("job-" + String(job.id).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 30), result);
+  logLine("job " + job.id + " → " + (result.ok ? "ok" : "FAIL: " + (result.error || "").slice(0, 120)));
+  $s.textContent = "idle — " + executed + " job(s) done, last " + job.id;
+  $s.className = result.ok ? "pass" : "fail";
+  running = false;
+  heartbeat();
+}
+
+if (location.protocol === "file:") {
+  $s.textContent = "file:// — runner idle (open via http://localhost:8126/harness/runner.html)";
+  document.title = "idle runner";
+} else {
+  document.title = "runner armed";
+  $s.textContent = "armed — polling jobs/next.json every 2 s";
+  reportPendingSuite();
+  setInterval(poll, 2000);
+  setInterval(heartbeat, 10000);
+  heartbeat();
+}
+</script>
+</body>
+</html>

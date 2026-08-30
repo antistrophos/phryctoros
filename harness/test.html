@@ -966,14 +966,24 @@ async function main() {
         // emission-absolute, so the lag is the preamble the stream never had
         return { seed: a.rotation.seed, passed: OC.fountain.collect(dec, pL.preamble_symbols, a, pL).passed };
       });
+      // The starved block is DERIVED, not assumed: ring 0's c=1 forced single
+      // covers block (h(seed) + 0·stride) % K under v2 seeding — only at the
+      // old K=2 did that happen to be block 0 by luck of the hash parity, and
+      // the type-1 frame's +2 bytes moved K to 3 and re-rolled it (the v2
+      // suite's second frame-flip catch tonight).
+      const b0L = OC.fountain.subsetFor(pL.annuli[0].rotation.seed, 1, KL, ver)[0];
       const touches0 = (seed, c) => !OC.fountain.isHeaderSlot(c) &&
-        OC.fountain.subsetFor(seed, c, KL, ver).indexOf(0) >= 0;
+        OC.fountain.subsetFor(seed, c, KL, ver).indexOf(b0L) >= 0;
       const mkStore = (provHexFlip) => {
         const st = HV.createStore(pL), ls = HV.leaseCreate({ graceWindows: 2 });
         // the REAL fingerprint (encodeCarousels exposes the wire crc16): the
         // content key now arms the peel's full validation, so a stub pcrc
-        // would refuse even the honest peel — which is the gate doing its job
-        const fields = { session32: 0x33, K: KL, len: 9, pcrc: encL.wireCrc16, tile: 0 };
+        // would refuse even the honest peel — which is the gate doing its job.
+        // len DERIVED, not pinned: the type-1 frame (2026-08-30) grew the
+        // wire by 2 bytes and a pinned 9 truncated the keyed peel (the
+        // frame-flip length-pin class — this line was the v2 suite's catch).
+        const wireLen = OC.fountain.selfFrame(OC.fountain.textToBytes(msgL), 1).length;
+        const fields = { session32: 0x33, K: KL, len: wireLen, pcrc: encL.wireCrc16, tile: 0 };
         // ledger: everything NOT touching block 0 → block 0 unrecoverable alone
         const rows = ringDrops.map((r, ri) => ({ annulus: pL.annuli[ri].index,
           alignLag: 4, alignOffset: 0,
@@ -1212,6 +1222,116 @@ async function main() {
       " · scan seal " + scan9.sealed + " counts " + JSON.stringify(scan9.chunkCounts) + " conflicts " + scan9.conflicts +
       " tag ×" + scan9.tagSightings + " · rot-bit flip → idx3 ×" + scanC.chunkCounts[3] + " sealed " + scanC.sealed +
       " · table crc 0x" + tabCrc.toString(16) + " (pin 0xb3ca) id " + okId + " words " + okWords);
+  }
+
+  await tick("TH10: liar elimination — completed-but-invalid peels convict their own liars…");
+  {
+    // Bare-peel hardening layer 1 (2026-08-30, the a42u field take's lesson:
+    // 168/168 recovered, framing refused, payload lost for want of a retry).
+    // A completed solve over TRUE equations is unique — excluding a GOOD
+    // droplet reproduces the bytes, excluding a LIAR changes them — so the
+    // singles pass accepts on the validation ladder and the output-diff
+    // suspects feed the pairs search.
+    const pE = OC.profile.profileV3("high-rate", {});
+    const msgE = "THE LIAR CONVICTS ITSELF BY CHANGING THE SOLUTION";
+    const encE = OC.fountain.encodeCarousels(pE, OC.fountain.textToBytes(msgE));
+    const mkR = () => pE.annuli.map((a, ri) => {
+      const dec = Array.from(encE.carousels[ri], (s, i) => ({ i, s, resid: 0 }));
+      const col = OC.fountain.collect(dec, pE.preamble_symbols, a, pE);
+      return { seed: a.rotation.seed, droplets: col.passed.map(d => ({ c: d.c, bytes: new Uint8Array(d.bytes) })) };
+    });
+    // Corrupt a FORCED DEGREE-1 single (c ∈ 1..3): those are load-bearing by
+    // construction — their value SETS a block on the first peel pass — where
+    // an arbitrary droplet in a 4× overdetermined pool is often redundant
+    // and its corruption washes out (the first run's own catch: plain
+    // assembles stayed ok and the eliminator had nothing to convict).
+    const corrupt = (rings, ri, cTarget) => {
+      for (const d of rings[ri].droplets)
+        if (d.c === cTarget) { d.bytes[0] ^= 0xE0; d.bytes[1] ^= 0x5D; return rings[ri].seed + ":" + d.c; }
+    };
+    // (a) ONE liar, keyed: plain assemble refuses; elimination convicts it
+    const r1 = mkR(); const liar1 = corrupt(r1, 0, 1);
+    const key = { expectPcrc16: encE.wireCrc16 };
+    const plain1 = OC.fountain.assemble(r1, pE, key);
+    const el1 = OC.fountain.assembleEliminating(r1, pE, key);
+    const okA = !!(plain1.ok === false && el1.ok === true && el1.text === msgE &&
+                   el1.excluded && el1.excluded.length === 1 && el1.excluded[0] === liar1 &&
+                   el1.validatedBy === "content-key-crc16");
+    // (b) TWO liars (both ring-0 forced singles — unconditionally
+    //     load-bearing): the pin is NEVER-FALSE-PRINT. Whether the pair
+    //     search can CONVICT depends on whether excluding both leaves the
+    //     peel complete at this corpus (here it does not — removing two
+    //     singles starves their blocks), so the required behavior is either
+    //     a correct conviction or an HONEST refusal carrying the receipts
+    //     (reason preserved, suspects surfaced). An engineered
+    //     pair-convictable corpus is banked as its own case.
+    const r2 = mkR(); const liar2a = corrupt(r2, 0, 1), liar2b = corrupt(r2, 0, 2);
+    const el2 = OC.fountain.assembleEliminating(r2, pE, key);
+    const okB = !!((el2.ok === true && el2.text === msgE && el2.excluded && el2.excluded.length >= 2 &&
+                    el2.excluded.indexOf(liar2a) >= 0 && el2.excluded.indexOf(liar2b) >= 0)
+                   || (el2.ok !== true && /CRC16/.test(el2.reason || "") && (el2.suspects || 0) >= 2));
+    // (c) BARE at 24-bit with the type-1 frame — the a42u field composition,
+    //     solved with ZERO identity: the in-frame CRC16 is the oracle
+    const pR24 = OC.profile.profileV3();
+    const enc24 = OC.fountain.encodeCarousels(pR24, OC.fountain.textToBytes(msgE));
+    const mk24 = () => pR24.annuli.map((a, ri) => {
+      const dec = Array.from(enc24.carousels[ri], (s, i) => ({ i, s, resid: 0 }));
+      const col = OC.fountain.collect(dec, pR24.preamble_symbols, a, pR24);
+      return { seed: a.rotation.seed, droplets: col.passed.map(d => ({ c: d.c, bytes: new Uint8Array(d.bytes) })) };
+    });
+    const r3 = mk24(); const liar3 = corrupt(r3, 0, 1);
+    const plain3 = OC.fountain.assemble(r3, pR24, {});
+    const el3 = OC.fountain.assembleEliminating(r3, pR24, {});
+    const okC = !!(plain3.ok === false && el3.ok === true && el3.text === msgE &&
+                   el3.excluded && el3.excluded.indexOf(liar3) >= 0 &&
+                   el3.validatedBy === "frame-crc16");
+    record("TH10 liar elimination: a keyed completed-but-invalid peel convicts and excludes its single liar (validated by the content key), two liars either convict as a pair or REFUSE HONESTLY with the suspect receipts (never a false print), and the bare 24-bit type-1-framed case — the a42u field composition — recovers with NO identity, validated by the in-frame CRC16",
+      okA && okB && okC,
+      "(a) plain " + plain1.ok + " → el " + el1.ok + " excl " + JSON.stringify(el1.excluded) + " (liar " + liar1 + ") by " + el1.validatedBy +
+      " · (b) el " + el2.ok + " suspects " + el2.suspects + " excl " + JSON.stringify(el2.excluded) + " (liars " + liar2a + "," + liar2b + ")" +
+      " · (c) plain " + (plain3.reason || plain3.ok) + " → el " + el3.ok + " excl " + JSON.stringify(el3.excluded) + " by " + el3.validatedBy);
+  }
+
+  await tick("TH11: frame type 1 + header majority — content-borne validation and the outvoted forgery…");
+  {
+    // Layer 2 (ruled): the self-frame's type lane carries a crc16 AFTER the
+    // payload — outside len, so a length-only v1 reader parses type-1 frames
+    // unchanged, while a type-aware reader validates content with no
+    // identity. Layer 3: header sightings vote; a magic-passing forgery in
+    // the FIRST position — first-header-wins would have crowned it — loses.
+    const pay = OC.fountain.textToBytes("FRAMES THAT CARRY THEIR OWN TRUTH");
+    const f1 = OC.fountain.selfFrame(pay, 1);
+    const u1 = OC.fountain.unframe(f1);
+    const okRt = !!(u1 && u1.type === 1 && u1.crcOk === true && OC.fountain.bytesToText(u1.bytes) === "FRAMES THAT CARRY THEIR OWN TRUTH");
+    const f1bad = new Uint8Array(f1); f1bad[6] ^= 0x41;
+    const u1bad = OC.fountain.unframe(f1bad);
+    const okBad = !!(u1bad && u1bad.crcOk === false);
+    // v1-reader compat: a length-only read of the type-1 frame = the payload
+    const lenOnly = f1.subarray(4, 4 + (((f1[0] << 8) | f1[1])));
+    const okCompat = OC.fountain.bytesToText(lenOnly) === "FRAMES THAT CARRY THEIR OWN TRUTH";
+    // type-0 frames stay parseable, crcOk absent (the bare-unvalidated path)
+    const f0 = OC.fountain.selfFrame(pay, 0);
+    const u0 = OC.fountain.unframe(f0);
+    const okV1 = !!(u0 && u0.type === 0 && u0.crcOk === undefined);
+    // header majority: forge a header FIRST in ring 0 — wrong K, valid shape
+    const pH = OC.profile.profileV3("high-rate", {});
+    const msgH = "MAJORITY RULES THE HEADER";
+    const encH = OC.fountain.encodeCarousels(pH, OC.fountain.textToBytes(msgH));
+    const rH = pH.annuli.map((a, ri) => {
+      const dec = Array.from(encH.carousels[ri], (s, i) => ({ i, s, resid: 0 }));
+      const col = OC.fountain.collect(dec, pH.preamble_symbols, a, pH);
+      return { seed: a.rotation.seed, droplets: col.passed.map(d => ({ c: d.c, bytes: new Uint8Array(d.bytes) })) };
+    });
+    const g5 = OC.fountain.geom(pH);
+    const forged = new Uint8Array(g5.dataBytes);
+    forged[0] = OC.fountain.MAGIC; forged[1] = encH.K + 3; forged[2] = 0; forged[3] = 5; forged[4] = 0x77;
+    rH[0].droplets.unshift({ c: 8, bytes: forged });
+    const aH = OC.fountain.assemble(rH, pH, { expectPcrc16: encH.wireCrc16 });
+    const okMaj = !!(aH.ok === true && aH.K === encH.K && aH.headerOutvoted >= 1 && aH.text === msgH);
+    record("TH11 frame type 1 + header majority: the crc16-tailed frame round-trips and refuses a corrupted payload, a length-only v1 read parses the type-1 frame unchanged (forward compat), type-0 frames keep the bare path, and a magic-passing forged header planted FIRST — where first-header-wins would have crowned it — is outvoted by the honest sightings",
+      okRt && okBad && okCompat && okV1 && okMaj,
+      "rt " + okRt + " bad-crc " + okBad + " compat " + okCompat + " v1 " + okV1 +
+      " · majority K " + aH.K + "/" + encH.K + " outvoted " + aH.headerOutvoted + " ok " + aH.ok);
   }
 
   // Determinism spot-check: dtrig render of one frame is identical across two runs.
