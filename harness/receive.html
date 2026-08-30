@@ -413,6 +413,13 @@ $("ledIn").onchange = async () => {
    place results on the clip's absolute axis. Returns the seek count: the
    harvest receipt's currency. */
 async function seekWindow(v, geo, tA, tB, capFps, emitFps, onStep) {
+  // SYNTHETIC HARVEST (2026-08-30): when a synthetic source is armed the
+  // "seek" is a lazy per-frame RENDER — the driver above this line runs
+  // unchanged, which is the point: the planner, bank, lease and exits are
+  // what a synthetic run certifies. One look per emission frame (no tears
+  // to defend against); container-timestamp handling stays the recorded
+  // path's own territory.
+  if (window.ocSynth) return synthWindow(window.ocSynth, tA, tB, emitFps, onStep);
   const seek = t => new Promise(r => { v.onseeked = () => r(); v.currentTime = t; });
   const fBase = Math.round(tA * emitFps);
   const frames = []; const perIdx = {}; let seeks = 0;
@@ -837,7 +844,102 @@ async function harvestDecode(v, geo, file) {
   };
   postFieldLog(fieldLog);
   setStatus(done ? "harvest complete — early exit" : "harvest exhausted — the store holds the progress", done ? "ok" : "warn");
+  return fieldLog;
 }
+
+/* ---------- SYNTHETIC HARVEST (2026-08-30, the practitioner's proposal) ----------
+   "Test with content and see what the harvest does before tossing real
+   photons around." The runner navigates here with ?synth=<dring>: the page
+   configures itself through the SAME intake path a real take uses (the
+   selects → currentProfile), builds emission schedules ONCE for the whole
+   loop, renders frames lazily as the planner visits them, and runs the REAL
+   windowed driver end to end — seek planner, chunk bank, lease,
+   hold-for-bank, early exit. The fieldLog posts as usual; a pass/fail
+   verdict posts to results/synth-harvest.json for the runner's reporter.
+   Params: synth=<dring code> · loop=<s> · msg=<payload text> · prof
+   (default v3) · quad=0 to drop quadrant corners · return=runner. */
+async function synthWindow(S, tA, tB, emitFps, onStep) {
+  const fBase = Math.round(tA * emitFps);
+  const f1 = Math.min(Math.round(tB * emitFps), Math.floor((S.duration - 0.05) * emitFps));
+  const frames = []; let seeks = 0;
+  for (let f = fBase; f < f1; f++) {
+    frames.push({ f: f - fBase, img: S.frame(f) });
+    seeks++;
+    if (seeks % 30 === 0) {
+      if (onStep && onStep(f / emitFps) === false) break;
+      await new Promise(r => setTimeout(r, 0));
+    }
+  }
+  return { frames, seeks, fBase };
+}
+function synthSource(msg, loopS) {
+  const p = currentProfile();
+  // Suite-standard raster (the optical cases' scale) — the emit page's 1024
+  // canvas would cost 5× per render for nothing a synthetic run measures.
+  p.render = Object.assign({}, p.render, { size_px: 448, scale_px_per_unit: 70 });
+  // The envelope must tell the truth about the loop it rides (freeze 0 is
+  // also what the quadrant3-family validator demands).
+  p.countdown = { freeze_s: 0, loop_s: loopS };
+  const R = p.frame_rate_hz, n = Math.round(loopS * R);
+  const payloadBytes = OC.fountain.textToBytes(msg);
+  const enc = OC.fountain.encodeCarousels(p, payloadBytes);
+  const wire = OC.fountain.selfFrame(payloadBytes, 1);
+  const pInfo = { K: enc.K, len: wire.length, pcrc: OC.fountain.crc16(wire), capability: 1 };
+  const envB = OC.emission.envelopeBytes(p, pInfo);
+  const schedules = OC.emission.buildSchedules(p, n, enc.carousels);
+  const beaconSchedule = OC.emission.buildBeaconSchedule(p, n, envB);
+  return {
+    duration: loopS, K: enc.K, profile: p,
+    frame: f => OC.emission.renderFrameV3(p, f, { schedules: schedules, beaconSchedule: beaconSchedule, envBytes: envB })
+  };
+}
+(function () {
+  const q = new URLSearchParams(location.search);
+  const code = q.get("synth");
+  if (!code) return;
+  window.addEventListener("load", async () => {
+    const loopS = Math.max(30, +q.get("loop") || 180);
+    const msg = q.get("msg") || "When IBM discovered that it was not in the business of making office equipment or business machines, but that it was in the business of processing information, then it began to navigate with clear vision.";
+    let verdict;
+    try {
+      if ($("m_prof")) $("m_prof").value = q.get("prof") || "v3";
+      if ($("m_quad")) $("m_quad").checked = q.get("quad") !== "0";
+      if ($("m_hand")) $("m_hand").checked = false;
+      if ($("m_dring")) $("m_dring").value = code;
+      if ($("m_loop")) $("m_loop").value = String(loopS);
+      if ($("m_capfps")) $("m_capfps").value = "60";
+      if ($("m_harvest")) $("m_harvest").checked = true;
+      window.ocTiling = 1;
+      window.ocSynth = synthSource(msg, loopS);
+      const log = await harvestDecode({ duration: loopS }, null, { name: "synthetic:" + code + ":" + loopS + "s" });
+      const fin = (log && log.final) || {};
+      const peels = fin.peels || [];
+      const okPeel = peels.find(pp => pp.ok && pp.validatedBy);
+      const bound = (log.windows || []).some(w => (w.events || []).some(e => e.ev === "bind" || e.ev === "rebind"));
+      let sealW = null;
+      (log.windows || []).forEach(w => (w.events || []).forEach(e => {
+        if (sealW === null && (e.ev === "bank-seal" || e.ev === "bind")) sealW = w.w;
+      }));
+      const asserts = [
+        { name: "driver finished (early exit or clean exhaustion)", ok: fin.done === true },
+        { name: "a context bound (the lease exercised)", ok: bound },
+        { name: "peel complete + content-validated", ok: !!okPeel },
+        { name: "decoded text matches the emitted message byte-for-byte", ok: !!okPeel && okPeel.text === msg }
+      ];
+      const fails = asserts.filter(a => !a.ok).length;
+      verdict = {
+        synth: true, dring: code, loop_s: loopS, K: window.ocSynth.K,
+        passes: asserts.length - fails, fails: fails, asserts: asserts,
+        seal_w: sealW, windows: fin.windows, visited_s: fin.visited_s,
+        skipped_pct: fin.skipped_pct, wall_s: fin.wall_s, receipt: fin.receipt
+      };
+    } catch (e) {
+      verdict = { synth: true, dring: code, passes: 0, fails: 1, error: String(e.stack || e).slice(0, 1200) };
+    }
+    try { await fetch("/harness-result?page=synth-harvest", { method: "POST", body: JSON.stringify(verdict, null, 1) }); } catch (e) {}
+    if (q.get("return") === "runner") setTimeout(() => { location.href = "runner.html"; }, 1200);
+  });
+})();
 
 /* ---------- recorded input (§9.1 — first-class, works without camera/secure ctx) ----------
    Seek-stepped, crop-at-native-resolution. Browser-agnostic by construction: no
