@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>optical-carriage — take console (one card, both sides)</title>
+<style>
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 1.2rem; background: #14161a; color: #d8dce2; max-width: 62rem; }
+  h1 { font-size: 1.15rem; } h2 { font-size: 1.0rem; color: #c0a6f7; margin: 1rem 0 .3rem; }
+  .ok { color: #7ce38b; } .warn { color: #ffd27c; } .dim { color: #7a8494; } .info { color: #c0a6f7; }
+  input, select, button, textarea { background: #0d0f12; color: #d8dce2; border: 1px solid #2a2e36; padding: .2rem .45rem; font: inherit; }
+  input[type=number] { width: 5.5rem; }
+  label { margin-right: .8rem; display: inline-block; margin-bottom: .3rem; }
+  fieldset { border: 1px solid #2a2e36; margin: .6rem 0; }
+  button.go { font-size: 15px; padding: .45rem .9rem; border-color: #7ce38b; color: #7ce38b; cursor: pointer; }
+  button.go:hover { background: #16241a; }
+  button { cursor: pointer; }
+  #canon { width: 100%; font: 12.5px monospace; color: #9ecbff; }
+</style>
+</head>
+<body>
+<h1>take console — one card configures every side of a take</h1>
+<p class="dim">Fill the card once. The three buttons hand the SAME canonical settings string to the
+synthetic twin, the emitter, and the receiver — the paste step and its fat-finger surface are gone,
+and the take id + physical conditions ride inside the harvest log itself, so the registry inherits
+the annotations without re-typing. Workflow: ① twin (the "what good looks like" baseline, per the
+cert-path ruling) → ② emit fullscreen and film → ③ ingest the clip. Emission never autostarts —
+the emitter page arms itself and waits for Start (F1/§7.7).</p>
+
+<fieldset>
+  <legend>take</legend>
+  <label>take id <input id="t_id" style="width:12rem"></label>
+  <button id="t_next">next take id</button>
+  <span id="t_note" class="dim"></span>
+</fieldset>
+
+<fieldset>
+  <legend>logical — the standard under test</legend>
+  <label>D-ring <select id="t_dring">
+    <option value="a42q">a42q — center revision (the working config)</option>
+    <option value="a42k">a42k — k-split rescue [2,3,5] @ 0.075</option>
+    <option value="a42c">a42c — k-split rescue circular end @ 0.050</option>
+    <option value="a42u">a42u — under-ceiling probe (v4 plate @ 0.075)</option>
+    <option value="a42v">a42v — v4 dividend (class 0.090, family 4)</option>
+    <option value="a44q">a44q — a42q @ F=4 (rate lever)</option>
+    <option value="a42g">a42g — geometry trial</option>
+    <option value="a42r">a42r — amp re-split</option>
+    <option value="a42x">a42x — k5 ladder (timid)</option>
+    <option value="a42">a42 — plain A-inner</option>
+    <option value="a82">a82 — M=8/F=2</option>
+    <option value="f24">f24 — v0 breaker beacon</option>
+  </select></label>
+  <label>profile <select id="t_prof"><option value="v3">v3.1 resilient</option><option value="v3hr">v3.1 high-rate</option></select></label>
+  <label>loop <input id="t_loop" type="number" value="180" min="30"> s</label>
+  <label><input id="t_quad" type="checkbox" checked> quadrant corners</label>
+  <label><input id="t_freeze" type="checkbox"> freeze (<input id="t_cd" type="number" value="3" min="1" max="10" style="width:3rem"> s)</label>
+  <br><label style="width:100%">message <input id="t_msg" style="width:52rem" maxlength="1000"
+    value="When IBM discovered that it was not in the business of making office equipment or business machines, but that it was in the business of processing information, then it began to navigate with clear vision."></label>
+  <div>canonical settings string (what BOTH sides receive):<br><input id="canon" readonly></div>
+</fieldset>
+
+<fieldset>
+  <legend>physical — the shot (rides into the harvest log; the twin gets the take id only)</legend>
+  <label>distance (ft) <input id="p_dist" type="number" step="0.1"></label>
+  <label>angle (°) <input id="p_angle" type="number" step="1" value="0"></label>
+  <label>zoom (×) <input id="p_zoom" type="number" step="0.1" value="1"></label>
+  <label>lux <input id="p_lux" type="number" step="1"></label>
+  <label>lighting <input id="p_light" style="width:11rem" placeholder="e.g. indoor lamp, dusk"></label>
+  <br><label>device <input id="p_dev" style="width:11rem" placeholder="e.g. Pixel 11 Pro XL"></label>
+  <label>mount <select id="p_mount"><option>tripod</option><option>handheld</option><option>braced</option></select></label>
+  <label>notes <input id="p_notes" style="width:20rem"></label>
+</fieldset>
+
+<h2>the workflow</h2>
+<p>
+  <button id="goTwin" class="go">① run synthetic twin</button>
+  <button id="goEmit" class="go">② open emitter (armed)</button>
+  <button id="goIngest" class="go">③ ingest capture</button>
+</p>
+<p class="dim">① opens the receiver in synthetic mode: it renders this exact card and runs the real
+harvest — the baseline posts to <code>results/synth-harvest-&lt;code&gt;.json</code> and its log
+lands take-tagged. ② opens the emitter pre-armed with the card; press Start, then Fullscreen; film.
+③ opens the receiver pre-armed with the card + physicals; pick the clip file — the harvest log posts
+take-tagged with the physicals inside. Then <a href="registry.html">registry.html</a> → scan: the
+capture arrives annotated. Change ANY setting → Stop the emitter first (select-rebind).</p>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const F = ["t_id", "t_dring", "t_prof", "t_loop", "t_quad", "t_freeze", "t_cd", "t_msg",
+           "p_dist", "p_angle", "p_zoom", "p_lux", "p_light", "p_dev", "p_mount", "p_notes"];
+
+/* The canonical string — MUST equal emit.html's ocSettingsString() for the
+   same values (the emit selftest pins the round trip). */
+function canonical() {
+  const prof = $("t_prof").value;
+  return ["oc1",
+    "prof=" + prof,
+    "payload=1",
+    "tiling=1",
+    "quad=" + ($("t_quad").checked ? 1 : 0),
+    "qrp=0",
+    "dring=" + $("t_dring").value,
+    "loop=" + (+$("t_loop").value || 60),
+    "freeze=" + ($("t_freeze").checked ? (+$("t_cd").value || 3) : 0),
+    "capfps=" + (prof === "15" ? 30 : 60)].join(" ");
+}
+function physJson() {
+  const num = id => $(id).value === "" ? undefined : +$(id).value;
+  const str = id => $(id).value || undefined;
+  const p = { distance_ft: num("p_dist"), angle_deg: num("p_angle"), zoom_x: num("p_zoom"),
+              lux: num("p_lux"), lighting: str("p_light"), device: str("p_dev"),
+              mount: $("p_mount").value, notes: str("p_notes") };
+  Object.keys(p).forEach(k => p[k] === undefined && delete p[k]);
+  return p;
+}
+function urls() {
+  const s = encodeURIComponent(canonical());
+  const msg = encodeURIComponent($("t_msg").value);
+  const id = encodeURIComponent($("t_id").value);
+  return {
+    twin: "receive.html?synth=" + encodeURIComponent($("t_dring").value) +
+          "&loop=" + (+$("t_loop").value || 60) + "&msg=" + msg +
+          "&prof=" + encodeURIComponent($("t_prof").value) +
+          "&quad=" + ($("t_quad").checked ? 1 : 0) + "&take=" + id,
+    emit: "emit.html?settings=" + s + "&msg=" + msg + "&take=" + id,
+    ingest: "receive.html?settings=" + s + "&take=" + id + "&phys=" + encodeURIComponent(JSON.stringify(physJson()))
+  };
+}
+function takeId() {
+  const day = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+  const key = "ocTakeSeq-" + day;
+  let n = 0;
+  try { n = (+localStorage.getItem(key) || 0) + 1; localStorage.setItem(key, String(n)); } catch (e) { n = 1; }
+  return "T" + day + "-" + $("t_dring").value + "-" + String(n).padStart(2, "0");
+}
+function refresh() {
+  $("canon").value = canonical();
+  try { localStorage.setItem("ocTakeCard", JSON.stringify(Object.fromEntries(F.map(id => [id,
+    $(id).type === "checkbox" ? $(id).checked : $(id).value])))); } catch (e) {}
+}
+F.forEach(id => { $(id).addEventListener("change", refresh); $(id).addEventListener("input", refresh); });
+$("t_next").onclick = () => { $("t_id").value = takeId(); refresh(); $("t_note").textContent = "physicals kept — same shot, next take"; };
+$("goTwin").onclick = () => { refresh(); window.open(urls().twin, "_blank"); };
+$("goEmit").onclick = () => { refresh(); window.open(urls().emit, "_blank"); };
+$("goIngest").onclick = () => { refresh(); window.open(urls().ingest, "_blank"); };
+
+// restore the last card (a session usually repeats the shot setup)
+(function () {
+  try {
+    const c = JSON.parse(localStorage.getItem("ocTakeCard") || "null");
+    if (c) F.forEach(id => { if (c[id] === undefined) return; if ($(id).type === "checkbox") $(id).checked = c[id]; else $(id).value = c[id]; });
+  } catch (e) {}
+  if (!$("t_id").value) $("t_id").value = takeId();
+  refresh();
+})();
+
+/* Selftest (the runner's lane): pin the canonical builder + the three URLs. */
+(function () {
+  const q = new URLSearchParams(location.search);
+  if (!q.get("selftest")) return;
+  $("t_dring").value = "a42k"; $("t_prof").value = "v3"; $("t_loop").value = "180";
+  $("t_quad").checked = true; $("t_freeze").checked = false; $("t_id").value = "T-SELFTEST-01";
+  $("p_dist").value = "13"; $("p_angle").value = "0"; $("p_zoom").value = "10"; $("p_mount").value = "tripod";
+  refresh();
+  const want = "oc1 prof=v3 payload=1 tiling=1 quad=1 qrp=0 dring=a42k loop=180 freeze=0 capfps=60";
+  const u = urls();
+  const asserts = [
+    { name: "canonical string matches the emit-side shape exactly", ok: canonical() === want },
+    { name: "twin URL carries synth+loop+take, no phys", ok: /synth=a42k/.test(u.twin) && /take=T-SELFTEST-01/.test(u.twin) && !/phys=/.test(u.twin) },
+    { name: "emit URL carries the encoded canonical string + msg + take", ok: u.emit.indexOf("settings=" + encodeURIComponent(want)) >= 0 && /take=T-SELFTEST-01/.test(u.emit) },
+    { name: "ingest URL carries settings + take + physicals JSON", ok: u.ingest.indexOf("settings=" + encodeURIComponent(want)) >= 0 && /phys=/.test(u.ingest) && decodeURIComponent(u.ingest).indexOf('"distance_ft":13') >= 0 }
+  ];
+  const fails = asserts.filter(a => !a.ok).length;
+  fetch("/harness-result?page=take-selftest", { method: "POST",
+    body: JSON.stringify({ selftest: true, passes: asserts.length - fails, fails, asserts, canonical: canonical() }, null, 1) }).catch(() => {});
+  if (q.get("return") === "runner") setTimeout(() => { location.href = "runner.html"; }, 1200);
+})();
+</script>
+</body>
+</html>

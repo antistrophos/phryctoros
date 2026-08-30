@@ -191,7 +191,11 @@ function extractCapture(log) {
       fid_px_mean: fids.length ? +(fids.reduce((s, x) => s + x, 0) / fids.length).toFixed(1) : null,
       rings: ringOut
     },
-    physical: log.clip && /^synthetic:/.test(log.clip)
+    take: log.take || undefined,
+    // The take card's physicals ride inside the fieldLog itself (the console
+    // lane) — inherit them verbatim; otherwise infer what the log can know.
+    physical: log.physical ? log.physical
+      : log.clip && /^synthetic:/.test(log.clip)
       ? { mount: "synthetic", lighting: "—" }
       : { mount: log.harness && log.harness.handheld ? "handheld" : "tripod" },
     verdictLine: (fin.receipt || "").slice(0, 200)
@@ -313,7 +317,7 @@ function render() {
     ch += "<tr class='cap" + (c.id === selId ? " sel" : "") + "' data-id=\"" + c.id + "\">" +
       "<td>" + String(c.started || "").replace("T", " ").slice(0, 19) + "</td>" +
       "<td style='color:" + codeColor(c.dring) + "'>" + c.dring + "</td>" +
-      "<td>" + c.type + "</td><td class='dim'>" + String(c.clip || "").slice(0, 34) + "</td>" +
+      "<td>" + c.type + "</td><td class='dim'>" + (c.take ? "<span class='chip'>" + c.take + "</span> " : "") + String(c.clip || "").slice(0, 34) + "</td>" +
       "<td>" + fmt(m.bind_w, 0) + "/" + fmt(m.seal_w, 0) + "</td>" +
       "<td>" + fmt(m.exit_t1) + "/" + fmt(c.duration_s, 0) + " (" + Math.round((m.exit_ratio || 0) * 100) + "%)</td>" +
       "<td>" + fmt(m.goodput_bps) + " bps</td>" +
@@ -448,7 +452,9 @@ function drawPlot() {
     { name: "a peeled capture carries finite goodput", ok: reg.captures.some(c => c.metrics.peel_ok && isFinite(c.metrics.goodput_bps)) }
   ];
   const fails = asserts.filter(a => !a.ok).length;
-  const body = JSON.stringify({ selftest: true, passes: asserts.length - fails, fails, asserts, captures: withCaps, ingested: res.added }, null, 1);
+  const tagged = reg.captures.filter(c => c.take);
+  const body = JSON.stringify({ selftest: true, passes: asserts.length - fails, fails, asserts, captures: withCaps, ingested: res.added,
+    takeTagged: tagged.length, sampleTake: tagged[0] ? { take: tagged[0].take, physical: tagged[0].physical } : null }, null, 1);
   try { await fetch("/harness-result?page=registry-selftest", { method: "POST", body }); } catch (e) {}
   if (q.get("return") === "runner") setTimeout(() => { location.href = "runner.html"; }, 1200);
 })();

@@ -98,7 +98,7 @@ async function reportPendingSuite() {
   try { sessionStorage.removeItem("runnerPendingSuite"); } catch (e) {}
   let verdict = { ok: false, error: "suite results not found" };
   // page FILENAME → the SUITE_PAGE name its results post under
-  const RESULTS_NAME = { "test": "v2", "test-v3": "v3", "test-v3-dring": "v3dring", "test-saddle": "saddle", "receive": "synth-harvest", "registry": "registry-selftest" };
+  const RESULTS_NAME = { "test": "v2", "test-v3": "v3", "test-v3-dring": "v3dring", "test-saddle": "saddle", "receive": "synth-harvest", "registry": "registry-selftest", "emit": "emit-selftest", "take": "take-selftest" };
   for (let att = 0; att < 4; att++) {
     try {
       // An ?only= lap posts to <name>-partial.json (certification = the

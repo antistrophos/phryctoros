@@ -544,6 +544,8 @@ async function harvestDecode(v, geo, file) {
     clip: (file && file.name) || "camera",
     duration_s: Math.round(durS * 10) / 10,
     settings: ($("pasteStr") && $("pasteStr").value) || undefined,
+    take: (window.ocTake && window.ocTake.id) || undefined,
+    physical: (window.ocTake && window.ocTake.physical) || undefined,
     dring: ($("m_dring") && $("m_dring").value) || undefined,
     harness: {
       handheld: !!($("m_hand") && $("m_hand").checked),
@@ -909,6 +911,11 @@ function synthSource(msg, loopS) {
       if ($("m_loop")) $("m_loop").value = String(loopS);
       if ($("m_capfps")) $("m_capfps").value = "60";
       if ($("m_harvest")) $("m_harvest").checked = true;
+      // Self-description: the log's settings field carries the canonical
+      // string for a synthetic run too — the record reads like any take's.
+      if ($("pasteStr")) $("pasteStr").value = ["oc1", "prof=" + (($("m_prof") && $("m_prof").value) || "v3"),
+        "payload=1", "tiling=1", "quad=" + ($("m_quad") && $("m_quad").checked ? 1 : 0), "qrp=0",
+        "dring=" + code, "loop=" + loopS, "freeze=0", "capfps=60"].join(" ");
       window.ocTiling = 1;
       window.ocSynth = synthSource(msg, loopS);
       const log = await harvestDecode({ duration: loopS }, null, { name: "synthetic:" + code + ":" + loopS + "s" });
@@ -1293,6 +1300,34 @@ $("applyStrBtn").addEventListener("click", () => {
   el.style.fontWeight = r.err || r.warn ? "bold" : "normal";
 });
 $("pasteStr").addEventListener("keydown", e => { if (e.key === "Enter") $("applyStrBtn").click(); });
+
+/* TAKE-CARD INTAKE (2026-08-30, the console): take.html opens this page with
+   ?settings=<the canonical oc1 string>&take=<id>&phys=<json> — the SAME
+   string the emitter was armed with, so both sides of a take are configured
+   from ONE card and the paste step (the fat-finger surface) disappears. The
+   take id and the shot's physical conditions ride into the fieldLog itself:
+   the log becomes the complete record and the registry inherits the
+   annotations with no re-typing. The twin lane (?synth=) passes take WITHOUT
+   phys — camera physicals on a synthetic run would be a lie. */
+(function () {
+  const q = new URLSearchParams(location.search);
+  const s = q.get("settings");
+  if (s) {
+    $("pasteStr").value = s;
+    $("applyStrBtn").click();
+    if ($("m_harvest")) $("m_harvest").checked = true;
+  }
+  if (q.get("take")) {
+    let phys = null;
+    try { phys = JSON.parse(q.get("phys") || "null"); } catch (e) {}
+    window.ocTake = { id: q.get("take"), physical: phys };
+    const el = document.createElement("div");
+    el.style.cssText = "margin:.4rem 0;padding:.4rem .7rem;border:1px solid #7ce38b;color:#7ce38b;font-weight:600";
+    el.textContent = "TAKE " + q.get("take") + (s ? " — receiver armed from the card; pick the clip file to ingest" : "") +
+      (phys ? " (physicals attached: " + Object.keys(phys).filter(k => phys[k] != null).join(", ") + ")" : "");
+    document.body.insertBefore(el, document.body.firstChild.nextSibling);
+  }
+})();
 </script>
 </body>
 </html>

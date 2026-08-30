@@ -1034,6 +1034,48 @@ $("copySettingsBtn").addEventListener("click", () => {
   else { $("settingsStr").select(); document.execCommand("copy"); done(); }
 });
 ocRefreshMode();
+
+/* TAKE-CARD INTAKE (2026-08-30, the console): take.html opens this page with
+   ?settings=<the canonical oc1 string>&msg=<payload>&take=<id> — the SAME
+   string the receiver will be armed with, so the emitter cannot disagree
+   with the ingest side. The explicit-start rule stands (F1/§7.7): nothing
+   autoplays; the banner says what the card armed and the operator presses
+   Start, then Fullscreen. The selftest's strongest assert is the ROUND
+   TRIP: ocSettingsString() must equal the string that armed the page. */
+(function () {
+  const q = new URLSearchParams(location.search);
+  const s = q.get("settings");
+  if (!s) return;
+  const kv = {};
+  String(s).split(/\s+/).forEach(t => { const m = t.match(/^([a-z_]+)=(.*)$/i); if (m) kv[m[1]] = m[2]; });
+  if (kv.prof) { $("rateSel").value = kv.prof; if ($("rateSel").onchange) $("rateSel").onchange(); }
+  if (kv.payload != null) $("payloadChk").checked = kv.payload === "1";
+  if (kv.tiling) $("tileSel").value = kv.tiling;
+  if (kv.quad != null) $("quadChk").checked = kv.quad === "1";
+  if (kv.dring && $("dringSel")) $("dringSel").value = kv.dring;
+  if (kv.loop) $("loopSecs").value = kv.loop;
+  if (kv.freeze != null) { const f = +kv.freeze; $("freezeChk").checked = f > 0; if (f > 0) $("cdSecs").value = f; }
+  if (q.get("msg") != null) $("payloadTxt").value = q.get("msg");
+  ocRefreshMode();
+  const ok = validate();
+  if (q.get("take")) {
+    const el = document.createElement("div");
+    el.style.cssText = "margin:.5rem 0;padding:.5rem .7rem;border:1px solid #7ce38b;color:#7ce38b;font-weight:600";
+    el.textContent = "TAKE " + q.get("take") + " armed from the card — press Start, then Fullscreen. Stop before changing anything (the select-rebind trap).";
+    document.body.insertBefore(el, document.body.firstChild.nextSibling);
+  }
+  if (q.get("selftest")) {
+    const round = ocSettingsString() === s;
+    const body = JSON.stringify({
+      selftest: true, passes: (ok ? 1 : 0) + (round ? 1 : 0), fails: (ok ? 0 : 1) + (round ? 0 : 1),
+      asserts: [{ name: "profile validates as armed", ok: !!ok },
+                { name: "settings string round-trips exactly", ok: round }],
+      settings_in: s, settings_out: ocSettingsString(), msg: $("payloadTxt").value
+    }, null, 1);
+    fetch("/harness-result?page=emit-selftest", { method: "POST", body }).catch(() => {});
+    if (q.get("return") === "runner") setTimeout(() => { location.href = "runner.html"; }, 1200);
+  }
+})();
 </script>
 </body>
 </html>
