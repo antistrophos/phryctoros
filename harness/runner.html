@@ -80,7 +80,7 @@ async function runSuite(job) {
   // suiteFinish/suiteError bounce back here via ?return=runner, and the
   // pending marker below lets the reloaded runner report the job.
   const page = String(job.page || "").replace(/[^a-z0-9-]/gi, "");
-  try { sessionStorage.setItem("runnerPendingSuite", JSON.stringify({ id: job.id, page: page, note: job.note, t: Date.now() })); } catch (e) {}
+  try { sessionStorage.setItem("runnerPendingSuite", JSON.stringify({ id: job.id, page: page, note: job.note, only: job.only || null, t: Date.now() })); } catch (e) {}
   const qs = "?return=runner" + (job.only ? "&only=" + encodeURIComponent(job.only) : "");
   $s.textContent = "handing this tab to " + page + ".html — it returns when the suite posts";
   await new Promise(r => setTimeout(r, 400));
@@ -99,7 +99,9 @@ async function reportPendingSuite() {
   const RESULTS_NAME = { "test": "v2", "test-v3": "v3", "test-v3-dring": "v3dring", "test-saddle": "saddle" };
   for (let att = 0; att < 4; att++) {
     try {
-      const resp = await fetch("results/" + (RESULTS_NAME[pend.page] || pend.page) + ".json", { cache: "no-store" });
+      // An ?only= lap posts to <name>-partial.json (certification = the
+      // unfiltered name only) — fetch the file the lap actually wrote.
+      const resp = await fetch("results/" + (RESULTS_NAME[pend.page] || pend.page) + (pend.only ? "-partial" : "") + ".json", { cache: "no-store" });
       if (!resp.ok) { verdict.error = "results fetch HTTP " + resp.status; }
       else {
         const r = await resp.json();
@@ -110,6 +112,7 @@ async function reportPendingSuite() {
     await new Promise(r2 => setTimeout(r2, 1500 * (att + 1)));
   }
   verdict.id = pend.id; verdict.kind = "suite"; verdict.page = pend.page; verdict.note = pend.note;
+  if (pend.only) verdict.only = pend.only;
   verdict.wall_s = Math.round((Date.now() - pend.t) / 1000);
   executed++;
   await post("job-" + String(pend.id).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 30), verdict);

@@ -629,7 +629,7 @@
     delete p.family;
     if (code === "c42" || code === "c82" || code === "a42" || code === "a82" ||
         code === "a42r" || code === "a42x" || code === "a42g" || code === "a42q" || code === "a44q" ||
-        code === "a42v" || code === "a42u") {
+        code === "a42v" || code === "a42u" || code === "a42k" || code === "a42c") {
       p.beacon.framing = "chunked";
       p.beacon.rotation.M = (code === "c82" || code === "a82") ? 8 : 4;
       p.beacon.rotation.gray = true;
@@ -704,6 +704,34 @@
         p.plate.center_style = "quadrant3";
         p.beacon.amplitudes = [0.012, 0.018, 0.045];
         p.family = 4;
+      } else if (code === "a42k" || code === "a42c") {
+        // THE k-SPLIT RESCUE A/B (2026-08-30, the practitioner's "more
+        // lobes / more circular" probe): the a42v/a42u conviction says
+        // relative EXCURSION is the camera path's enemy, and trackPhase
+        // weights phase votes by (k·a)² — so spend the class upward in k
+        // instead of upward in depth. Both codes drop k=1 ENTIRELY (F5b:
+        // the estimator is deaf to it; the branch guide is redundant at
+        // beacon speeds — 45° worst per-frame surprise inside k=2's ±90°
+        // window — and initialAnchor re-anchors on the k2/k3 coprime
+        // pair). Cost of the drop: meanMag[1], the centering-error
+        // diagnostic, has no row on these codes. a42q's proven plate
+        // carries both; family stays 3 — the receiver's tracker weights
+        // come from the settings string's dring code, as for every trial.
+        //   a42k: [2,3,5] at the full 0.075 class — Σ(k·a)² ×2.28 over
+        //         a42q (+3.6 dB) at UNCHANGED excursion.
+        //   a42c: the same shape scaled to Σ 0.050 (5.0% of the ring
+        //         radius — data-edge territory): a42q's estimation power
+        //         at two-thirds the excursion, the "more circular" end.
+        // k=5's NOMINAL temporal frequency 3.75 Hz enters the 3–60 Hz
+        // band (k3 sat below it at 2.25) — flicker.report now carries
+        // beacon rows (wired with this change) so the field session logs
+        // the row instead of guessing.
+        p.bands[0].lo.fixed = 1.00;
+        p.plate.quiet_r = 0.80;
+        p.plate.center_style = "quadrant3";
+        p.beacon.harmonics = [2, 3, 5];
+        p.beacon.phases_deg = [0, 45, 90];
+        p.beacon.amplitudes = code === "a42k" ? [0.015, 0.020, 0.040] : [0.010, 0.013, 0.027];
       }
     } else {
       delete p.beacon.framing;

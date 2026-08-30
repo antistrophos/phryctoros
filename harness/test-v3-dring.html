@@ -696,6 +696,96 @@ async function main() {
   }
   }
 
+  if (caseOn("T22kc")) {
+  await tick("T22kc: the k-split rescue A/B — more lobes, each shallower…");
+  {
+    // The a42v/a42u conviction (2026-08-29): relative EXCURSION is the
+    // camera path's enemy — 9.5% a/r fails, 7.5–7.9% works, data edges
+    // live at 4–6%. trackPhase weights phase votes by (k·a)², so the
+    // rescue spends the class upward in k instead of upward in depth,
+    // and drops k=1 entirely (F5b: zero estimation weight; the branch
+    // guide is redundant at beacon speeds and initialAnchor re-anchors
+    // on the k2/k3 coprime pair). a42k = [2,3,5] at the full 0.075
+    // class (+3.6 dB over a42q at unchanged excursion); a42c = the same
+    // shape at Σ 0.050 = 5.0% a/r (a42q's power at ⅔ the excursion).
+    const kcOver = { countdown: { freeze_s: 0, loop_s: 60 }, plate: { corner_style: "quadrant" } };
+    const kPow = p => p.beacon.harmonics.reduce((s, k, j) => k >= 2 ? s + Math.pow(k * p.beacon.amplitudes[j], 2) : s, 0);
+    // (a) shapes: both codes ride a42q's proven plate, no k=1 anywhere,
+    //     sums exact (a42k AT the geometry-priced bound), family stays 3,
+    //     and the (k·a)² arithmetic matches the design claims.
+    const pK = OC.profile.profileV3(undefined, kcOver);
+    OC.profile.applyDring(pK, "a42k");
+    const vK = OC.profile.validate(pK);
+    const sumK = pK.beacon.amplitudes.reduce((a, b) => a + b, 0);
+    const pC = OC.profile.profileV3(undefined, kcOver);
+    OC.profile.applyDring(pC, "a42c");
+    const vC = OC.profile.validate(pC);
+    const sumC = pC.beacon.amplitudes.reduce((a, b) => a + b, 0);
+    const pQk = OC.profile.profileV3(undefined, kcOver);
+    OC.profile.applyDring(pQk, "a42q");
+    const ratioK = kPow(pK) / kPow(pQk), ratioC = kPow(pC) / kPow(pQk);
+    const infoK = { K: 9, len: 17, pcrc: 0x7E57, capability: 1 };
+    const envK = OC.emission.envelopeBytes(pK, infoK);
+    const okA = !!(vK.ok && vC.ok &&
+                   pK.beacon.harmonics.join(",") === "2,3,5" && pC.beacon.harmonics.join(",") === "2,3,5" &&
+                   pK.plate.quiet_r === 0.80 && pK.bands[0].lo.fixed === 1.00 &&
+                   pK.plate.center_style === "quadrant3" &&
+                   Math.abs(sumK - 0.075) < 1e-9 && Math.abs(sumC - 0.050) < 1e-9 &&
+                   ratioK > 2.2 && ratioK < 2.4 && Math.abs(ratioC - 1) < 0.05 &&
+                   pK.family === undefined && envK[1] === 3);
+    // (b) flicker wiring: the report now carries BEACON rows (it iterated
+    //     p.annuli only — the a42x in-band question was structurally
+    //     invisible). k5's NOMINAL 3.75 Hz lands in the 3–60 band; a42q's
+    //     beacon rows appear too (k3 nominal 2.25 below band); the v2
+    //     default (no beacon) gains nothing.
+    const bRowsK = vK.flicker.rows.filter(r => r.annulus === "beacon");
+    const r5 = bRowsK.find(r => r.k === 5);
+    const bRowsQ = OC.profile.validate(pQk).flicker.rows.filter(r => r.annulus === "beacon");
+    const bRowsV2 = OC.profile.validate(OC.profile.defaultProfile()).flicker.rows.filter(r => r.annulus === "beacon");
+    const okB = !!(bRowsK.length === 3 && r5 && r5.f_nominal_hz === 3.75 && r5.in_band_3_60 === true &&
+                   bRowsQ.length === 3 && bRowsQ.find(r => r.k === 3).f_nominal_hz === 2.25 &&
+                   bRowsV2.length === 0);
+    // (c) list hygiene: toggling on ONE live profile restores a42q's lists
+    //     (no stale [2,3,5] rides the emit select), and → f24 byte-identical.
+    const pH2 = OC.profile.profileV3(undefined, kcOver);
+    OC.profile.applyDring(pH2, "a42k");
+    OC.profile.applyDring(pH2, "a42q");
+    const backQ2 = pH2.beacon.harmonics.join(",") === "1,2,3" &&
+                   pH2.beacon.amplitudes.join(",") === "0.012,0.018,0.045";
+    OC.profile.applyDring(pH2, "f24");
+    const backF2 = JSON.stringify(pH2.beacon) === JSON.stringify(OC.profile.profileV3(undefined, {}).beacon);
+    // (d) optically: NO config has ever run the ladder without k=1 — the
+    //     tracker must initial-anchor on the k2/k3 coprime pair, resolve
+    //     k5 on the running estimate, and assemble the chunked envelope
+    //     through the standard chain. Structure, not SNR: synthetic frames
+    //     are noise-free; the dB and ceiling claims are the FIELD A/B's.
+    const pKo = OC.profile.profileV3(undefined, Object.assign({ session32: 0xA42C0005, render: { size_px: 448, scale_px_per_unit: 70 } }, kcOver));
+    OC.profile.applyDring(pKo, "a42k");
+    const envKo = OC.emission.envelopeBytes(pKo, infoK);
+    const expTagK = ((envKo[18] << 8) | envKo[19]);
+    let seqK = OC.emission.renderSequence(pKo, 500, { payloadInfo: infoK });
+    let slK = seqK.frames.slice(50);
+    seqK = null;
+    const rK = OC.pipeline.decodeSequence(slK, pKo, { beacon: true });
+    slK = null;
+    const bK = rK.error ? null : rK.emitters[0].annuli.find(a => a.beacon);
+    const fK = bK && bK.envelopeFields;
+    const okD = !!(bK && !bK.error && bK.alignMethod === "framed" && bK.framing === "chunked" &&
+                   fK && fK.session32 === 0xA42C0005 && fK.K === 9 && fK.pcrc === 0x7E57 &&
+                   bK.tag === expTagK.toString(16).padStart(4, "0"));
+    record("T22kc the k-split rescue: a42k [2,3,5] no-k1 at the full 0.075 class and a42c at Σ 0.050 both validate on a42q's plate with the claimed (k·a)² arithmetic, the flicker report now carries beacon rows (k5 nominal 3.75 Hz flagged in-band; v2 unchanged), toggling restores a42q's lists then f24 byte-identical, and the k1-free ladder assembles the chunked envelope optically through the standard chain",
+      okA && okB && backQ2 && backF2 && okD,
+      "(a) a42k v " + vK.ok + " [" + pK.beacon.amplitudes + "] sum " + sumK.toFixed(3) + " ×" + ratioK.toFixed(2) +
+      " · a42c v " + vC.ok + " [" + pC.beacon.amplitudes + "] sum " + sumC.toFixed(3) + " ×" + ratioC.toFixed(2) +
+      " · (b) beacon rows " + bRowsK.length + "/" + bRowsQ.length + "/v2:" + bRowsV2.length +
+      " k5 " + (r5 ? r5.f_nominal_hz + "Hz band " + r5.in_band_3_60 : "MISSING") +
+      " · (c) →a42q restores " + backQ2 + ", →f24 byte-identical " + backF2 +
+      " · (d) " + (bK ? (bK.alignMethod || "?") + "/" + bK.framing + " tag " + bK.tag +
+                    " sess " + (fK && (fK.session32 >>> 0).toString(16)) + (bK.error ? " ERR " + bK.error : "")
+                  : "no row: " + JSON.stringify(rK.error).slice(0, 60)));
+  }
+  }
+
 }
 
 suiteStart(main);

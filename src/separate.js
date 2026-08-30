@@ -101,6 +101,22 @@
         var tg = psis[jg] - spec.arg[1];
         var mg = Math.round((pred - tg) / TAU);
         est = (pred + (tg + TAU * mg)) / 2;
+      } else if (jg < 0) {
+        // k1-FREE ladder (a42k/a42c; the v5 outer-edge split is the same
+        // shape): the "45°" surprise budget above is constellation-specific —
+        // at M=4/F=2 a symbol-2 step sweeps 180°/symbol = 90°/frame, past
+        // k2's ±90° branch window once nominal rides on top, and without a
+        // guide the track under-runs (T22kc's first lap measured carrier
+        // 0.432×). The k1 guide was LOAD-BEARING, not belt-and-suspenders.
+        // Its replacement: re-anchor absolutely on the k2/k3 coprime pair
+        // (initialAnchor — the same joint vote the post-gap path trusts),
+        // take the turn count from the prediction, and blend 50/50 exactly
+        // as the k1 guide did. The pair's joint ambiguity is a full turn
+        // and the prediction is never half a turn out, so the branch is
+        // safe — and the anchor inputs are EMITTED harmonics, not the
+        // centering-polluted k=1 the old guide steered by.
+        var anch2 = initialAnchor(spec, ks, psis);
+        est = (pred + (anch2 + TAU * Math.round((pred - anch2) / TAU))) / 2;
       }
       var estAcc = est * W;
       var usable = 0;

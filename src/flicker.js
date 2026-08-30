@@ -29,6 +29,25 @@
         rows.push({ annulus: a.index, k: k, f_nominal_hz: round2(fNominal), f_worst_hz: round2(fWorst), in_band_3_60: inBand, in_peak_15_25: inPeak });
       }
     }
+    // The beacon (2026-08-30): its rotating contour rides p.beacon, not
+    // p.annuli, so this report never saw it — the a42x notes called the
+    // k=5 in-band question unanalyzed for exactly that reason. Same
+    // worst-case convention as the data rings; rows tag annulus "beacon".
+    // v2 profiles carry no beacon and are unchanged.
+    if (p.beacon && p.beacon.rotation && p.beacon.harmonics) {
+      var b = p.beacon;
+      var devB = 0.5 * (fps / b.rotation.frames_per_symbol);
+      for (var jb = 0; jb < b.harmonics.length; jb++) {
+        var kb = b.harmonics[jb];
+        var fN = kb * b.rotation.nominal_hz;
+        var fW = kb * (b.rotation.nominal_hz + devB);
+        var inB = (fW >= BAND_LO && fN <= BAND_HI);
+        var inP = (fW >= PEAK_LO && fN <= PEAK_HI);
+        if (inB) worstBandHit = true;
+        if (inP) worstPeakHit = true;
+        rows.push({ annulus: "beacon", k: kb, f_nominal_hz: round2(fN), f_worst_hz: round2(fW), in_band_3_60: inB, in_peak_15_25: inP });
+      }
+    }
     var contrast = p.render.background - p.render.fill;
     return {
       rows: rows,
