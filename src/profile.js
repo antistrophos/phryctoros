@@ -629,7 +629,7 @@
     delete p.family;
     if (code === "c42" || code === "c82" || code === "a42" || code === "a82" ||
         code === "a42r" || code === "a42x" || code === "a42g" || code === "a42q" || code === "a44q" ||
-        code === "a42v") {
+        code === "a42v" || code === "a42u") {
       p.beacon.framing = "chunked";
       p.beacon.rotation.M = (code === "c82" || code === "a82") ? 8 : 4;
       p.beacon.rotation.gray = true;
@@ -687,6 +687,22 @@
         p.plate.quiet_r = 0.70;
         p.plate.center_style = "quadrant3";
         p.beacon.amplitudes = [0.014, 0.022, 0.054];
+        p.family = 4;
+      } else if (code === "a42u") {
+        // THE UNDER-CEILING PROBE (2026-08-29, the a42v field verdict's
+        // discriminator): a42v's PLATE (floor 0.95, quiet 0.70, quadrant3,
+        // family 4) at a42q's CLASS — [0.012, 0.018, 0.045], sum 0.075,
+        // 7.9% of the ring's radius. The webm-export loopback runs a42v
+        // clean (bind w3, tag held, peel w8), so the camera path is the
+        // fault's home; a42q's 7.5% a/r passed that camera repeatedly and
+        // a42v's 9.5% failed it wholesale. One variable now separates
+        // amplitude from position: if a42u locks in the field, the
+        // relative-modulation ceiling is convicted between 7.5% and 9.5%;
+        // if it also fails, the new radius/moat is the suspect instead.
+        p.bands[0].lo.fixed = 0.95;
+        p.plate.quiet_r = 0.70;
+        p.plate.center_style = "quadrant3";
+        p.beacon.amplitudes = [0.012, 0.018, 0.045];
         p.family = 4;
       }
     } else {

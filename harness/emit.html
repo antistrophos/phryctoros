@@ -82,6 +82,7 @@
       <option value="a42q">a42q — THE CENTER REVISION: a42g + 3-section quadrant center, variant = identity (freeze must be OFF)</option>
       <option value="a44q">a44q — a42q at F=4: tag ~2.7 s, +3 dB/symbol at half rate (the rate lever; freeze OFF)</option>
       <option value="a42v">a42v — THE v4 DIVIDEND: floor 0.95, quiet 0.70, class 0.090; announces family 4 (freeze OFF)</option>
+      <option value="a42u">a42u — UNDER-CEILING PROBE: a42v's plate at a42q's class 0.075 (the field A/B vs a42v; freeze OFF)</option>
       <option value="a82">a82 — D-ring @ A-inner, M=8/F=2 (1b + the rate A/B)</option>
     </select></label>
   </p>
@@ -998,6 +999,7 @@ function ocRefreshMode() {
      dr === "a42q" ? "A-INNER CENTER REVISION quadrant3 + variant identity" :
      dr === "a44q" ? "A-INNER CENTER REVISION @ F=4 (rate lever)" :
      dr === "a42v" ? "A-INNER v4 DIVIDEND floor 0.95 class 0.090 — FAMILY 4 on the wire" :
+     dr === "a42u" ? "A-INNER UNDER-CEILING PROBE: v4 plate @ class 0.075 — FAMILY 4 on the wire" :
      dr === "c82" ? "chunked M=8/F=2 (A/B)" : "chunked M=4/F=2 (trial)"));
   bits.push("film at " + (rate === "15" ? "30" : "60") + " fps");
   const el = $("modeSummary");
