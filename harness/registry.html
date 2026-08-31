@@ -121,9 +121,12 @@ function extractCapture(log) {
     if (bindW !== null && w.w >= bindW) winsAfterBind++;
     (w.rows || []).forEach(row => {
       if (row.fid) fids.push(row.fid);
+      // The array rig: tiled captures keep per-tile ring aggregates — a 2-up
+      // A/B reads out as t0:beacon vs t1:beacon side by side.
+      const tp = (row.tile != null && row.tile >= 0 && (log.tiling || 1) > 1) ? "t" + row.tile + ":" : "";
       (row.annuli || []).forEach(a => {
         if (!a) return;
-        const key = a.beacon ? "beacon" : String(a.ann);
+        const key = tp + (a.beacon ? "beacon" : String(a.ann));
         const g = rings[key] || (rings[key] = { lockedSpan: 0, span: 0, firstLock: null, snrTopSum: 0, snrN: 0, carr: [], snrByK: {} });
         g.span += span;
         const locked = !!a.method;
@@ -165,8 +168,11 @@ function extractCapture(log) {
   const fin = log.final || {};
   const peel = (fin.peels || []).find(p => p.ok) || (fin.peels || [])[0] || {};
   const lenFromKey = peel.key && peel.key !== "operator" ? +String(peel.key).split(":")[2] : null;
-  const dataDuties = [], dataSnrs = [];
-  for (const key in ringOut) if (key !== "beacon") { dataDuties.push(ringOut[key].lock_duty); dataSnrs.push(ringOut[key].snr_top_mean); }
+  const dataDuties = [], dataSnrs = [], bDuties = [], bSnrs = [];
+  for (const key in ringOut) {
+    if (/beacon$/.test(key)) { bDuties.push(ringOut[key].lock_duty); bSnrs.push(ringOut[key].snr_top_mean); }
+    else { dataDuties.push(ringOut[key].lock_duty); dataSnrs.push(ringOut[key].snr_top_mean); }
+  }
   const mean0 = a => a.length ? a.reduce((s, x) => s + (x || 0), 0) / a.length : null;
   const durS = log.duration_s || exitT1 || 1;
   return {
@@ -190,8 +196,8 @@ function extractCapture(log) {
       tag_hold: winsAfterBind ? +(tagSeen / winsAfterBind).toFixed(2) : null,
       data_lock_duty: dataDuties.length ? +mean0(dataDuties).toFixed(3) : null,
       data_snr_mean: dataSnrs.length ? +(+mean0(dataSnrs)).toFixed(1) : null,
-      beacon_snr_top: ringOut.beacon ? ringOut.beacon.snr_top_mean : null,
-      beacon_lock_duty: ringOut.beacon ? ringOut.beacon.lock_duty : null,
+      beacon_snr_top: bSnrs.length ? +(+mean0(bSnrs)).toFixed(1) : null,
+      beacon_lock_duty: bDuties.length ? +mean0(bDuties).toFixed(3) : null,
       fid_px_mean: fids.length ? +(fids.reduce((s, x) => s + x, 0) / fids.length).toFixed(1) : null,
       rings: ringOut
     },

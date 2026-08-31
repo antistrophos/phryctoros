@@ -50,7 +50,16 @@ the emitter page arms itself and waits for Start (F1/§7.7).</p>
     <option value="f24">f24 — v0 breaker beacon</option>
   </select></label>
   <label>profile <select id="t_prof"><option value="v3">v3.1 resilient</option><option value="v3hr">v3.1 high-rate</option></select></label>
+  <label>tiling <select id="t_tiling"><option value="1">1-up</option><option value="2">2-up (A/B)</option><option value="6">6-up (sweep)</option></select></label>
+  <label id="t_abWrap" style="display:none">B tile <select id="t_dring2">
+    <option value="">— same code —</option>
+    <option value="a42q">a42q</option><option value="a42k">a42k</option><option value="a42c">a42c</option>
+    <option value="a42u">a42u</option><option value="a42v">a42v</option><option value="a42g">a42g</option>
+    <option value="a42r">a42r</option><option value="a42x">a42x</option><option value="a42">a42</option>
+  </select></label>
+  <label id="t_listWrap" style="display:none">codes (one per tile, comma) <input id="t_list" style="width:24rem" placeholder="a42q,a42k,a42c,a42r,a42x,a42g"></label>
   <label>loop <input id="t_loop" type="number" value="180" min="30"> s</label>
+  <label>window <input id="t_minwin" type="number" placeholder="8" style="width:3.5rem">–<input id="t_maxwin" type="number" placeholder="12" style="width:3.5rem"> s <span class="dim">(arrays: ≥ 16 for in-window seals)</span></label>
   <label><input id="t_quad" type="checkbox" checked> quadrant corners</label>
   <label><input id="t_freeze" type="checkbox"> freeze (<input id="t_cd" type="number" value="3" min="1" max="10" style="width:3rem"> s)</label>
   <br><label style="width:100%">message <input id="t_msg" style="width:52rem" maxlength="1000"
@@ -86,9 +95,25 @@ capture arrives annotated. Change ANY setting → Stop the emitter first (select
 <script>
 "use strict";
 const $ = id => document.getElementById(id);
-const F = ["t_id", "t_dring", "t_prof", "t_loop", "t_quad", "t_freeze", "t_cd", "t_msg",
+const F = ["t_id", "t_dring", "t_prof", "t_tiling", "t_dring2", "t_list", "t_loop", "t_minwin", "t_maxwin", "t_quad", "t_freeze", "t_cd", "t_msg",
            "p_dist", "p_angle", "p_zoom", "p_lux", "p_light", "p_dev", "p_mount", "p_notes"];
 
+/* The array rig (phase 1): the card's dring VALUE — a single code, or a
+   comma list (one code per tile) when the tiles differ. Same-code arrays
+   stay classic (no variant map). */
+function dringValue() {
+  const n = +$("t_tiling").value || 1;
+  const a = $("t_dring").value;
+  if (n === 2) {
+    const b = $("t_dring2").value;
+    return b && b !== a ? a + "," + b : a;
+  }
+  if (n === 6) {
+    const list = ($("t_list").value || "").split(",").map(s => s.trim()).filter(Boolean);
+    return list.length === 6 ? list.join(",") : a;
+  }
+  return a;
+}
 /* The canonical string — MUST equal emit.html's ocSettingsString() for the
    same values (the emit selftest pins the round trip). */
 function canonical() {
@@ -96,10 +121,10 @@ function canonical() {
   return ["oc1",
     "prof=" + prof,
     "payload=1",
-    "tiling=1",
+    "tiling=" + (+$("t_tiling").value || 1),
     "quad=" + ($("t_quad").checked ? 1 : 0),
     "qrp=0",
-    "dring=" + $("t_dring").value,
+    "dring=" + dringValue(),
     "loop=" + (+$("t_loop").value || 60),
     "freeze=" + ($("t_freeze").checked ? (+$("t_cd").value || 3) : 0),
     "capfps=" + (prof === "15" ? 30 : 60)].join(" ");
@@ -117,13 +142,16 @@ function urls() {
   const s = encodeURIComponent(canonical());
   const msg = encodeURIComponent($("t_msg").value);
   const id = encodeURIComponent($("t_id").value);
+  const win = ($("t_minwin").value ? "&minwin=" + (+$("t_minwin").value) : "") +
+              ($("t_maxwin").value ? "&maxwin=" + (+$("t_maxwin").value) : "");
   return {
-    twin: "receive.html?synth=" + encodeURIComponent($("t_dring").value) +
+    twin: "receive.html?synth=" + encodeURIComponent(dringValue()) +
+          "&tiling=" + (+$("t_tiling").value || 1) +
           "&loop=" + (+$("t_loop").value || 60) + "&msg=" + msg +
           "&prof=" + encodeURIComponent($("t_prof").value) +
-          "&quad=" + ($("t_quad").checked ? 1 : 0) + "&take=" + id,
+          "&quad=" + ($("t_quad").checked ? 1 : 0) + "&take=" + id + win,
     emit: "emit.html?settings=" + s + "&msg=" + msg + "&take=" + id,
-    ingest: "receive.html?settings=" + s + "&take=" + id + "&phys=" + encodeURIComponent(JSON.stringify(physJson()))
+    ingest: "receive.html?settings=" + s + "&take=" + id + "&phys=" + encodeURIComponent(JSON.stringify(physJson())) + win
   };
 }
 function takeId() {
@@ -139,18 +167,29 @@ function refresh() {
     $(id).type === "checkbox" ? $(id).checked : $(id).value])))); } catch (e) {}
 }
 F.forEach(id => { $(id).addEventListener("change", refresh); $(id).addEventListener("input", refresh); });
+function syncTiling() {
+  const n = +$("t_tiling").value || 1;
+  $("t_abWrap").style.display = n === 2 ? "" : "none";
+  $("t_listWrap").style.display = n === 6 ? "" : "none";
+}
+$("t_tiling").addEventListener("change", syncTiling);
 $("t_next").onclick = () => { $("t_id").value = takeId(); refresh(); $("t_note").textContent = "physicals kept — same shot, next take"; };
 $("goTwin").onclick = () => { refresh(); window.open(urls().twin, "_blank"); };
 $("goEmit").onclick = () => { refresh(); window.open(urls().emit, "_blank"); };
 $("goIngest").onclick = () => { refresh(); window.open(urls().ingest, "_blank"); };
 
-// restore the last card (a session usually repeats the shot setup)
+// restore the last card (a session usually repeats the shot setup) — or
+// prefill from ?card=<json> (the order window's handoff lane: orders.html
+// deep-links a ticket into this card, so ONE builder owns the URLs).
 (function () {
-  try {
-    const c = JSON.parse(localStorage.getItem("ocTakeCard") || "null");
-    if (c) F.forEach(id => { if (c[id] === undefined) return; if ($(id).type === "checkbox") $(id).checked = c[id]; else $(id).value = c[id]; });
-  } catch (e) {}
+  const q0 = new URLSearchParams(location.search);
+  let fromCard = null;
+  try { fromCard = JSON.parse(q0.get("card") || "null"); } catch (e) {}
+  const apply = c => F.forEach(id => { if (c[id] === undefined) return; if ($(id).type === "checkbox") $(id).checked = c[id]; else $(id).value = c[id]; });
+  if (fromCard) apply(fromCard);
+  else { try { const c = JSON.parse(localStorage.getItem("ocTakeCard") || "null"); if (c) apply(c); } catch (e) {} }
   if (!$("t_id").value) $("t_id").value = takeId();
+  syncTiling();
   refresh();
 })();
 
@@ -164,11 +203,18 @@ $("goIngest").onclick = () => { refresh(); window.open(urls().ingest, "_blank");
   refresh();
   const want = "oc1 prof=v3 payload=1 tiling=1 quad=1 qrp=0 dring=a42k loop=180 freeze=0 capfps=60";
   const u = urls();
+  // the array rig: the 2-up A/B card builds a comma list + tiling=2
+  $("t_tiling").value = "2"; $("t_dring").value = "a42q"; $("t_dring2").value = "a42k"; refresh();
+  const want2 = "oc1 prof=v3 payload=1 tiling=2 quad=1 qrp=0 dring=a42q,a42k loop=180 freeze=0 capfps=60";
+  const c2 = canonical(), u2 = urls();
+  $("t_tiling").value = "1"; $("t_dring").value = "a42k"; refresh();
   const asserts = [
     { name: "canonical string matches the emit-side shape exactly", ok: canonical() === want },
     { name: "twin URL carries synth+loop+take, no phys", ok: /synth=a42k/.test(u.twin) && /take=T-SELFTEST-01/.test(u.twin) && !/phys=/.test(u.twin) },
     { name: "emit URL carries the encoded canonical string + msg + take", ok: u.emit.indexOf("settings=" + encodeURIComponent(want)) >= 0 && /take=T-SELFTEST-01/.test(u.emit) },
-    { name: "ingest URL carries settings + take + physicals JSON", ok: u.ingest.indexOf("settings=" + encodeURIComponent(want)) >= 0 && /phys=/.test(u.ingest) && decodeURIComponent(u.ingest).indexOf('"distance_ft":13') >= 0 }
+    { name: "ingest URL carries settings + take + physicals JSON", ok: u.ingest.indexOf("settings=" + encodeURIComponent(want)) >= 0 && /phys=/.test(u.ingest) && decodeURIComponent(u.ingest).indexOf('"distance_ft":13') >= 0 },
+    { name: "2-up A/B card: canonical carries tiling=2 + the comma list", ok: c2 === want2 },
+    { name: "2-up twin URL carries the code list + tiling", ok: u2.twin.indexOf("synth=" + encodeURIComponent("a42q,a42k")) >= 0 && /tiling=2/.test(u2.twin) }
   ];
   const fails = asserts.filter(a => !a.ok).length;
   fetch("/harness-result?page=take-selftest", { method: "POST",

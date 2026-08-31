@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>optical-carriage — the order window (capture lifecycle)</title>
+<style>
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 1.2rem; background: #14161a; color: #d8dce2; max-width: 62rem; }
+  h1 { font-size: 1.15rem; } h2 { font-size: 1.0rem; color: #c0a6f7; margin: 1rem 0 .3rem; }
+  .ok { color: #7ce38b; } .bad { color: #ff8b8b; } .warn { color: #ffd27c; } .dim { color: #7a8494; } .info { color: #c0a6f7; }
+  .chip { display: inline-block; padding: 0 .5rem; border-radius: .7rem; font-size: 12px; border: 1px solid #2a2e36; margin-right: .35rem; }
+  .chip.done { border-color: #7ce38b; color: #7ce38b; }
+  .chip.todo { border-color: #ffd27c; color: #ffd27c; }
+  #order { border: 2px solid #7ce38b; padding: .8rem 1rem; margin: .6rem 0; }
+  #order h2 { margin-top: 0; color: #7ce38b; }
+  .card { border: 1px solid #2a2e36; padding: .4rem .8rem; margin: .4rem 0; }
+  .card.done { opacity: .55; }
+  a.go { display: inline-block; border: 1px solid #7ce38b; color: #7ce38b; padding: .35rem .8rem; text-decoration: none; font-size: 15px; }
+  a.go:hover { background: #16241a; }
+  table { border-collapse: collapse; } td, th { border: 1px solid #2a2e36; padding: .15rem .5rem; font-size: 13px; }
+</style>
+</head>
+<body>
+<h1>the order window — what the kitchen needs next</h1>
+<p class="dim">The queue (<code>capture-queue.json</code>, committed — the experiment plan is provenance)
+is declarative; completion is EVIDENCE-derived: this page re-scans the posted harvest logs and decides
+for itself which orders are satisfied — nothing is checked off by hand. The top card is the next
+required capture; its button hands the whole card to the take console (①&nbsp;twin ②&nbsp;emit
+③&nbsp;ingest), and when the ingested log posts, the window advances on its own.</p>
+<div id="status" class="info">loading…</div>
+<div id="order"></div>
+<h2>the queue</h2>
+<div id="queue"></div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+let QUEUE = null;
+const LOGS = {};          // name -> parsed log (or null while fetching)
+let scanning = false;
+
+function logType(log) {
+  const c = log.clip || "";
+  if (/^synthetic:/.test(c)) return "synthetic";
+  if (/\.webm$/i.test(c)) return "export";
+  return "camera";
+}
+function near(v, want, tol) { return v != null && want != null && Math.abs(v - want) <= (tol != null ? tol : 0.001); }
+/* Does one harvest log satisfy one order's match block (for the given type)? */
+function logMatches(log, order, type) {
+  const m = order.match || {};
+  if (logType(log) !== type) return false;
+  if (m.dring && (log.dring || "") !== m.dring) return false;
+  if ((log.tiling || 1) !== (m.tiling || 1)) return false;
+  if (type === "camera") {
+    const p = log.physical || {};
+    if (m.distance_ft != null && !near(p.distance_ft, m.distance_ft, m.distance_tol != null ? m.distance_tol : 1)) return false;
+    if (m.zoom_x != null && !near(p.zoom_x, m.zoom_x, 0.51)) return false;
+    if (m.angle_deg != null && !near(p.angle_deg, m.angle_deg, m.angle_tol != null ? m.angle_tol : 8)) return false;
+    if (m.peel_ok && !((log.final || {}).peels || []).some(pl => pl.ok)) return false;
+  }
+  return true;
+}
+function orderState(order) {
+  const logs = Object.values(LOGS).filter(Boolean);
+  const cams = logs.filter(l => logMatches(l, order, "camera"));
+  const twins = logs.filter(l => logMatches(l, order, "synthetic"));
+  const need = order.count || 1;
+  const twinOk = order.twin === false || twins.length > 0;
+  return {
+    cams: cams.length, need, twinOk,
+    done: twinOk && cams.length >= need,
+    nextStep: !twinOk ? "① run the synthetic twin" :
+              cams.length < need ? "②③ film + ingest capture " + (cams.length + 1) + " of " + need :
+              "complete"
+  };
+}
+function consoleUrl(order) {
+  return "take.html?card=" + encodeURIComponent(JSON.stringify(order.card || {}));
+}
+function physLine(card) {
+  const bits = [];
+  if (card.p_dist != null) bits.push(card.p_dist + " ft");
+  if (card.p_zoom != null) bits.push(card.p_zoom + "×");
+  if (card.p_angle != null) bits.push(card.p_angle + "°");
+  if (card.p_mount) bits.push(card.p_mount);
+  if (card.p_light) bits.push(card.p_light);
+  return bits.join(" · ");
+}
+function render() {
+  if (!QUEUE) return;
+  const states = QUEUE.orders.map(o => ({ o, s: orderState(o) }));
+  const current = states.find(x => !x.s.done);
+  const el = $("order");
+  if (!current) {
+    el.innerHTML = "<h2>ORDER UP — the queue is clear</h2><p class='ok'>Every ticket is satisfied by the evidence on disk. New tickets appear when the queue file grows.</p>";
+  } else {
+    const { o, s } = current;
+    el.innerHTML = "<h2>NOW: " + o.title + "</h2>" +
+      "<p>" + (o.why || "") + "</p>" +
+      "<p><span class='chip " + (s.twinOk ? "done'>twin ✓" : "todo'>twin needed") + "</span>" +
+      "<span class='chip " + (s.cams >= s.need ? "done" : "todo") + "'>camera " + s.cams + "/" + s.need + "</span>" +
+      "<b class='warn'> → " + s.nextStep + "</b></p>" +
+      "<p class='dim'>card: dring " + ((o.match || {}).dring || "?") + " · tiling " + ((o.match || {}).tiling || 1) +
+      " · " + physLine(o.card || {}) + "</p>" +
+      "<a class='go' href='" + consoleUrl(o) + "' target='_blank'>→ open this ticket in the take console</a>";
+  }
+  $("queue").innerHTML = states.map(({ o, s }, i) =>
+    "<div class='card" + (s.done ? " done" : "") + "'><b>" + (i + 1) + ". " + o.title + "</b> " +
+    "<span class='chip " + (s.twinOk ? "done'>twin ✓" : "todo'>twin") + "</span>" +
+    "<span class='chip " + (s.cams >= s.need ? "done" : "todo") + "'>cam " + s.cams + "/" + s.need + "</span>" +
+    (s.done ? " <span class='ok'>done</span>" : "") +
+    "<br><span class='dim'>" + (o.why || "") + "</span></div>").join("");
+  const doneN = states.filter(x => x.s.done).length;
+  $("status").textContent = "queue: " + doneN + "/" + states.length + " orders satisfied · logs scanned: " +
+    Object.keys(LOGS).length + " · rechecks every 10 s";
+}
+async function scan() {
+  if (scanning) return; scanning = true;
+  try {
+    const r = await fetch("results/", { cache: "no-store" });
+    const names = Array.from((await r.text()).matchAll(/href="(field-[0-9]+\.json)"/g)).map(m => m[1]);
+    for (const n of names) {
+      if (n in LOGS) continue;
+      LOGS[n] = null;
+      try { const r2 = await fetch("results/" + n, { cache: "no-store" }); if (r2.ok) LOGS[n] = await r2.json(); } catch (e) {}
+    }
+  } catch (e) { $("status").textContent = "scan failed: " + e; }
+  scanning = false;
+  render();
+}
+(async function () {
+  try {
+    const r = await fetch("capture-queue.json", { cache: "no-store" });
+    QUEUE = await r.json();
+  } catch (e) { $("status").innerHTML = "<span class='bad'>capture-queue.json missing or unparsable: " + e + "</span>"; return; }
+  await scan();
+  setInterval(scan, 10000);
+
+  const q = new URLSearchParams(location.search);
+  if (!q.get("selftest")) return;
+  // fixture: a log that satisfies a fictional order's camera leg
+  const fx = { clip: "PXL_x.mp4", dring: "a42q,a42k", tiling: 2, physical: { distance_ft: 5, zoom_x: 5, angle_deg: 0 },
+               final: { peels: [{ ok: true }] } };
+  const fo = { match: { dring: "a42q,a42k", tiling: 2, distance_ft: 5, zoom_x: 5, angle_deg: 0, peel_ok: true } };
+  const asserts = [
+    { name: "queue fetched with ≥ 1 order", ok: !!(QUEUE && QUEUE.orders && QUEUE.orders.length) },
+    { name: "matcher accepts the exact fixture", ok: logMatches(fx, fo, "camera") === true },
+    { name: "matcher refuses a wrong dring", ok: logMatches(Object.assign({}, fx, { dring: "a42q" }), fo, "camera") === false },
+    { name: "matcher refuses out-of-tolerance distance", ok: logMatches(Object.assign({}, fx, { physical: { distance_ft: 9, zoom_x: 5, angle_deg: 0 } }), fo, "camera") === false },
+    { name: "every order computes a state with a next step", ok: QUEUE.orders.every(o => typeof orderState(o).nextStep === "string") }
+  ];
+  const fails = asserts.filter(a => !a.ok).length;
+  fetch("/harness-result?page=orders-selftest", { method: "POST",
+    body: JSON.stringify({ selftest: true, passes: asserts.length - fails, fails, asserts,
+      orders: QUEUE.orders.length, logsScanned: Object.keys(LOGS).length,
+      current: (QUEUE.orders.map(o => ({ o, s: orderState(o) })).find(x => !x.s.done) || { o: { id: "none" } }).o.id }, null, 1) }).catch(() => {});
+  if (q.get("return") === "runner") setTimeout(() => { location.href = "runner.html"; }, 1200);
+})();
+</script>
+</body>
+</html>

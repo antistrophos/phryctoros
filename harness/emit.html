@@ -133,7 +133,13 @@ $("rateSel").onchange = () => {
 // D-ring ruling-2 trial select → the profile's beacon config (framing + M/F).
 // Applied at prepareV3 like the other toggles; the receiver auto-detects the
 // framing and gets M/F from the settings string's dring= key.
-function ocApplyDring(p) { return OC.profile.applyDring(p, $("dringSel") ? $("dringSel").value : "f24"); }
+function ocApplyDring(p) {
+  // the array rig (phase 1): a comma list in the settings string arms
+  // window.ocDringVariants — one code per tile, geometry/clock shared.
+  if (window.ocDringVariants && window.ocDringVariants.length > 1)
+    return OC.profile.applyDringVariants(p, window.ocDringVariants);
+  return OC.profile.applyDring(p, $("dringSel") ? $("dringSel").value : "f24");
+}
 let running = false, schedules = null, loopFrames = 0, t0 = 0, lastF = -1, fidCanvas = null;
 let drawn = 0, fpsWindow = [], ticker = null;
 let beaconSchedule = null, qrCanvas = null, effLoopFrames = 0, schedulesT = null; // v3 state
@@ -150,7 +156,13 @@ function buildThetaTables() {
                  // the point count cheap, so there's no reason to have halved it
   const ks = new Set([1]);
   for (const a of profile.annuli) for (const k of a.boundary.harmonics) ks.add(k);
-  if (profile.beacon) for (const k of profile.beacon.harmonics) ks.add(k);
+  if (profile.beacon) {
+    for (const k of profile.beacon.harmonics) ks.add(k);
+    // the array rig: every tile variant's teeth need tables too
+    if (profile.beacon_variants)
+      for (let tv = 0; tv < (profile.tiling || 1); tv++)
+        for (const k of OC.profile.beaconVariantFor(profile, tv).harmonics) ks.add(k);
+  }
   const ct = {}, st = {};
   for (const k of ks) {
     ct[k] = new Float64Array(N + 1); st[k] = new Float64Array(N + 1);
@@ -333,25 +345,28 @@ function plateMarkLive(ctx, cx, cy, Rpx, shade, bg, flip) {
     bullseyeLive(ctx, cx, cy, Rpx, shade, bg);
 }
 
-function v3PlateBase(ctx, f, cx, cy, sched, bsched) {
+function v3PlateBase(ctx, f, cx, cy, sched, bsched, bv) {
   // one tile's bands + corners at (cx, cy); center face differs by caller.
   // Contours run on the theta tables: per edge, each harmonic's phase folds
   // into two coefficients (r(θ) = r0 + Σ C·cos(kθ) + S·sin(kθ)) — no
   // per-point trig. N=256 keeps chord sag under 0.04 px at these radii.
   // bsched (ruling 1b): with beacon.placement "a-inner", THIS tile's beacon
   // schedule — band A's inner boundary then carries the control contour.
+  // bv (the array rig, phase 1): THIS tile's variant beacon params — its own
+  // code's harmonic spend on the shared geometry and clock.
   const R = profile.render, scale = R.scale_px_per_unit;
   const pl = profile.plate, shade = pl.shade !== undefined ? pl.shade : R.fill;
   if (!thTab) buildThetaTables();
   const N = thTab.N, ct = thTab.ct, st = thTab.st;
+  const bp = bv || profile.beacon;
   const dringR = () => {
     const phiB = OC.emission.phaseAt({ rotation: profile.beacon.rotation }, bsched, profile.frame_rate_hz, f);
     const out = new Float64Array(N + 1);
     out.fill(profile.bands[0].lo.fixed);
-    for (let j = 0; j < profile.beacon.harmonics.length; j++) {
-      const k = profile.beacon.harmonics[j];
-      const b = k * phiB - profile.beacon.phases_deg[j] * Math.PI / 180;
-      const C = profile.beacon.amplitudes[j] * Math.cos(b), S = profile.beacon.amplitudes[j] * Math.sin(b);
+    for (let j = 0; j < bp.harmonics.length; j++) {
+      const k = bp.harmonics[j];
+      const b = k * phiB - bp.phases_deg[j] * Math.PI / 180;
+      const C = bp.amplitudes[j] * Math.cos(b), S = bp.amplitudes[j] * Math.sin(b);
       const ck = ct[k], sk = st[k];
       for (let i = 0; i <= N; i++) out[i] += C * ck[i] + S * sk[i];
     }
@@ -428,7 +443,8 @@ function drawFrameV3(f) {
   centers.forEach((c, t) => {
     const sched = layout.n > 1 ? schedulesT[t] : schedules;
     const bsched = dringAt ? (layout.n > 1 && beaconSchedulesT ? beaconSchedulesT[t] : beaconSchedule) : null;
-    const { pl, shade } = v3PlateBase(ctx, f, c.cx, c.cy, sched, bsched);
+    const bvv = profile.beacon_variants ? OC.profile.beaconVariantFor(profile, t) : null;
+    const { pl, shade } = v3PlateBase(ctx, f, c.cx, c.cy, sched, bsched, bvv);
     pl0 = pl; shade0 = shade;
     if (pl.center_style === "quadrant3") {
       // clause 2′: the three-section center target — tile 0 = the VARIANT;
@@ -519,7 +535,8 @@ function drawCountdownV3(f, secsLeft) {
     // ruling 1b: the D-ring is outside the donut the QR owns, so its (frozen)
     // contour holds through the countdown face like every band edge.
     const bsched = dringAtC ? (layout.n > 1 && beaconSchedulesT ? beaconSchedulesT[t] : beaconSchedule) : null;
-    const base = v3PlateBase(ctx, f, c.cx, c.cy, sched, bsched); // bands frozen at f, corners kept
+    const bvvC = profile.beacon_variants ? OC.profile.beaconVariantFor(profile, t) : null;
+    const base = v3PlateBase(ctx, f, c.cx, c.cy, sched, bsched, bvvC); // bands frozen at f, corners kept
     pl0 = base.pl; shade0 = base.shade;
     ctx.drawImage(qrCanvas, c.cx - qrCanvas.width / 2, c.cy - qrCanvas.height / 2);
   });
@@ -909,7 +926,9 @@ function ocSettingsString() {
     "tiling=" + $("tileSel").value,
     "quad=" + ($("quadChk").checked ? 1 : 0),
     "qrp=0",
-    "dring=" + ($("dringSel") ? $("dringSel").value : "f24"),
+    "dring=" + (window.ocDringVariants && window.ocDringVariants.length > 1
+                ? window.ocDringVariants.join(",")
+                : ($("dringSel") ? $("dringSel").value : "f24")),
     "loop=" + (+$("loopSecs").value || 60),
     "freeze=" + ($("freezeChk").checked ? (+$("cdSecs").value || 3) : 0),
     "capfps=" + (rate === "15" ? 30 : 60)].join(" ");
@@ -1052,7 +1071,11 @@ ocRefreshMode();
   if (kv.payload != null) $("payloadChk").checked = kv.payload === "1";
   if (kv.tiling) $("tileSel").value = kv.tiling;
   if (kv.quad != null) $("quadChk").checked = kv.quad === "1";
-  if (kv.dring && $("dringSel")) $("dringSel").value = kv.dring;
+  if (kv.dring && $("dringSel")) {
+    const dl = kv.dring.split(",");
+    window.ocDringVariants = dl.length > 1 ? dl : null;
+    $("dringSel").value = dl[0];
+  }
   if (kv.loop) $("loopSecs").value = kv.loop;
   if (kv.freeze != null) { const f = +kv.freeze; $("freezeChk").checked = f > 0; if (f > 0) $("cdSecs").value = f; }
   if (q.get("msg") != null) $("payloadTxt").value = q.get("msg");

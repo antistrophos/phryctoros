@@ -259,7 +259,18 @@
     var ringsByEmitter = tilesN > 1 && opts.payload ? [] : null;
 
     var results = emitters.map(function (em, emIdx) {
-      var annuliPairs = channels.map(function (a) {
+      // THE ARRAY RIG (phase 1): with a variant map riding the profile, this
+      // emitter's beacon descriptor carries its own TILE's lists — tile
+      // identity is positional (tileOf, filled right after registration), so
+      // it is known before any ring is read. Geometry and rotation stay the
+      // shared profile's; an unplaced tile (-1) reads with the base code.
+      var chans = channels;
+      if (profile.beacon_variants && opts.beacon && profile.plate) {
+        var tvE = tileOf ? tileOf[emIdx] : -1;
+        var bvE = dep("profile").beaconVariantFor(profile, tvE);
+        chans = profile.annuli.concat([dep("plate").beaconAnnulus(profile, bvE)]);
+      }
+      var annuliPairs = chans.map(function (a) {
         var kmax = Math.max.apply(null, a.boundary.harmonics) + 4;
         // ARC-PITCH SAMPLING. The sampler used a fixed 256 rays per ring
         // regardless of circumference, so an inner edge was sampled ~2× denser

@@ -827,6 +827,77 @@ async function main() {
   }
   }
 
+  if (caseOn("T22var")) {
+  await tick("T22var: the array experiment rig — per-tile D-ring variants…");
+  {
+    // THE ARRAY RIG, phase 1 (2026-08-30, the practitioner's design): one
+    // capture carries N beacon configs — 2-up = an A/B, 6-up = a six-point
+    // sweep — so every capture condition is shared by construction. Geometry
+    // and the symbol clock stay uniform (validator-enforced); tiles differ
+    // only in what the beacon contour SPENDS. Data rings are identical, so
+    // the payload pools across tiles and doubles as the shared health
+    // channel while the experiment rides the varied dimension.
+    const vOver = { countdown: { freeze_s: 0, loop_s: 60 }, plate: { corner_style: "quadrant" } };
+    // (a) the map + per-tile resolution + toggle hygiene (stale-trap)
+    const pV = OC.profile.profileV3(undefined, Object.assign({ tiling: 2, session32: 0xA42AB001, render: { scale_px_per_unit: 70 } }, vOver));
+    OC.profile.applyDringVariants(pV, ["a42q", "a42k"]);
+    const vV = OC.profile.validate(pV);
+    const bt0 = OC.profile.beaconVariantFor(pV, 0), bt1 = OC.profile.beaconVariantFor(pV, 1);
+    const okA = !!(vV.ok && pV.beacon_variants && pV.beacon_variants.join(",") === "a42q,a42k" &&
+                   pV.beacon.harmonics.join(",") === "1,2,3" &&
+                   bt0.amplitudes.join(",") === "0.012,0.018,0.045" &&
+                   bt1.harmonics.join(",") === "2,3,5" && bt1.amplitudes.join(",") === "0.015,0.02,0.04");
+    const pTg2 = OC.profile.profileV3(undefined, Object.assign({ tiling: 2 }, vOver));
+    OC.profile.applyDringVariants(pTg2, ["a42q", "a42k"]);
+    OC.profile.applyDring(pTg2, "a42q");
+    const okA2 = pTg2.beacon_variants === undefined;
+    // (b) refusals: mixed geometry, mixed symbol clock, unknown code, bad length
+    const mkV = codes => {
+      const p2 = OC.profile.profileV3(undefined, Object.assign({ tiling: codes.length }, vOver));
+      OC.profile.applyDringVariants(p2, codes);
+      return OC.profile.validate(p2);
+    };
+    const vGeo = mkV(["a42q", "a42v"]);
+    const vClk = mkV(["a42q", "a44q"]);
+    const vUnk = mkV(["a42q", "zzz9"]);
+    const pLen = OC.profile.profileV3(undefined, Object.assign({ tiling: 2 }, vOver));
+    OC.profile.applyDringVariants(pLen, ["a42q", "a42k"]);
+    pLen.beacon_variants = ["a42q", "a42k", "a42c"];
+    const vLen = OC.profile.validate(pLen);
+    const okB = vGeo.ok === false && vClk.ok === false && vUnk.ok === false && vLen.ok === false;
+    // (c) optically (T22t(b)'s shape): tile 0 emits a42q's ladder, tile 1
+    //     emits a42k's. Each tile's beacon row must carry ITS OWN k set —
+    //     direct structural proof the per-variant descriptor served it —
+    //     both envelopes seal with per-tile tags, and the POOLED peel
+    //     completes: the shared data plane undisturbed by the experiment.
+    const msgV = "the array rig carries an A/B in one capture";
+    let seqV = OC.emission.renderSequence(pV, 500, { payloadBytes: OC.fountain.textToBytes(msgV) });
+    let slV = seqV.frames.slice(50);
+    seqV = null;
+    const rV = OC.pipeline.decodeSequence(slV, pV, { payload: true, beacon: true });
+    slV = null;
+    const emsV = rV.error ? [] : rV.emitters;
+    const rowT = {};
+    emsV.forEach(em => (em.annuli || []).forEach(a => {
+      if (a && a.beacon && a.envelopeFields) rowT[a.envelopeFields.tile] = a;
+    }));
+    const kOf = r => r && r.snr_db ? Object.keys(r.snr_db).sort((x, y) => x - y).join(",") : "?";
+    const k0 = kOf(rowT[0]), k1 = kOf(rowT[1]);
+    const okC = !!(rowT[0] && rowT[1] &&
+                   rowT[0].alignMethod === "framed" && rowT[1].alignMethod === "framed" &&
+                   k0 === "1,2,3" && k1 === "2,3,5" &&
+                   rowT[0].tag !== rowT[1].tag &&
+                   rV.pooled && rV.pooled.ok === true && rV.pooled.text === msgV);
+    record("T22var the array experiment rig (phase 1): a 2-up a42q|a42k variant map validates with geometry and the symbol clock shared, mixed geometry / mixed clock / unknown codes / bad length refuse, toggling a single code clears the map, and optically each tile's beacon row carries its OWN harmonic set with both envelopes sealing per tile while the pooled peel completes untouched",
+      okA && okA2 && okB && okC,
+      "(a) v " + vV.ok + " map " + (pV.beacon_variants || []).join("|") + " t1 k[" + (bt1 ? bt1.harmonics : "?") + "] · toggle clears " + okA2 +
+      " · (b) geo " + (vGeo.ok === false) + " clk " + (vClk.ok === false) + " unk " + (vUnk.ok === false) + " len " + (vLen.ok === false) +
+      " · (c) t0 " + (rowT[0] ? rowT[0].alignMethod + " k[" + k0 + "] tag " + rowT[0].tag : "none") +
+      " · t1 " + (rowT[1] ? rowT[1].alignMethod + " k[" + k1 + "] tag " + rowT[1].tag : "none") +
+      " · pooled " + JSON.stringify(rV.pooled && { ok: rV.pooled.ok }));
+  }
+  }
+
 }
 
 suiteStart(main);

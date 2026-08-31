@@ -239,24 +239,27 @@
      ring's OUTER edge — the whole existing chain (sampleWindow, sampleBoundary
      "up", DFT, trackPhase, findAlignment on the all-flips preamble, demap at
      M=2/4) runs it unmodified. layer −1 keeps it out of every layer lookup. */
-  function beaconAnnulus(profile) {
+  function beaconAnnulus(profile, bv) {
     // D-ring ruling 1b: at placement "a-inner" the control channel is band
     // A's inner boundary (r0 1.05, light→dark walking outward = crossing
     // "down", per tile); the frozen default stays the breaker pair's outer
     // edge on the designated tile. Same chain either way — only the geometry
-    // descriptor moves.
+    // descriptor moves. bv (the array rig, phase 1): a per-tile VARIANT's
+    // beacon params — the descriptor's boundary lists come from the tile's
+    // own code while geometry and rotation stay the shared profile's.
+    var b = bv || profile.beacon;
     if (profile.beacon.placement === "a-inner")
       return {
         index: "beacon", layer: -1, beacon: true, edge: "beacon", crossing: "down",
         r0: profile.bands[0].lo.fixed,
         rotation: profile.beacon.rotation,
-        boundary: { harmonics: profile.beacon.harmonics, amplitudes: profile.beacon.amplitudes, phases_deg: profile.beacon.phases_deg }
+        boundary: { harmonics: b.harmonics, amplitudes: b.amplitudes, phases_deg: b.phases_deg }
       };
     return {
       index: "beacon", layer: -1, beacon: true, edge: "beacon", crossing: "up",
       r0: profile.plate.breaker.r_out,
       rotation: profile.beacon.rotation,
-      boundary: { harmonics: profile.beacon.harmonics, amplitudes: profile.beacon.amplitudes, phases_deg: profile.beacon.phases_deg }
+      boundary: { harmonics: b.harmonics, amplitudes: b.amplitudes, phases_deg: b.phases_deg }
     };
   }
 

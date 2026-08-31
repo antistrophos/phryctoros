@@ -545,6 +545,49 @@
     else if (!dringAt && beaconSum > 0.030 + 1e-9)
       warnings.push("beacon amplitude sum " + beaconSum.toFixed(3) + " above 0.030 — quiet-zone margin thins");
 
+    // THE ARRAY EXPERIMENT RIG (phase 1): a variant map is one dring code
+    // per tile. Every code must be recognized; every variant must agree
+    // with the base on GEOMETRY, FAMILY and the SYMBOL CLOCK (registration,
+    // band edges, M/F and framing are shared across the array — tiles
+    // differ only in what the beacon contour spends); and each variant's
+    // amplitude sum must fit the geometry-priced class on its own.
+    if (p.beacon_variants !== undefined) {
+      var bvv = p.beacon_variants, tilesNv = p.tiling || 1;
+      if (!Array.isArray(bvv) || bvv.length < 2)
+        errors.push("beacon_variants must be an array of ≥ 2 dring codes (a single code is just applyDring)");
+      else if (bvv.length !== tilesNv)
+        errors.push("beacon_variants length " + bvv.length + " ≠ tiling " + tilesNv + " — one code per tile");
+      else {
+        for (var vi = 0; vi < bvv.length; vi++) {
+          var vc = bvv[vi];
+          if (vc !== "f24" && DRING_CHUNKED.indexOf(vc) < 0) {
+            errors.push("beacon_variants[" + vi + "] unrecognized code \"" + vc + "\"");
+            continue;
+          }
+          var vq = JSON.parse(JSON.stringify({ beacon: p.beacon, bands: p.bands, plate: p.plate }));
+          applyDring(vq, vc);
+          if (vq.bands[0].lo.fixed !== p.bands[0].lo.fixed || vq.plate.quiet_r !== pl.quiet_r ||
+              vq.plate.center_style !== pl.center_style || (vq.family || 3) !== (p.family || 3))
+            errors.push("beacon_variants[" + vi + "] \"" + vc + "\" moves geometry/family — the array shares ONE plate");
+          if (vq.beacon.rotation.M !== p.beacon.rotation.M ||
+              vq.beacon.rotation.frames_per_symbol !== p.beacon.rotation.frames_per_symbol ||
+              (vq.beacon.framing || "") !== (p.beacon.framing || "") ||
+              (vq.beacon.placement || "") !== (p.beacon.placement || ""))
+            errors.push("beacon_variants[" + vi + "] \"" + vc + "\" changes M/F/framing/placement — the symbol clock is shared across tiles");
+          var vSum = 0;
+          for (var vj = 0; vj < vq.beacon.amplitudes.length; vj++) vSum += vq.beacon.amplitudes[vj];
+          if (dringAt && vSum > classBound + 1e-9)
+            errors.push("beacon_variants[" + vi + "] \"" + vc + "\" amplitude sum " + vSum.toFixed(3) +
+                        " exceeds the geometry-priced class " + classBound.toFixed(3));
+        }
+        var v0q = JSON.parse(JSON.stringify({ beacon: p.beacon, bands: p.bands, plate: p.plate }));
+        applyDring(v0q, bvv[0]);
+        if (JSON.stringify(v0q.beacon.amplitudes) !== JSON.stringify(p.beacon.amplitudes) ||
+            JSON.stringify(v0q.beacon.harmonics) !== JSON.stringify(p.beacon.harmonics))
+          errors.push("beacon_variants[0] \"" + bvv[0] + "\" is not the applied base beacon — build with applyDringVariants");
+      }
+    }
+
     if (p.qr_persistent)
       warnings.push("qr_persistent is a DIAGNOSTIC variant — off the frozen contract (§ ruling 2: steady state is QR-free); for angled-capture data until saddle-first registration lands");
 
@@ -615,6 +658,11 @@
      Every branch resets the beacon lists so toggling codes on a live
      profile never carries a previous trial's split. Mutates and returns
      the profile; anything unrecognised restores the default. */
+  // Every chunked D-ring code applyDring recognizes (f24 is the default/else).
+  // The validator's variant checks read this so a future code auto-qualifies.
+  var DRING_CHUNKED = ["c42", "c82", "a42", "a82", "a42r", "a42x", "a42g", "a42q", "a44q",
+                       "a42v", "a42u", "a42k", "a42c"];
+
   function applyDring(p, code) {
     if (!p || !p.beacon) return p;
     p.beacon.harmonics = [1, 2, 3];
@@ -627,9 +675,8 @@
     if (p.bands && p.bands[0] && p.bands[0].lo) p.bands[0].lo.fixed = 1.05;
     if (p.plate) { p.plate.quiet_r = 0.90; p.plate.center_style = "bullseye"; }
     delete p.family;
-    if (code === "c42" || code === "c82" || code === "a42" || code === "a82" ||
-        code === "a42r" || code === "a42x" || code === "a42g" || code === "a42q" || code === "a44q" ||
-        code === "a42v" || code === "a42u" || code === "a42k" || code === "a42c") {
+    delete p.beacon_variants;   // the stale-trap rule: no prior variant map rides a toggle
+    if (DRING_CHUNKED.indexOf(code) >= 0) {
       p.beacon.framing = "chunked";
       p.beacon.rotation.M = (code === "c82" || code === "a82") ? 8 : 4;
       p.beacon.rotation.gray = true;
@@ -743,7 +790,38 @@
     return p;
   }
 
-  var API = { defaultProfile: defaultProfile, profileV3: profileV3, isV3: isV3, bandBoundary: bandBoundary, validate: validate, sumAmp: sumAmp, sampleWindow: sampleWindow, deepMerge: deepMerge, applyDring: applyDring };
+  /* THE ARRAY EXPERIMENT RIG, phase 1 (2026-08-30, practitioner's design):
+     per-tile D-RING VARIANTS — one capture carries N beacon configs, so an
+     A/B (2-up) or a six-point sweep (6-up) shares every capture condition
+     by construction. codes[t] = the dring code tile t emits; codes[0] is
+     applied to the profile as the base (geometry, rotation, framing), and
+     the variant map rides p.beacon_variants for the renderer and decoder
+     to resolve per tile. GEOMETRY AND ROTATION STAY UNIFORM across tiles
+     (the validator enforces it): registration, band edges, M/F and the
+     symbol clock are shared — tiles differ only in what the beacon
+     contour SPENDS. Data rings are identical across tiles (per-tile
+     ladders = the banked phase 2). */
+  function applyDringVariants(p, codes) {
+    if (!p || !p.beacon || !codes || !codes.length) return p;
+    applyDring(p, codes[0]);
+    if (codes.length > 1) p.beacon_variants = codes.slice();
+    return p;
+  }
+
+  /* Resolve tile → the beacon params that tile emits/reads: {harmonics,
+     amplitudes, phases_deg} plus the shared rotation. Falls back to the
+     base beacon when no variant map rides (or the tile is unplaced). */
+  function beaconVariantFor(p, tile) {
+    if (!p || !p.beacon) return null;
+    if (!p.beacon_variants || tile == null || tile < 0) return p.beacon;
+    var code = p.beacon_variants[Math.min(tile, p.beacon_variants.length - 1)];
+    var q = JSON.parse(JSON.stringify({ beacon: p.beacon, bands: p.bands, plate: p.plate }));
+    applyDring(q, code);
+    q.beacon.rotation = p.beacon.rotation;   // rotation is SHARED (validator-enforced)
+    return q.beacon;
+  }
+
+  var API = { defaultProfile: defaultProfile, profileV3: profileV3, isV3: isV3, bandBoundary: bandBoundary, validate: validate, sumAmp: sumAmp, sampleWindow: sampleWindow, deepMerge: deepMerge, applyDring: applyDring, applyDringVariants: applyDringVariants, beaconVariantFor: beaconVariantFor, DRING_CHUNKED: DRING_CHUNKED };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   global.OC = global.OC || {}; global.OC.profile = API;
 })(typeof window !== "undefined" ? window : globalThis);

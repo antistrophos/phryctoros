@@ -130,8 +130,13 @@ function v31Opts(p) {
   if (window.ocTiling > 1) p.tiling = window.ocTiling;
   // D-ring ruling-2 trial: the FRAMING is auto-detected, but the beacon's
   // M/F must match the emitter for demodulation — the settings string's
-  // dring= key sets this select.
-  OC.profile.applyDring(p, $("m_dring") ? $("m_dring").value : "f24");
+  // dring= key sets this select. The array rig (phase 1): a comma list in
+  // dring= arms window.ocDringVariants — one code per tile; the decoder
+  // resolves each emitter's beacon descriptor by its tile.
+  if (window.ocDringVariants && window.ocDringVariants.length > 1)
+    OC.profile.applyDringVariants(p, window.ocDringVariants);
+  else
+    OC.profile.applyDring(p, $("m_dring") ? $("m_dring").value : "f24");
   return p;
 }
 function payloadMode() { const v = $("m_prof") && $("m_prof").value; return v === "v2p" || v3Mode(); }
@@ -546,7 +551,9 @@ async function harvestDecode(v, geo, file) {
     settings: ($("pasteStr") && $("pasteStr").value) || undefined,
     take: (window.ocTake && window.ocTake.id) || undefined,
     physical: (window.ocTake && window.ocTake.physical) || undefined,
-    dring: ($("m_dring") && $("m_dring").value) || undefined,
+    dring: (window.ocDringVariants && window.ocDringVariants.length > 1
+            ? window.ocDringVariants.join(",")
+            : ($("m_dring") && $("m_dring").value)) || undefined,
     harness: {
       handheld: !!($("m_hand") && $("m_hand").checked),
       solve: !!($("m_solve") && $("m_solve").checked),
@@ -897,6 +904,22 @@ function synthSource(msg, loopS) {
   const wire = OC.fountain.selfFrame(payloadBytes, 1);
   const pInfo = { K: enc.K, len: wire.length, pcrc: OC.fountain.crc16(wire), capability: 1 };
   const envB = OC.emission.envelopeBytes(p, pInfo);
+  // The array rig (phase 1): a tiled twin mirrors renderSequence's tiled
+  // setup — per-tile carousels and per-tile envelopes, built once, rendered
+  // lazily; per-tile beacon VARIANTS resolve inside the renderer from
+  // p.beacon_variants (set by the intake's dring list via v31Opts).
+  const layout = OC.emission.tileLayout(p);
+  if (layout.n > 1) {
+    const schedulesT = [], beaconSchedulesT = [];
+    for (let t = 0; t < layout.n; t++) {
+      schedulesT.push(OC.emission.buildSchedules(p, n, OC.fountain.encodeCarousels(p, payloadBytes, { tile: t }).carousels));
+      beaconSchedulesT.push(OC.emission.buildBeaconSchedule(p, n, OC.emission.envelopeBytes(p, pInfo, t)));
+    }
+    return {
+      duration: loopS, K: enc.K, profile: p,
+      frame: f => OC.emission.renderFrameV3Tiled(p, f, { schedulesT: schedulesT, beaconSchedulesT: beaconSchedulesT, envBytes: envB })
+    };
+  }
   const schedules = OC.emission.buildSchedules(p, n, enc.carousels);
   const beaconSchedule = OC.emission.buildBeaconSchedule(p, n, envB);
   return {
@@ -916,19 +939,29 @@ function synthSource(msg, loopS) {
     const msg = q.get("msg") || "When IBM discovered that it was not in the business of making office equipment or business machines, but that it was in the business of processing information, then it began to navigate with clear vision.";
     let verdict;
     try {
+      // The array rig (phase 1): ?synth= may be a comma list — one code per
+      // tile; tiling defaults to the list length.
+      const codesS = code.split(",").filter(Boolean);
+      const tilingS = +q.get("tiling") || (codesS.length > 1 ? codesS.length : 1);
       if ($("m_prof")) $("m_prof").value = q.get("prof") || "v3";
       if ($("m_quad")) $("m_quad").checked = q.get("quad") !== "0";
       if ($("m_hand")) $("m_hand").checked = false;
-      if ($("m_dring")) $("m_dring").value = code;
+      if ($("m_dring")) $("m_dring").value = codesS[0];
+      window.ocDringVariants = codesS.length > 1 ? codesS : null;
       if ($("m_loop")) $("m_loop").value = String(loopS);
       if ($("m_capfps")) $("m_capfps").value = "60";
+      // Window floor/ceiling (the array rig's close-range lesson: a 2-up's
+      // pre-bind chunk bank MIXES the tiles' envelopes, so per-tile identity
+      // needs IN-WINDOW seals — window ≥ the envelope cycle).
+      if ($("m_minwin") && q.get("minwin")) $("m_minwin").value = q.get("minwin");
+      if ($("m_maxwin") && q.get("maxwin")) $("m_maxwin").value = q.get("maxwin");
       if ($("m_harvest")) $("m_harvest").checked = true;
       // Self-description: the log's settings field carries the canonical
       // string for a synthetic run too — the record reads like any take's.
       if ($("pasteStr")) $("pasteStr").value = ["oc1", "prof=" + (($("m_prof") && $("m_prof").value) || "v3"),
-        "payload=1", "tiling=1", "quad=" + ($("m_quad") && $("m_quad").checked ? 1 : 0), "qrp=0",
-        "dring=" + code, "loop=" + loopS, "freeze=0", "capfps=60"].join(" ");
-      window.ocTiling = 1;
+        "payload=1", "tiling=" + tilingS, "quad=" + ($("m_quad") && $("m_quad").checked ? 1 : 0), "qrp=0",
+        "dring=" + codesS.join(","), "loop=" + loopS, "freeze=0", "capfps=60"].join(" ");
+      window.ocTiling = tilingS;
       window.ocSynth = synthSource(msg, loopS);
       const log = await harvestDecode({ duration: loopS }, null, { name: "synthetic:" + code + ":" + loopS + "s" });
       const fin = (log && log.final) || {};
@@ -1279,12 +1312,20 @@ function ocApplySettings(str) {
   if (kv.loop) $("m_loop").value = kv.loop;
   if ($("m_quad")) $("m_quad").checked = kv.quad === "1";
   if ($("m_qrp")) $("m_qrp").checked = kv.qrp === "1";
-  if ($("m_dring")) $("m_dring").value = ["c42", "c82", "a42", "a42r", "a42x", "a42g", "a42q", "a44q", "a42v", "a42u", "a42k", "a42c", "a82"].indexOf(kv.dring) >= 0 ? kv.dring : "f24";
+  // The array rig (phase 1): dring= may be a comma list (one code per tile).
+  // The allow-list is profile.js's own registry — no drift.
+  const dringAllow = OC.profile.DRING_CHUNKED.concat(["f24"]);
+  const dringList = (kv.dring || "").split(",").filter(Boolean);
+  const dringOk = dringList.length > 0 && dringList.every(c => dringAllow.indexOf(c) >= 0);
+  window.ocDringVariants = dringOk && dringList.length > 1 ? dringList : null;
+  if ($("m_dring")) $("m_dring").value = dringOk ? dringList[0] : "f24";
   window.ocTiling = Math.max(1, +kv.tiling || 1);   // the declared lattice, applied in v31Opts
   const bits = [target, "capture " + (kv.capfps || "?") + " fps", (kv.tiling || "1") + "-up emitter"];
   if (kv.quad === "1") bits.push("quadrant corners");
   if (kv.qrp === "1") bits.push("persistent QR");
-  if (["c42", "c82", "a42", "a42r", "a42x", "a42g", "a42q", "a44q", "a42v", "a42u", "a42k", "a42c", "a82"].indexOf(kv.dring) >= 0)
+  if (window.ocDringVariants && window.ocDringVariants.length > 1)
+    bits.push("D-ring VARIANTS per tile: " + window.ocDringVariants.join(" | ") + " (the array rig — shared geometry and clock)");
+  else if (dringOk && kv.dring !== "f24")
     bits.push("D-ring " + (kv.dring[0] === "a" ? "A-INNER " : "") + "chunked " + (kv.dring[1] === "8" ? "M=8/F=2" : kv.dring === "a44q" ? "M=4/F=4" : "M=4/F=2") +
       (kv.dring === "a42r" ? " · AMP RE-SPLIT" : kv.dring === "a42x" ? " · AMP k5 LADDER" :
        kv.dring === "a42g" ? " · GEOMETRY TRIAL floor 1.00 class 0.075" :
@@ -1345,6 +1386,10 @@ window.ocIntakeReady = (async function () {
       if (rs.ok) { store = OC.harvest.parseStore(await rs.text()); ledgerInfo(); carried = OC.harvest.storeCounts(store); }
     } catch (e) {}
   }
+  // The take card may carry the window floor/ceiling (array A/Bs need
+  // window ≥ the envelope cycle for per-tile in-window seals).
+  if ($("m_minwin") && q.get("minwin")) $("m_minwin").value = q.get("minwin");
+  if ($("m_maxwin") && q.get("maxwin")) $("m_maxwin").value = q.get("maxwin");
   if (q.get("take")) {
     let phys = null;
     try { phys = JSON.parse(q.get("phys") || "null"); } catch (e) {}

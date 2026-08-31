@@ -14,6 +14,7 @@
   "use strict";
 
   function P() { return (typeof module !== "undefined" && module.exports) ? require("./prng.js") : global.OC.prng; }
+  function PF() { return (typeof module !== "undefined" && module.exports) ? require("./profile.js") : global.OC.profile; }
 
   var TAU = Math.PI * 2;
 
@@ -636,13 +637,13 @@
 
     var dringAt = profile.beacon.placement === "a-inner";
     var centerQR = !!(opts.countdown || profile.qr_persistent);
-    var mkBetas = function (phiB) {
+    var mkBetas = function (bp, phiB) {
       var bSum = 0;
-      for (var q = 0; q < profile.beacon.amplitudes.length; q++) bSum += profile.beacon.amplitudes[q];
+      for (var q = 0; q < bp.amplitudes.length; q++) bSum += bp.amplitudes[q];
       return {
         sum: bSum,
-        betas: profile.beacon.harmonics.map(function (k, j) {
-          return { k: k, a: profile.beacon.amplitudes[j], beta: profile.beacon.phases_deg[j] * Math.PI / 180 - k * phiB };
+        betas: bp.harmonics.map(function (k, j) {
+          return { k: k, a: bp.amplitudes[j], beta: bp.phases_deg[j] * Math.PI / 180 - k * phiB };
         })
       };
     };
@@ -652,16 +653,24 @@
       // Ruling 1b: every tile carries the D-ring at band A's inner boundary,
       // each modulated by ITS OWN envelope (b[16] = the carrying tile), so the
       // schedules differ per tile. The ring is outside the donut, so it keeps
-      // its contour through the countdown face too.
+      // its contour through the countdown face too. THE ARRAY RIG (phase 1):
+      // with a variant map, each tile's contour also spends ITS OWN code's
+      // harmonic lists — geometry and the symbol clock stay shared.
       var bsT = opts.beaconSchedulesT;
       if (!bsT) {
         bsT = [];
         for (var bt0 = 0; bt0 < layout.n; bt0++)
           bsT.push(buildBeaconSchedule(profile, f + 1, envelopeBytes(profile, opts.payloadInfo || null, bt0)));
       }
+      var bvT = opts.beaconParamsT;
+      if (!bvT) {
+        bvT = [];
+        for (var bv0 = 0; bv0 < layout.n; bv0++)
+          bvT.push(profile.beacon_variants ? PF().beaconVariantFor(profile, bv0) : profile.beacon);
+      }
       beaconT = [];
       for (var bt1 = 0; bt1 < layout.n; bt1++) {
-        var bItem = mkBetas(bsT[bt1] ? phaseAt({ rotation: profile.beacon.rotation }, bsT[bt1], fps, f) : 0);
+        var bItem = mkBetas(bvT[bt1], bsT[bt1] ? phaseAt({ rotation: profile.beacon.rotation }, bsT[bt1], fps, f) : 0);
         beaconT.push(bItem);
         bandsT[bt1][0].lo.betas = bItem.betas;
         bandsT[bt1][0].lo.sum = bItem.sum;
@@ -670,7 +679,7 @@
     } else if (!centerQR) {
       var bs = opts.beaconSchedule;
       if (bs === undefined) bs = buildBeaconSchedule(profile, f + 1, opts.envBytes || envelopeBytes(profile, opts.payloadInfo || null));
-      beacon = mkBetas(bs ? phaseAt({ rotation: profile.beacon.rotation }, bs, fps, f) : 0);
+      beacon = mkBetas(profile.beacon, bs ? phaseAt({ rotation: profile.beacon.rotation }, bs, fps, f) : 0);
     }
     var qrm = null, qrHalf = 0, qrModU = 0, qrN = 0;
     if (centerQR) {
@@ -913,10 +922,15 @@
             : (opts.carouselsT ? opts.carouselsT[tt] : undefined);
           schedulesT.push(buildSchedules(profile, n, carT));
         }
+        var beaconParamsT = null;
+        if (profile.beacon_variants) {
+          beaconParamsT = [];
+          for (var bpt = 0; bpt < layout.n; bpt++) beaconParamsT.push(PF().beaconVariantFor(profile, bpt));
+        }
         var framesT = [];
         for (var ft = 0; ft < n; ft++)
-          framesT.push({ f: ft, img: renderFrameV3Tiled(profile, ft, { trig: opts.trig, schedulesT: schedulesT, beaconSchedule: beaconSchedule, beaconSchedulesT: beaconSchedulesT, envBytes: envB }) });
-        return { frames: framesT, schedulesT: schedulesT, beaconSchedule: beaconSchedule, beaconSchedulesT: beaconSchedulesT };
+          framesT.push({ f: ft, img: renderFrameV3Tiled(profile, ft, { trig: opts.trig, schedulesT: schedulesT, beaconSchedule: beaconSchedule, beaconSchedulesT: beaconSchedulesT, beaconParamsT: beaconParamsT, envBytes: envB }) });
+        return { frames: framesT, schedulesT: schedulesT, beaconSchedule: beaconSchedule, beaconSchedulesT: beaconSchedulesT, beaconParamsT: beaconParamsT };
       }
       // opts.payloadBytes triggers payload mode here exactly as in the tiled
       // branch (it used to be tiled-only — an untiled payloadBytes sequence
