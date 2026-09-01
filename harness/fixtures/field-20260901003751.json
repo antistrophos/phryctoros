@@ -1,0 +1,1328 @@
+{
+ "kind": "harvest",
+ "started": "2026-09-01T00:37:51.504Z",
+ "clip": "PXL_20260901_002952245.mp4",
+ "duration_s": 121,
+ "settings": "oc1 prof=v3 payload=1 tiling=2 quad=1 qrp=0 dring=a42q,a42k loop=196 freeze=0 capfps=60",
+ "take": "T20260901-a42q-01",
+ "physical": {
+  "distance_ft": 13,
+  "angle_deg": 0,
+  "zoom_x": 10,
+  "lighting": "Indoor LED, Backlight, low daylight",
+  "device": "Pixel 11 Pro XL",
+  "mount": "tripod"
+ },
+ "dring": "a42q,a42k",
+ "harness": {
+  "handheld": true,
+  "solve": true,
+  "beacon": true,
+  "quad": true
+ },
+ "tiling": 2,
+ "cap_fps": 60,
+ "emit_fps": 30,
+ "windows_cfg": {
+  "min_s": 16,
+  "max_s": 24,
+  "boot_s": 16
+ },
+ "windows": [
+  {
+   "w": 1,
+   "t0": 0,
+   "t1": 16,
+   "seeks": 960,
+   "added": 19,
+   "dup": 0,
+   "locked": true,
+   "rows": [
+    {
+     "e": 0,
+     "tile": 0,
+     "fid": 122.3,
+     "reg": "saddles",
+     "annuli": [
+      {
+       "ann": 0,
+       "method": "crc",
+       "lag": 1445,
+       "carrier": 0.906,
+       "snr": {
+        "1": 26.3,
+        "2": 26,
+        "3": 26.1
+       },
+       "droplets": 6
+      },
+      {
+       "ann": 1,
+       "method": "crc",
+       "lag": 963,
+       "carrier": 0.639,
+       "snr": {
+        "1": 32.4,
+        "2": 26.2,
+        "3": 25.9,
+        "5": 25.4,
+        "8": 25
+       },
+       "droplets": 5
+      },
+      {
+       "ann": 2,
+       "method": "crc",
+       "lag": 723,
+       "carrier": 1.603,
+       "snr": {
+        "1": 33.5,
+        "2": 24.9,
+        "3": 24.2,
+        "5": 23.6,
+        "8": 24,
+        "13": 24.1
+       },
+       "droplets": 5
+      },
+      {
+       "ann": 3,
+       "method": "crc",
+       "lag": 723,
+       "carrier": 1.568,
+       "snr": {
+        "1": 33.7,
+        "2": 25.7,
+        "3": 25.1,
+        "5": 24.3,
+        "8": 24.6,
+        "13": 24.7
+       },
+       "droplets": 3
+      },
+      {
+       "ann": "beacon",
+       "beacon": true,
+       "carrier": 0.669,
+       "snr": {
+        "1": 26.7,
+        "2": 26.4,
+        "3": 32
+       },
+       "err": "no lock — symbols match neither preamble nor stream at any lag (carrier 0.669× expected)"
+      }
+     ]
+    },
+    {
+     "e": 1,
+     "tile": -1,
+     "fid": 121.7,
+     "reg": "saddles",
+     "annuli": [
+      {
+       "ann": 0,
+       "method": "crc",
+       "lag": 1445,
+       "carrier": 0.957,
+       "snr": {
+        "1": 26.5,
+        "2": 26.3,
+        "3": 26.3
+       },
+       "droplets": 6
+      },
+      {
+       "ann": 1,
+       "method": "crc",
+       "lag": 963,
+       "carrier": 1.092,
+       "snr": {
+        "1": 32.5,
+        "2": 26.2,
+        "3": 25.8,
+        "5": 25.6,
+        "8": 25.2
+       },
+       "droplets": 2
+      },
+      {
+       "ann": 2,
+       "method": "crc",
+       "lag": 723,
+       "carrier": 1.344,
+       "snr": {
+        "1": 33.8,
+        "2": 25.3,
+        "3": 24.7,
+        "5": 24.1,
+        "8": 24.2,
+        "13": 24.1
+       },
+       "droplets": 4
+      },
+      {
+       "ann": 3,
+       "method": "crc",
+       "lag": 723,
+       "carrier": 1.485,
+       "snr": {
+        "1": 33.3,
+        "2": 25.3,
+        "3": 24.8,
+        "5": 24,
+        "8": 24.3,
+        "13": 23.9
+       },
+       "droplets": 2
+      },
+      {
+       "ann": "beacon",
+       "beacon": true,
+       "carrier": 0.504,
+       "snr": {
+        "1": 6.1,
+        "2": 19.3,
+        "3": 21.5
+       },
+       "err": "no lock — symbols match neither preamble nor stream at any lag (carrier 0.504× expected)"
+      }
+     ]
+    }
+   ],
+   "events": [
+    {
+     "ev": "bank",
+     "tag": null,
+     "operator": true,
+     "provisional": null,
+     "added": 19,
+     "dup": 0,
+     "conflicts": 0,
+     "quarantined": 0
+    }
+   ],
+   "peel": "operator no header",
+   "text": "w1 [0.0–16.0 s] 960 seeks — +19 droplets (0 dup) — operator no header"
+  },
+  {
+   "w": 2,
+   "t0": 15.2,
+   "t1": 32.8,
+   "seeks": 1058,
+   "added": 67,
+   "dup": 0,
+   "locked": true,
+   "rows": [
+    {
+     "e": 0,
+     "tile": 0,
+     "fid": 40.6,
+     "reg": "rings",
+     "annuli": [
+      {
+       "ann": 0,
+       "method": "crc",
+       "lag": 1673,
+       "carrier": 0.861,
+       "snr": {
+        "1": 26.1,
+        "2": 25.8,
+        "3": 25.7
+       },
+       "droplets": 12
+      },
+      {
+       "ann": 1,
+       "method": "crc",
+       "lag": 1116,
+       "carrier": 1.017,
+       "snr": {
+        "1": 32.4,
+        "2": 26.2,
+        "3": 25.9,
+        "5": 25.6,
+        "8": 25.1
+       },
+       "droplets": 9
+      },
+      {
+       "ann": 2,
+       "method": "crc",
+       "lag": 837,
+       "carrier": 1.382,
+       "snr": {
+        "1": 33.9,
+        "2": 25.3,
+        "3": 24.8,
+        "5": 24.2,
+        "8": 24.4,
+        "13": 24.4
+       },
+       "droplets": 6
+      },
+      {
+       "ann": 3,
+       "method": "crc",
+       "lag": 837,
+       "carrier": 1.545,
+       "snr": {
+        "1": 34.3,
+        "2": 26.2,
+        "3": 25.7,
+        "5": 25.3,
+        "8": 25.5,
+        "13": 25.1
+       },
+       "droplets": 7
+      },
+      {
+       "ann": "beacon",
+       "beacon": true,
+       "carrier": 0.985,
+       "snr": {
+        "1": 23.9,
+        "2": 24.6,
+        "3": 31.1
+       },
+       "err": "no lock — symbols match neither preamble nor stream at any lag (carrier 0.985× expected)"
+      }
+     ]
+    },
+    {
+     "e": 1,
+     "tile": 1,
+     "fid": 40.5,
+     "reg": "rings",
+     "annuli": [
+      {
+       "ann": 0,
+       "method": "crc",
+       "lag": 1673,
+       "carrier": 0.828,
+       "snr": {
+        "1": 25.7,
+        "2": 25.5,
+        "3": 25.4
+       },
+       "droplets": 11
+      },
+      {
+       "ann": 1,
+       "method": "crc",
+       "lag": 1116,
+       "carrier": 0.914,
+       "snr": {
+        "1": 32.2,
+        "2": 25.9,
+        "3": 25.5,
+        "5": 25.1,
+        "8": 24.8
+       },
+       "droplets": 5
+      },
+      {
+       "ann": 2,
+       "method": "crc",
+       "lag": 837,
+       "carrier": 1.312,
+       "snr": {
+        "1": 34,
+        "2": 25.5,
+        "3": 24.9,
+        "5": 24.3,
+        "8": 24.4,
+        "13": 24.6
+       },
+       "droplets": 8
+      },
+      {
+       "ann": 3,
+       "method": "crc",
+       "lag": 837,
+       "carrier": 1.554,
+       "snr": {
+        "1": 33.8,
+        "2": 25.7,
+        "3": 25.3,
+        "5": 24.7,
+        "8": 24.9,
+        "13": 24.4
+       },
+       "droplets": 9
+      },
+      {
+       "ann": "beacon",
+       "beacon": true,
+       "carrier": 0.91,
+       "snr": {
+        "2": 22.3,
+        "3": 24.6,
+        "5": 29.5
+       },
+       "tagN": 1,
+       "chunkIdx": [],
+       "err": "no lock — symbols match neither preamble nor stream at any lag (carrier 0.91× expected) — chunk sweep banked 0 idx (1 passes)"
+      }
+     ]
+    }
+   ],
+   "events": [
+    {
+     "ev": "chunk-bank",
+     "chunks": 0,
+     "fresh": 0,
+     "have": 0,
+     "target": "operator"
+    },
+    {
+     "ev": "bank",
+     "tag": null,
+     "operator": true,
+     "provisional": null,
+     "added": 34,
+     "dup": 0,
+     "conflicts": 0,
+     "quarantined": 0
+    },
+    {
+     "ev": "bank",
+     "tag": null,
+     "operator": true,
+     "provisional": null,
+     "added": 33,
+     "dup": 0,
+     "conflicts": 0,
+     "quarantined": 0
+    }
+   ],
+   "peel": "operator 20/115",
+   "text": "w2 [15.2–32.8 s] 1058 seeks — chunks +0 fresh (bank 0/5 idx → operator) — +67 droplets (0 dup) — operator 20/115"
+  },
+  {
+   "w": 3,
+   "t0": 32.2,
+   "t1": 49.9,
+   "seeks": 1063,
+   "added": 60,
+   "dup": 0,
+   "locked": true,
+   "rows": [
+    {
+     "e": 0,
+     "tile": 0,
+     "fid": 40.6,
+     "reg": "rings",
+     "annuli": [
+      {
+       "ann": 0,
+       "method": "crc",
+       "lag": 1928,
+       "carrier": 0.959,
+       "snr": {
+        "1": 25.9,
+        "2": 25.7,
+        "3": 25.7
+       },
+       "droplets": 10
+      },
+      {
+       "ann": 1,
+       "method": "crc",
+       "lag": 1286,
+       "carrier": 0.759,
+       "snr": {
+        "1": 32.7,
+        "2": 26.5,
+        "3": 26.2,
+        "5": 25.7,
+        "8": 25.2
+       },
+       "droplets": 6
+      },
+      {
+       "ann": 2,
+       "method": "crc",
+       "lag": 964,
+       "carrier": 1.304,
+       "snr": {
+        "1": 34.3,
+        "2": 25.6,
+        "3": 25,
+        "5": 24.5,
+        "8": 24.6,
+        "13": 24.7
+       },
+       "droplets": 7
+      },
+      {
+       "ann": 3,
+       "method": "crc",
+       "lag": 964,
+       "carrier": 1.321,
+       "snr": {
+        "1": 34.3,
+        "2": 26.3,
+        "3": 25.9,
+        "5": 25.2,
+        "8": 25.3,
+        "13": 25.1
+       },
+       "droplets": 8
+      },
+      {
+       "ann": "beacon",
+       "beacon": true,
+       "carrier": 0.847,
+       "snr": {
+        "1": 23.4,
+        "2": 24.1,
+        "3": 30.8
+       },
+       "err": "no lock — symbols match neither preamble nor stream at any lag (carrier 0.847× expected)"
+      }
+     ]
+    },
+    {
+     "e": 1,
+     "tile": 1,
+     "fid": 40.5,
+     "reg": "rings",
+     "annuli": [
+      {
+       "ann": 0,
+       "method": "crc",
+       "lag": 1928,
+       "carrier": 0.915,
+       "snr": {
+        "1": 26.1,
+        "2": 25.9,
+        "3": 25.9
+       },
+       "droplets": 10
+      },
+      {
+       "ann": 1,
+       "method": "crc",
+       "lag": 1286,
+       "carrier": 0.973,
+       "snr": {
+        "1": 32.5,
+        "2": 26.2,
+        "3": 25.9,
+        "5": 25.4,
+        "8": 25.2
+       },
+       "droplets": 7
+      },
+      {
+       "ann": 2,
+       "method": "crc",
+       "lag": 964,
+       "carrier": 1.464,
+       "snr": {
+        "1": 34.4,
+        "2": 25.9,
+        "3": 25.2,
+        "5": 24.7,
+        "8": 25.1,
+        "13": 24.8
+       },
+       "droplets": 7
+      },
+      {
+       "ann": 3,
+       "method": "crc",
+       "lag": 964,
+       "carrier": 1.453,
+       "snr": {
+        "1": 33.7,
+        "2": 25.7,
+        "3": 25.2,
+        "5": 24.5,
+        "8": 24.8,
+        "13": 24.5
+       },
+       "droplets": 5
+      },
+      {
+       "ann": "beacon",
+       "beacon": true,
+       "carrier": 0.818,
+       "snr": {
+        "2": 21.5,
+        "3": 23.8,
+        "5": 28.8
+       },
+       "err": "no lock — symbols match neither preamble nor stream at any lag (carrier 0.818× expected)"
+      }
+     ]
+    }
+   ],
+   "events": [
+    {
+     "ev": "bank",
+     "tag": null,
+     "operator": true,
+     "provisional": null,
+     "added": 31,
+     "dup": 0,
+     "conflicts": 0,
+     "quarantined": 0
+    },
+    {
+     "ev": "bank",
+     "tag": null,
+     "operator": true,
+     "provisional": null,
+     "added": 29,
+     "dup": 0,
+     "conflicts": 0,
+     "quarantined": 0
+    }
+   ],
+   "peel": "operator 98/115",
+   "text": "w3 [32.2–49.9 s] 1063 seeks — +60 droplets (0 dup) — operator 98/115"
+  },
+  {
+   "w": 4,
+   "t0": 49.1,
+   "t1": 67.1,
+   "seeks": 1076,
+   "added": 42,
+   "dup": 0,
+   "locked": true,
+   "rows": [
+    {
+     "e": 0,
+     "tile": -1,
+     "fid": 122.2,
+     "reg": "saddles",
+     "annuli": [
+      {
+       "ann": 0,
+       "method": "crc",
+       "lag": 2182,
+       "carrier": 0.871,
+       "snr": {
+        "1": 25.8,
+        "2": 25.6,
+        "3": 25.5
+       },
+       "droplets": 9
+      },
+      {
+       "ann": 1,
+       "method": "crc",
+       "lag": 1455,
+       "carrier": 0.78,
+       "snr": {
+        "1": 32.1,
+        "2": 25.9,
+        "3": 25.5,
+        "5": 25,
+        "8": 24.6
+       },
+       "droplets": 10
+      },
+      {
+       "ann": 2,
+       "method": "crc",
+       "lag": 1091,
+       "carrier": 1.479,
+       "snr": {
+        "1": 33.7,
+        "2": 25,
+        "3": 24.4,
+        "5": 23.7,
+        "8": 23.8,
+        "13": 24
+       },
+       "droplets": 10
+      },
+      {
+       "ann": 3,
+       "method": "crc",
+       "lag": 1091,
+       "carrier": 1.578,
+       "snr": {
+        "1": 34,
+        "2": 26,
+        "3": 25.5,
+        "5": 24.8,
+        "8": 24.9,
+        "13": 24.7
+       },
+       "droplets": 9
+      },
+      {
+       "ann": "beacon",
+       "beacon": true,
+       "carrier": 0.812,
+       "snr": {
+        "1": 26.5,
+        "2": 26,
+        "3": 31.8
+       },
+       "err": "no lock — symbols match neither preamble nor stream at any lag (carrier 0.812× expected)"
+      }
+     ]
+    },
+    {
+     "e": 1,
+     "tile": 0,
+     "fid": 121.8,
+     "reg": "saddles",
+     "annuli": [
+      {
+       "ann": 0,
+       "method": "crc",
+       "lag": 2182,
+       "carrier": 0.79,
+       "snr": {
+        "1": 26.1,
+        "2": 25.9,
+        "3": 25.9
+       },
+       "droplets": 15
+      },
+      {
+       "ann": 1,
+       "method": "crc",
+       "lag": 1455,
+       "carrier": 0.909,
+       "snr": {
+        "1": 31.8,
+        "2": 25.5,
+        "3": 25.2,
+        "5": 24.8,
+        "8": 24.3
+       },
+       "droplets": 8
+      },
+      {
+       "ann": 2,
+       "method": "crc",
+       "lag": 1091,
+       "carrier": 1.507,
+       "snr": {
+        "1": 33.7,
+        "2": 25.1,
+        "3": 24.3,
+        "5": 23.7,
+        "8": 24,
+        "13": 23.9
+       },
+       "droplets": 10
+      },
+      {
+       "ann": 3,
+       "method": "crc",
+       "lag": 1091,
+       "carrier": 1.212,
+       "snr": {
+        "1": 33.9,
+        "2": 25.8,
+        "3": 25.4,
+        "5": 24.5,
+        "8": 24.6,
+        "13": 24.6
+       },
+       "droplets": 9
+      },
+      {
+       "ann": "beacon",
+       "beacon": true,
+       "carrier": 0.262,
+       "snr": {
+        "1": 4.1,
+        "2": 19.2,
+        "3": 21.4
+       },
+       "err": "no lock — symbols match neither preamble nor stream at any lag (carrier 0.262× expected; low carrier — see the layer-0 row)"
+      }
+     ]
+    }
+   ],
+   "events": [
+    {
+     "ev": "bank",
+     "tag": null,
+     "operator": true,
+     "provisional": null,
+     "added": 42,
+     "dup": 0,
+     "conflicts": 0,
+     "quarantined": 0
+    }
+   ],
+   "peel": "operator 115/115",
+   "text": "w4 [49.1–67.1 s] 1076 seeks — +42 droplets (0 dup) — operator 115/115"
+  },
+  {
+   "w": 5,
+   "t0": 66.3,
+   "t1": 84.5,
+   "seeks": 1092,
+   "added": 98,
+   "dup": 0,
+   "locked": true,
+   "rows": [
+    {
+     "e": 0,
+     "tile": 0,
+     "fid": 122.1,
+     "reg": "saddles",
+     "annuli": [
+      {
+       "ann": 0,
+       "method": "crc",
+       "lag": 2439,
+       "carrier": 0.797,
+       "snr": {
+        "1": 26.5,
+        "2": 26.3,
+        "3": 26.3
+       },
+       "droplets": 15
+      },
+      {
+       "ann": 1,
+       "method": "crc",
+       "lag": 1626,
+       "carrier": 0.879,
+       "snr": {
+        "1": 32.3,
+        "2": 26,
+        "3": 25.6,
+        "5": 25.2,
+        "8": 24.9
+       },
+       "droplets": 12
+      },
+      {
+       "ann": 2,
+       "method": "crc",
+       "lag": 1220,
+       "carrier": 1.294,
+       "snr": {
+        "1": 33.9,
+        "2": 25.3,
+        "3": 24.6,
+        "5": 23.9,
+        "8": 23.8,
+        "13": 24.3
+       },
+       "droplets": 10
+      },
+      {
+       "ann": 3,
+       "method": "crc",
+       "lag": 1220,
+       "carrier": 1.734,
+       "snr": {
+        "1": 33.6,
+        "2": 25.6,
+        "3": 24.9,
+        "5": 24.1,
+        "8": 24.7,
+        "13": 24.3
+       },
+       "droplets": 9
+      },
+      {
+       "ann": "beacon",
+       "beacon": true,
+       "carrier": 0.772,
+       "snr": {
+        "1": 24.7,
+        "2": 24.3,
+        "3": 30.7
+       },
+       "err": "no lock — symbols match neither preamble nor stream at any lag (carrier 0.772× expected)"
+      }
+     ]
+    },
+    {
+     "e": 1,
+     "tile": 1,
+     "fid": 121.6,
+     "reg": "saddles",
+     "annuli": [
+      {
+       "ann": 0,
+       "method": "crc",
+       "lag": 2439,
+       "carrier": 0.76,
+       "snr": {
+        "1": 26.3,
+        "2": 26.1,
+        "3": 26.2
+       },
+       "droplets": 19
+      },
+      {
+       "ann": 1,
+       "method": "crc",
+       "lag": 1626,
+       "carrier": 0.998,
+       "snr": {
+        "1": 32,
+        "2": 25.7,
+        "3": 25.2,
+        "5": 24.8,
+        "8": 24.5
+       },
+       "droplets": 14
+      },
+      {
+       "ann": 2,
+       "method": "crc",
+       "lag": 1220,
+       "carrier": 1.536,
+       "snr": {
+        "1": 33.7,
+        "2": 25,
+        "3": 24.4,
+        "5": 23.8,
+        "8": 24.1,
+        "13": 24.3
+       },
+       "droplets": 12
+      },
+      {
+       "ann": 3,
+       "method": "crc",
+       "lag": 1220,
+       "carrier": 1.684,
+       "snr": {
+        "1": 33.5,
+        "2": 25.4,
+        "3": 24.8,
+        "5": 23.9,
+        "8": 24.3,
+        "13": 24.3
+       },
+       "droplets": 7
+      },
+      {
+       "ann": "beacon",
+       "beacon": true,
+       "carrier": 0.908,
+       "snr": {
+        "2": 21.9,
+        "3": 24.2,
+        "5": 29.3
+       },
+       "tagN": 1,
+       "chunkIdx": [],
+       "err": "no lock — symbols match neither preamble nor stream at any lag (carrier 0.908× expected) — chunk sweep banked 0 idx (1 passes)"
+      }
+     ]
+    }
+   ],
+   "events": [
+    {
+     "ev": "chunk-bank",
+     "chunks": 0,
+     "fresh": 0,
+     "have": 0,
+     "target": "operator"
+    },
+    {
+     "ev": "bank",
+     "tag": null,
+     "operator": true,
+     "provisional": null,
+     "added": 46,
+     "dup": 0,
+     "conflicts": 0,
+     "quarantined": 0
+    },
+    {
+     "ev": "bank",
+     "tag": null,
+     "operator": true,
+     "provisional": null,
+     "added": 52,
+     "dup": 0,
+     "conflicts": 0,
+     "quarantined": 0
+    }
+   ],
+   "peel": "operator 115/115",
+   "text": "w5 [66.3–84.5 s] 1092 seeks — chunks +0 fresh (bank 0/5 idx → operator) — +98 droplets (0 dup) — operator 115/115"
+  },
+  {
+   "w": 6,
+   "t0": 83.7,
+   "t1": 102.3,
+   "seeks": 1118,
+   "added": 88,
+   "dup": 0,
+   "locked": true,
+   "rows": [
+    {
+     "e": 0,
+     "tile": 0,
+     "fid": 122.1,
+     "reg": "saddles",
+     "annuli": [
+      {
+       "ann": 0,
+       "method": "crc",
+       "lag": 2700,
+       "carrier": 0.864,
+       "snr": {
+        "1": 25.7,
+        "2": 25.5,
+        "3": 25.4
+       },
+       "droplets": 12
+      },
+      {
+       "ann": 1,
+       "method": "crc",
+       "lag": 1801,
+       "carrier": 0.84,
+       "snr": {
+        "1": 32.1,
+        "2": 26,
+        "3": 25.6,
+        "5": 25.1,
+        "8": 24.7
+       },
+       "droplets": 8
+      },
+      {
+       "ann": 2,
+       "method": "crc",
+       "lag": 1350,
+       "carrier": 1.389,
+       "snr": {
+        "1": 34.1,
+        "2": 25.5,
+        "3": 24.9,
+        "5": 24.3,
+        "8": 24.4,
+        "13": 24.5
+       },
+       "droplets": 12
+      },
+      {
+       "ann": 3,
+       "method": "crc",
+       "lag": 1350,
+       "carrier": 1.507,
+       "snr": {
+        "1": 33.8,
+        "2": 25.9,
+        "3": 25.4,
+        "5": 24.8,
+        "8": 24.9,
+        "13": 24.5
+       },
+       "droplets": 10
+      },
+      {
+       "ann": "beacon",
+       "beacon": true,
+       "carrier": 0.796,
+       "snr": {
+        "1": 25.1,
+        "2": 24.8,
+        "3": 31
+       },
+       "err": "no lock — symbols match neither preamble nor stream at any lag (carrier 0.796× expected)"
+      }
+     ]
+    },
+    {
+     "e": 1,
+     "tile": 1,
+     "fid": 121.9,
+     "reg": "saddles",
+     "annuli": [
+      {
+       "ann": 0,
+       "method": "crc",
+       "lag": 2700,
+       "carrier": 0.9,
+       "snr": {
+        "1": 26,
+        "2": 25.8,
+        "3": 25.8
+       },
+       "droplets": 15
+      },
+      {
+       "ann": 1,
+       "method": "crc",
+       "lag": 1801,
+       "carrier": 0.791,
+       "snr": {
+        "1": 32.6,
+        "2": 26.4,
+        "3": 26.1,
+        "5": 25.4,
+        "8": 25.1
+       },
+       "droplets": 11
+      },
+      {
+       "ann": 2,
+       "method": "crc",
+       "lag": 1350,
+       "carrier": 1.369,
+       "snr": {
+        "1": 34,
+        "2": 25.4,
+        "3": 24.8,
+        "5": 24.1,
+        "8": 24.4,
+        "13": 24.5
+       },
+       "droplets": 8
+      },
+      {
+       "ann": 3,
+       "method": "crc",
+       "lag": 1350,
+       "carrier": 1.278,
+       "snr": {
+        "1": 34.3,
+        "2": 26.2,
+        "3": 25.8,
+        "5": 25.1,
+        "8": 25.2,
+        "13": 24.9
+       },
+       "droplets": 12
+      },
+      {
+       "ann": "beacon",
+       "beacon": true,
+       "carrier": 0.989,
+       "snr": {
+        "2": 21.2,
+        "3": 23.6,
+        "5": 28.6
+       },
+       "err": "no lock — symbols match neither preamble nor stream at any lag (carrier 0.989× expected)"
+      }
+     ]
+    }
+   ],
+   "events": [
+    {
+     "ev": "bank",
+     "tag": null,
+     "operator": true,
+     "provisional": null,
+     "added": 42,
+     "dup": 0,
+     "conflicts": 0,
+     "quarantined": 0
+    },
+    {
+     "ev": "bank",
+     "tag": null,
+     "operator": true,
+     "provisional": null,
+     "added": 46,
+     "dup": 0,
+     "conflicts": 0,
+     "quarantined": 0
+    }
+   ],
+   "peel": "operator 115/115",
+   "text": "w6 [83.7–102.3 s] 1118 seeks — +88 droplets (0 dup) — operator 115/115"
+  },
+  {
+   "w": 7,
+   "t0": 101.5,
+   "t1": 120.9,
+   "seeks": 1164,
+   "added": 0,
+   "dup": 0,
+   "locked": true,
+   "rows": [
+    {
+     "e": 0,
+     "tile": -1,
+     "fid": 122.1,
+     "reg": "saddles",
+     "annuli": [
+      {
+       "ann": 0,
+       "method": "crc",
+       "lag": 28,
+       "carrier": 0.781,
+       "snr": {
+        "1": 25.3,
+        "2": 25.1,
+        "3": 25.1
+       },
+       "droplets": 4
+      },
+      {
+       "ann": 1,
+       "method": "crc",
+       "lag": 18,
+       "carrier": 0.999,
+       "snr": {
+        "1": 32.4,
+        "2": 26.2,
+        "3": 25.8,
+        "5": 25.3,
+        "8": 25
+       },
+       "droplets": 2
+      },
+      {
+       "ann": 2,
+       "method": "crc",
+       "lag": 14,
+       "carrier": 1.38,
+       "snr": {
+        "1": 33.6,
+        "2": 25.1,
+        "3": 24.3,
+        "5": 23.7,
+        "8": 23.9,
+        "13": 24
+       },
+       "droplets": 4
+      },
+      {
+       "ann": 3,
+       "method": "crc",
+       "lag": 14,
+       "carrier": 1.073,
+       "snr": {
+        "1": 33.9,
+        "2": 25.9,
+        "3": 25.5,
+        "5": 24.8,
+        "8": 24.7,
+        "13": 24.5
+       },
+       "droplets": 5
+      },
+      {
+       "ann": "beacon",
+       "beacon": true,
+       "carrier": 0.881,
+       "snr": {
+        "1": 24.2,
+        "2": 24.4,
+        "3": 30.8
+       },
+       "err": "no lock — symbols match neither preamble nor stream at any lag (carrier 0.881× expected)"
+      }
+     ]
+    },
+    {
+     "e": 1,
+     "tile": -1,
+     "fid": 121.9,
+     "reg": "saddles",
+     "annuli": [
+      {
+       "ann": 0,
+       "method": "crc",
+       "lag": 28,
+       "carrier": 0.731,
+       "snr": {
+        "1": 25.7,
+        "2": 25.4,
+        "3": 25.4
+       },
+       "droplets": 4
+      },
+      {
+       "ann": 1,
+       "method": "crc",
+       "lag": 18,
+       "carrier": 0.739,
+       "snr": {
+        "1": 32,
+        "2": 25.8,
+        "3": 25.4,
+        "5": 24.9,
+        "8": 24.5
+       },
+       "droplets": 4
+      },
+      {
+       "ann": 2,
+       "method": "crc",
+       "lag": 14,
+       "carrier": 1.493,
+       "snr": {
+        "1": 33.9,
+        "2": 25.3,
+        "3": 24.7,
+        "5": 24.1,
+        "8": 24.3,
+        "13": 24.6
+       },
+       "droplets": 4
+      },
+      {
+       "ann": 3,
+       "method": "crc",
+       "lag": 14,
+       "carrier": 1.066,
+       "snr": {
+        "1": 34.1,
+        "2": 26.1,
+        "3": 25.6,
+        "5": 24.7,
+        "8": 24.9,
+        "13": 24.9
+       },
+       "droplets": 3
+      },
+      {
+       "ann": "beacon",
+       "beacon": true,
+       "carrier": 0.4,
+       "snr": {
+        "1": 2.5,
+        "2": 18.9,
+        "3": 21.4
+       },
+       "err": "no lock — symbols match neither preamble nor stream at any lag (carrier 0.4× expected; low carrier — see the layer-0 row)"
+      }
+     ]
+    }
+   ],
+   "events": [],
+   "peel": "operator 115/115",
+   "text": "w7 [101.5–120.9 s] 1164 seeks — +0 droplets (0 dup) — operator 115/115"
+  }
+ ],
+ "notes": [],
+ "final": {
+  "done": false,
+  "wall_s": 1298,
+  "seeks": 8191,
+  "baseline": 7258,
+  "skipped_pct": 0,
+  "visited_s": 120.9,
+  "windows": 7,
+  "peels": [
+   {
+    "key": "operator",
+    "ok": false,
+    "K": 115,
+    "recovered": 115,
+    "droplets": 332,
+    "eliminationTried": 900,
+    "reason": "self-framing parse failed (block 0 len16 out of range)"
+   }
+  ],
+  "receipt": "clip exhausted — incomplete (operator 115/115) — 8191 seeks of 7258 (0% skipped), wall 1298.0 s — export the store and film another take: the next harvest mines only what this one lacked"
+ },
+ "store_name": "store-20260901003751.json"
+}

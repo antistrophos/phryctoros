@@ -43,6 +43,7 @@ suite page and come back on its own.</p>
 <script src="../src/demap.js"></script>
 <script src="../src/fountain.js"></script>
 <script src="../src/harvest.js"></script>
+<script src="../src/track.js"></script>
 <script src="../src/ser.js"></script>
 <script src="../src/degrade.js"></script>
 <script src="../src/pipeline.js"></script>
@@ -83,7 +84,13 @@ async function runSuite(job) {
   try { sessionStorage.setItem("runnerPendingSuite", JSON.stringify({ id: job.id, page: page, note: job.note, only: job.only || null, params: job.params || null, t: Date.now() })); } catch (e) {}
   // job.params: extra pre-encoded query params, appended verbatim — the
   // synthetic-harvest lane (receive.html?synth=...&loop=...&msg=...).
-  const qs = "?return=runner" + (job.only ? "&only=" + encodeURIComponent(job.only) : "") + (job.params ? "&" + job.params : "");
+  let qs = "?return=runner" + (job.only ? "&only=" + encodeURIComponent(job.only) : "") + (job.params ? "&" + job.params : "");
+  // The selftest lane pages arm on ?selftest=1 and BAIL without it — a bare
+  // suite job would strand this tab on a page that never bounces (it
+  // happened: a registry job without the flag parked the runner mid-lane).
+  // Auto-arm the flag so a lane job can never strand the tab.
+  if (["registry", "emit", "take", "orders"].indexOf(page) >= 0 && !/(^|&)selftest=1/.test(job.params || ""))
+    qs += "&selftest=1";
   $s.textContent = "handing this tab to " + page + ".html — it returns when the suite posts";
   await new Promise(r => setTimeout(r, 400));
   location.href = page + ".html" + qs;
@@ -98,7 +105,7 @@ async function reportPendingSuite() {
   try { sessionStorage.removeItem("runnerPendingSuite"); } catch (e) {}
   let verdict = { ok: false, error: "suite results not found" };
   // page FILENAME → the SUITE_PAGE name its results post under
-  const RESULTS_NAME = { "test": "v2", "test-v3": "v3", "test-v3-dring": "v3dring", "test-saddle": "saddle", "receive": "synth-harvest", "registry": "registry-selftest", "emit": "emit-selftest", "take": "take-selftest", "orders": "orders-selftest" };
+  const RESULTS_NAME = { "test": "v2", "test-v3": "v3", "test-v3-dring": "v3dring", "test-saddle": "saddle", "test-track": "track", "receive": "synth-harvest", "registry": "registry-selftest", "emit": "emit-selftest", "take": "take-selftest", "orders": "orders-selftest" };
   for (let att = 0; att < 4; att++) {
     try {
       // An ?only= lap posts to <name>-partial.json (certification = the

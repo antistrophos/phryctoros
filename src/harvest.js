@@ -77,8 +77,18 @@
      header slot of every ring and tile (they depend only on K + payload), so
      one sighting holds them all — the planner prices every header slot as
      held from that moment. A droplet_bits mismatch refuses the absorb
-     rather than silently mixing framings. */
-  function absorb(ledger, res, profile) {
+     rather than silently mixing framings.
+
+     EPOCHS (the continuous receiver, phase A): `ep` — the caller's (burst,
+     hypothesis) id — is recorded per banked droplet in a SIDE TABLE
+     (ledger.eps[seed][c]), never in the ring itself, so every v2 store and
+     every epoch-blind reader stays byte-compatible: absent = one epoch,
+     trusted forever. Conflicts and cross-epoch duplicate sightings are
+     RETAINED as witnesses (ledger.alts[seed][c] = [{x, ep}]) — first-seen
+     still wins the ring, but exclusion can later re-project the slot from a
+     non-excluded witness: the first-seen-poison-blocks-forever disease dies
+     here. Exclusion is a VIEW (ringsFor), never a deletion. */
+  function absorb(ledger, res, profile, ep) {
     var g = F().geom(profile);
     if (ledger.droplet_bits !== g.dropletBits)
       return { added: 0, dup: 0, conflicts: 0, quarantined: 0, mismatch: true };
@@ -149,10 +159,27 @@
           if (ring[dr.c] !== undefined) {
             if (ring[dr.c] !== dr.hex) conflicts++; // same slot, different bytes — surfaced, never silent
             dup++;
+            // Witness retention: a conflicting read, or the SAME bytes seen
+            // under a DIFFERENT epoch, is evidence a later exclusion can
+            // re-project from. Capped — a slot at war is already surfaced
+            // through the conflict count, and four witnesses decide it.
+            var bankedEp = ledger.eps && ledger.eps[seed] && ledger.eps[seed][dr.c];
+            if (ring[dr.c] !== dr.hex || (ep != null && ep !== bankedEp)) {
+              var alts = ledger.alts || (ledger.alts = {});
+              var aSlot = (alts[seed] || (alts[seed] = {}))[dr.c] || (alts[seed][dr.c] = []);
+              var have = false;
+              for (var wq = 0; wq < aSlot.length; wq++)
+                if (aSlot[wq].x === dr.hex && aSlot[wq].ep === ep) { have = true; break; }
+              if (!have && aSlot.length < 4) aSlot.push(ep != null ? { x: dr.hex, ep: ep } : { x: dr.hex });
+            }
             continue;
           }
           ring[dr.c] = dr.hex;
           added++;
+          if (ep != null) {
+            var eps = ledger.eps || (ledger.eps = {});
+            (eps[seed] || (eps[seed] = {}))[dr.c] = ep;
+          }
           if (!ledger.header && F().isHeaderSlot(dr.c)) {
             var h = F().parseHeader(hexToBytes(dr.hex), g);
             if (h) ledger.header = { K: h.K, len: h.len, hex: dr.hex };
@@ -167,13 +194,31 @@
      droplet arrived this window, last window, from another clip's take, or
      from another TILE: every held tile-ring goes in (tile-distinct seeds make
      the pool collision-free, exactly as the pipeline's own multi-tile peel),
-     so a 6-up harvest peels across tiles the way a 6-up window does. */
-  function ringsFor(ledger, profile) {
+     so a 6-up harvest peels across tiles the way a 6-up window does.
+
+     opts.excluded (the coalition view): a slot whose banked epoch is excluded
+     re-projects from its first NON-excluded witness in the alts table —
+     droplets a convicted epoch banked first stop blocking honest bytes — and
+     drops entirely when no trusted witness exists. Un-attributed droplets
+     (no epoch recorded — every pre-epoch store) are trusted always. */
+  function ringsFor(ledger, profile, opts) {
+    var excluded = opts && opts.excluded;
     var out = [];
     for (var seedKey in ledger.rings) {
       var held = ledger.rings[seedKey];
+      var eps = excluded && ledger.eps && ledger.eps[seedKey];
+      var alts = excluded && ledger.alts && ledger.alts[seedKey];
       var droplets = [];
-      for (var c in held) droplets.push({ c: +c, bytes: hexToBytes(held[c]) });
+      for (var c in held) {
+        var hex = held[c];
+        if (excluded && eps && eps[c] != null && excluded[eps[c]]) {
+          hex = null;
+          var aSlot = alts && alts[c];
+          for (var w = 0; aSlot && w < aSlot.length; w++)
+            if (!(aSlot[w].ep != null && excluded[aSlot[w].ep])) { hex = aSlot[w].x; break; }
+        }
+        if (hex != null) droplets.push({ c: +c, bytes: hexToBytes(hex) });
+      }
       out.push({ seed: +seedKey, droplets: droplets });
     }
     // Stable order: the profile's base rings first (tile 0), then the rest
@@ -319,15 +364,38 @@
     };
   }
 
-  /* First-seen-wins ring merge (conflicts surfaced, headers carried). */
+  /* First-seen-wins ring merge (conflicts surfaced, headers carried; epoch
+     attribution and retained witnesses ride along — an operator-merge or an
+     adoption must not launder a droplet's provenance). */
   function mergeLedger(dst, src) {
     var moved = 0, conflicts = 0;
+    var altPush = function (seed, c, x, ep) {
+      var alts = dst.alts || (dst.alts = {});
+      var slot = (alts[seed] || (alts[seed] = {}))[c] || (alts[seed][c] = []);
+      for (var i = 0; i < slot.length; i++) if (slot[i].x === x && slot[i].ep === ep) return;
+      if (slot.length < 4) slot.push(ep != null ? { x: x, ep: ep } : { x: x });
+    };
     for (var seed in src.rings) {
       var d = dst.rings[seed] || (dst.rings[seed] = {});
       for (var c in src.rings[seed]) {
-        if (d[c] === undefined) { d[c] = src.rings[seed][c]; moved++; }
-        else if (d[c] !== src.rings[seed][c]) conflicts++;
+        var sEp = src.eps && src.eps[seed] && src.eps[seed][c];
+        if (d[c] === undefined) {
+          d[c] = src.rings[seed][c]; moved++;
+          if (sEp != null) {
+            var eps = dst.eps || (dst.eps = {});
+            (eps[seed] || (eps[seed] = {}))[c] = sEp;
+          }
+        } else {
+          if (d[c] !== src.rings[seed][c]) conflicts++;
+          var dEp = dst.eps && dst.eps[seed] && dst.eps[seed][c];
+          if (d[c] !== src.rings[seed][c] || (sEp != null && sEp !== dEp))
+            altPush(seed, c, src.rings[seed][c], sEp);
+        }
       }
+      if (src.alts && src.alts[seed])
+        for (var c2 in src.alts[seed])
+          for (var a2 = 0; a2 < src.alts[seed][c2].length; a2++)
+            altPush(seed, c2, src.alts[seed][c2][a2].x, src.alts[seed][c2][a2].ep);
     }
     if (!dst.header && src.header) dst.header = src.header;
     return { moved: moved, conflicts: conflicts };
@@ -355,8 +423,14 @@
 
   /* One window's decode result → the store, through the lease. Returns the
      window's events (the receipt stream) and which content ledgers banked.
-     `w` = the window ordinal (grace accounting). Pure over (store, lease). */
-  function leaseObserve(store, lease, res, profile, w) {
+     `w` = the window ordinal (grace accounting). Pure over (store, lease).
+     opts (the continuous receiver, phase A): { eps, excluded } — eps[i] is
+     emitter i's (burst, hypothesis) epoch id, recorded on every droplet and
+     chunk sighting this window banks; excluded is the CURRENT conviction
+     view, consulted only where evidence is aggregated (the chunk-bank
+     majority) — banking itself never filters, because exclusion is a peel-
+     time view and a reversed conviction must find the droplets still there. */
+  function leaseObserve(store, lease, res, profile, w, opts) {
     var events = [], bankedKeys = {};
     var emitters = (!res || res.error || !res.emitters) ? [] : res.emitters;
 
@@ -508,15 +582,24 @@
     // assembles under the CRC16 seal that IS a seal — the context binds
     // exactly as if one window had read the whole envelope. Junk chunks from
     // a wrong-alignment sweep cost one sighting, never the seal.
-    var assembleBank = function (bank) {
+    var assembleBank = function (bank, bankEps) {
+      var excluded = opts && opts.excluded;
       var env = new Uint8Array(20);
       for (var ix = 1; ix <= 5; ix++) {
         var slot = bank["" + ix];
         if (!slot) return null;
+        var epsSlot = excluded && bankEps && bankEps["" + ix];
         var bestHex = null, bestN = 0, tie = false;
         for (var hx in slot) {
-          if (slot[hx] > bestN) { bestN = slot[hx]; bestHex = hx; tie = false; }
-          else if (slot[hx] === bestN) tie = true;
+          var n = slot[hx];
+          // sightings attributed to a convicted epoch drop out of the
+          // majority; un-attributed sightings stay trusted (absent = one
+          // honest epoch — the pre-epoch contract)
+          if (epsSlot && epsSlot[hx])
+            for (var xe in epsSlot[hx]) if (excluded[xe]) n -= epsSlot[hx][xe];
+          if (n <= 0) continue;
+          if (n > bestN) { bestN = n; bestHex = hx; tie = false; }
+          else if (n === bestN) tie = true;
         }
         if (!bestHex || tie) return null;
         for (var bj = 0; bj < 4; bj++) env[4 * (ix - 1) + bj] = parseInt(bestHex.substr(2 * bj, 2), 16);
@@ -527,21 +610,27 @@
     obs.forEach(function (o) {
       var sw = o.beacon && o.beacon.chunkSweep;
       if (!sw) return;
-      var bank = null;
-      if (o.ctx && o.plate) bank = o.plate.chunkBank || (o.plate.chunkBank = {});
-      else if (o.prov) bank = o.prov.chunkBank || (o.prov.chunkBank = {});
-      else if (o.operator) bank = lease.operatorBank || (lease.operatorBank = {});
+      var bank = null, bankEps = null;
+      var epO = opts && opts.eps ? opts.eps[o.index] : null;
+      if (o.ctx && o.plate) { bank = o.plate.chunkBank || (o.plate.chunkBank = {}); bankEps = o.plate.chunkBankEps || (o.plate.chunkBankEps = {}); }
+      else if (o.prov) { bank = o.prov.chunkBank || (o.prov.chunkBank = {}); bankEps = o.prov.chunkBankEps || (o.prov.chunkBankEps = {}); }
+      else if (o.operator) { bank = lease.operatorBank || (lease.operatorBank = {}); bankEps = lease.operatorBankEps || (lease.operatorBankEps = {}); }
       else return;
       var newIdx = 0;
       for (var ix2 in sw) {
         var slot2 = bank[ix2] || (bank[ix2] = {});
         if (!slot2[sw[ix2]]) newIdx++;
         slot2[sw[ix2]] = (slot2[sw[ix2]] || 0) + 1;
+        if (epO != null) {
+          var eSlot = bankEps[ix2] || (bankEps[ix2] = {});
+          var eHex = eSlot[sw[ix2]] || (eSlot[sw[ix2]] = {});
+          eHex[epO] = (eHex[epO] || 0) + 1;
+        }
       }
       events.push({ ev: "chunk-bank", chunks: Object.keys(sw).length, fresh: newIdx,
                     have: Object.keys(bank).length, target: o.ctx ? o.ctx.tag : (o.provId || "operator") });
       if (o.fields) return;                       // a real seal already routed this window
-      var env2 = assembleBank(bank);
+      var env2 = assembleBank(bank, bankEps);
       if (env2) {
         var fields2 = PL().parseEnvelope(env2);
         if (fields2) {
@@ -577,7 +666,8 @@
       }
       if (!target) return;
       var emB = tileForBank === o.em.tile ? o.em : Object.assign({}, o.em, { tile: tileForBank });
-      var got = absorb(target, { emitters: [emB] }, profile);
+      var got = absorb(target, { emitters: [emB] }, profile,
+        opts && opts.eps ? opts.eps[o.index] : undefined);
       if (got.added || got.dup || got.conflicts || got.quarantined) {
         events.push({ ev: "bank", tag: o.ctx ? o.ctx.tag : null,
                       operator: o.operator || undefined, provisional: o.provId || null,
@@ -622,8 +712,59 @@
      validate-gated: a completed-but-invalid union retries bare, and if the
      bare peel is no worse the provisionals are marked rejected (the poison
      was theirs). Ranking mirrors the subsetFor fallback: validated >
-     honestly-incomplete > completed-but-invalid. */
-  function tryPeelStore(store, lease, contentKey, profile) {
+     honestly-incomplete > completed-but-invalid. `dry` skips the rejected-
+     marking side effect — coalition attempts probe without leaving verdicts;
+     only the winning view's pass is allowed to judge provisionals. */
+  function peelView(store, lease, contentKey, profile, aOpts, excluded, dry) {
+    var ledger = store.ledgers[contentKey];
+    var exView = excluded ? { excluded: excluded } : undefined;
+    var base = ringsFor(ledger, profile, exView);
+    var adoptedIds = [];
+    for (var pid in lease.provisionals) {
+      var pr = lease.provisionals[pid];
+      if (pr.adopted && !pr.rejected && store.contexts[pr.forTag] &&
+          store.contexts[pr.forTag].contentKey === contentKey) adoptedIds.push(pid);
+    }
+    // assembleEliminating (hardening layer 1): a completed-but-invalid peel
+    // runs the liar elimination before surrendering — leave-one-out with the
+    // validation ladder as the oracle, suspect-set pairs/triples behind it.
+    if (!adoptedIds.length) return F().assembleEliminating(base, profile, aOpts);
+    var bySeed = {};
+    base.forEach(function (r) { bySeed[r.seed] = { seed: r.seed, droplets: r.droplets.slice(), have: {} };
+      r.droplets.forEach(function (d) { bySeed[r.seed].have[d.c] = true; }); });
+    adoptedIds.forEach(function (pid) {
+      ringsFor(lease.provisionals[pid].ledger, profile, exView).forEach(function (r) {
+        var slot = bySeed[r.seed] || (bySeed[r.seed] = { seed: r.seed, droplets: [], have: {} });
+        r.droplets.forEach(function (d) { if (!slot.have[d.c]) { slot.have[d.c] = true; slot.droplets.push(d); } });
+      });
+    });
+    var union = [];
+    for (var s in bySeed) union.push({ seed: bySeed[s].seed, droplets: bySeed[s].droplets });
+    var withProv = F().assemble(union, profile, aOpts);
+    if (withProv.ok === true || withProv.recovered == null || withProv.recovered !== withProv.K) return withProv;
+    // completed but did not validate — the union is suspect; try bare
+    // (with the liar elimination behind it: a liar in the BASE ledger is a
+    // different disease than a bad provisional, and both walls should hold)
+    var bare = F().assembleEliminating(base, profile, aOpts);
+    if (bare.ok === true || (bare.recovered != null && bare.recovered !== bare.K)) {
+      if (!dry) {
+        adoptedIds.forEach(function (pid) { lease.provisionals[pid].rejected = true; });
+      }
+      bare.provisionalsRejected = adoptedIds.length;
+      return bare;
+    }
+    return withProv;
+  }
+
+  /* opts.coalitions (the continuous receiver, phase A): a RANKED list of
+     views [{ name, excluded }] from the registration track's conviction —
+     trusted first, everything second, each convicted challenger's alternate
+     last. The peel trusts the top coalition; a failed validation retries
+     down the ranking (retention: exclusion is reversible, so retrying costs
+     an assemble, never data). Attempts run DRY; the winner re-runs live so
+     provisional verdicts land under the winning view only. No coalitions →
+     the pre-track path, byte-identical. */
+  function tryPeelStore(store, lease, contentKey, profile, opts) {
     var ledger = store.ledgers[contentKey];
     if (!ledger) return { ok: false, reason: "no such ledger" };
     // A content key carries its own 16-bit fingerprint (bits:K:len:pcrc16 —
@@ -639,40 +780,30 @@
     // well, not just the 48-bit high byte.
     var kp = /^\d+:\d+:(\d+):([0-9a-f]+)$/.exec(contentKey);
     var aOpts = kp ? { expectLen: +kp[1], expectPcrc16: parseInt(kp[2], 16) } : undefined;
-    var base = ringsFor(ledger, profile);
-    var adoptedIds = [];
-    for (var pid in lease.provisionals) {
-      var pr = lease.provisionals[pid];
-      if (pr.adopted && !pr.rejected && store.contexts[pr.forTag] &&
-          store.contexts[pr.forTag].contentKey === contentKey) adoptedIds.push(pid);
+    var coalitions = opts && opts.coalitions;
+    if (!coalitions || !coalitions.length)
+      return peelView(store, lease, contentKey, profile, aOpts, null, false);
+    var rankOf = function (r) {
+      if (r.ok === true && r.validatedBy) return 3;
+      if (r.ok === true) return 2;
+      if (r.recovered != null && r.K && r.recovered < r.K) return 1;
+      return 0;
+    };
+    var best = null, bestRank = -1, bestC = null, tried = 0;
+    for (var i = 0; i < coalitions.length; i++) {
+      var c = coalitions[i];
+      var r = peelView(store, lease, contentKey, profile, aOpts, c.excluded, true);
+      tried++;
+      var rk = rankOf(r);
+      if (rk > bestRank) { bestRank = rk; best = r; bestC = c; }
+      if (rk === 3) break;   // validated — the ladder stops here
     }
-    // assembleEliminating (hardening layer 1): a completed-but-invalid peel
-    // runs the liar elimination before surrendering — leave-one-out with the
-    // validation ladder as the oracle, suspect-set pairs/triples behind it.
-    if (!adoptedIds.length) return F().assembleEliminating(base, profile, aOpts);
-    var bySeed = {};
-    base.forEach(function (r) { bySeed[r.seed] = { seed: r.seed, droplets: r.droplets.slice(), have: {} };
-      r.droplets.forEach(function (d) { bySeed[r.seed].have[d.c] = true; }); });
-    adoptedIds.forEach(function (pid) {
-      ringsFor(lease.provisionals[pid].ledger, profile).forEach(function (r) {
-        var slot = bySeed[r.seed] || (bySeed[r.seed] = { seed: r.seed, droplets: [], have: {} });
-        r.droplets.forEach(function (d) { if (!slot.have[d.c]) { slot.have[d.c] = true; slot.droplets.push(d); } });
-      });
-    });
-    var union = [];
-    for (var s in bySeed) union.push({ seed: bySeed[s].seed, droplets: bySeed[s].droplets });
-    var withProv = F().assemble(union, profile, aOpts);
-    if (withProv.ok === true || withProv.recovered == null || withProv.recovered !== withProv.K) return withProv;
-    // completed but did not validate — the union is suspect; try bare
-    // (with the liar elimination behind it: a liar in the BASE ledger is a
-    // different disease than a bad provisional, and both walls should hold)
-    var bare = F().assembleEliminating(base, profile, aOpts);
-    if (bare.ok === true || (bare.recovered != null && bare.recovered !== bare.K)) {
-      adoptedIds.forEach(function (pid) { lease.provisionals[pid].rejected = true; });
-      bare.provisionalsRejected = adoptedIds.length;
-      return bare;
-    }
-    return withProv;
+    var live = peelView(store, lease, contentKey, profile, aOpts, bestC && bestC.excluded, false);
+    live.coalition = bestC ? bestC.name : undefined;
+    var exKeys = bestC ? Object.keys(bestC.excluded || {}) : [];
+    if (exKeys.length) live.excludedEps = exKeys;
+    live.coalitionsTried = tried;
+    return live;
   }
 
   /* ---------- locks: the capture-time→carousel-slot mapping ---------- */

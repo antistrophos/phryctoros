@@ -90,6 +90,7 @@
 <script src="../src/demap.js"></script>
 <script src="../src/fountain.js"></script>
 <script src="../src/harvest.js"></script>
+<script src="../src/track.js"></script>
 <script src="../src/ser.js"></script>
 <script src="../src/degrade.js"></script>
 <script src="../src/pipeline.js"></script>
@@ -501,10 +502,16 @@ async function harvestDecode(v, geo, file) {
   // clip-scoped. Contexts are tag-addressed; ledgers are content-addressed.
   HV.leaseNewClip(st);
   const lease = HV.leaseCreate({ operator: true });
+  // THE REGISTRATION TRACK (continuous receiver, phase A): registration and
+  // designation state that SURVIVES window boundaries. Every window's solves
+  // feed it; every banked droplet carries its (burst, hypothesis) epoch; the
+  // peel trusts the track's ranked coalitions and retries down the ladder.
+  const track = OC.track.trackCreate();
   const peelAll = () => {
+    const ladder = OC.track.coalitionLadder(track);
     const out = { list: [], allOk: true, any: false, best: null };
     for (const key in st.ledgers) {
-      const p = HV.tryPeelStore(st, lease, key, profile);
+      const p = HV.tryPeelStore(st, lease, key, profile, ladder ? { coalitions: ladder } : undefined);
       out.list.push({ key, p });
       if (p.ok === true) { out.any = true; if (!out.best) out.best = { key, p }; }
       else out.allOk = false;
@@ -518,6 +525,7 @@ async function harvestDecode(v, geo, file) {
       : p.K ? (p.recovered || 0) + "/" + p.K
       : "no header") +
     (p.excluded && p.excluded.length ? " <span class='warn'>(LIAR EXCLUDED " + p.excluded.join(", ") + ")</span>" : "") +
+    (p.coalition && p.coalition !== "all" ? " <span class='warn'>(coalition " + p.coalition + ": " + (p.excludedEps ? p.excludedEps.length : 0) + " epoch excluded)</span>" : "") +
     (p.ok === true && !p.validatedBy ? " <span class='warn'>UNVALIDATED (bare peel — no content check)</span>" : "") +
     (p.provisionalsRejected ? " <span class='warn'>(" + p.provisionalsRejected + " provisional rejected)</span>" : "")
   ).join(" · ") || "no ledgers yet";
@@ -673,13 +681,70 @@ async function harvestDecode(v, geo, file) {
         };
       }
     }
-    const res = await decodeP;
+    let res = await decodeP;
+    // THE ENGINEERED FALSE SOLVE (?poison=w0-w1): the synthetic cure fixture.
+    // Frames render clean; the injection corrupts the RESULT — a ⅓-scale
+    // solve signature (fid, ring-path method) plus wrong-byte droplets on the
+    // real slots — because the honest seam under test is "given a burst whose
+    // solve was false and whose droplets are poison, does the machinery
+    // convict, exclude, re-decode and validate?" Nature supplies this burst
+    // in the field (the 2026-09-01 specimen); the fixture supplies it on
+    // demand. Poisoned windows' spans are visited-subtracted like any other,
+    // so exclusion alone cannot refill them — the cure MUST walk rung 3.
+    if (window.ocPoison && !res.error && wrun >= window.ocPoison.w0 && wrun <= window.ocPoison.w1) {
+      const scaleP = window.ocPoison.scale;
+      for (const em of res.emitters) {
+        em.fiducialWidthPx = Math.round(em.fiducialWidthPx * scaleP * 10) / 10;
+        em.method = "rings";
+        for (const a of (em.annuli || [])) {
+          if (!a || a.beacon || !a.droplets) continue;
+          a.droplets = a.droplets.map(d => ({ c: d.c,
+            hex: d.hex.replace(/../g, b => ((parseInt(b, 16) ^ 0x5a) | 0).toString(16).padStart(2, "0")) }));
+        }
+      }
+      window.ocPoison.hit = (window.ocPoison.hit || 0) + 1;
+    }
+    // RE-ACQUISITION (phase A): a window where fresh registration found
+    // nothing retries once under the track's adopted poses — the prior
+    // seeds, the per-frame solve re-earns. An occlusion or blur stretch
+    // stops costing the whole window.
+    if (res.error && OC.track.trackPoses(track).length) {
+      const poses = OC.track.trackPoses(track);
+      setStatus("harvest w" + wrun + ": no registration — retrying under the track's pose…", "warn");
+      const res2 = await decodeAsync(cap.frames, profile, {
+        aligned: false, handheld: $("m_hand").checked,
+        loopSeconds: +$("m_loop").value || 60, mirror: { receive: false },
+        maxEmitters: isV3h ? 6 : 4, payload: true,
+        plateSolve: isV3h && $("m_solve").checked, beacon: isV3h && $("m_beacon").checked,
+        regPrior: poses
+      });
+      if (!res2.error) { res = res2; res.reacquired = true; }
+    }
     let line = "w" + wrun + " [" + (wf0 / R).toFixed(1) + "–" + (wf1 / R).toFixed(1) + " s] " + cap.seeks + " seeks";
+    if (res.reacquired) line += " — <span class='warn'>re-acquired under the track's pose</span>";
     let lockedAny = false;
     const wRec = { w: wrun, t0: +(wf0 / R).toFixed(1), t1: +(wf1 / R).toFixed(1), seeks: cap.seeks };
+    if (res.reacquired) wRec.reacquired = true;
     if (res.error) { line += " — <span class='bad'>" + res.error + "</span>"; wRec.error = stripHtml(res.error); }
     else {
-      const got = HV.leaseObserve(st, lease, res, profile, wrun);
+      // ——— the registration track: observe, judge designation, tag epochs ———
+      const solves = res.emitters.map((em, ei) => ({
+        e: ei, center: em.center, fid: em.fiducialWidthPx, method: em.method,
+        tile: em.tile, H: em.H }));
+      const tro = OC.track.trackObserve(track, wrun, solves, { f0: wf0, f1: wf1 });
+      const eps = [];
+      res.emitters.forEach((em, ei) => {
+        const o = tro.out[ei];
+        if (!o) return;
+        eps[ei] = o.ep;
+        // Designation judgment: the majority fills an unplaced tile
+        // (evidence accumulated clip-wide); a contradicting read is
+        // unplaced for this span rather than re-keying the ledger.
+        if (em.tile !== undefined && o.tileOut !== em.tile) em.tile = o.tileOut;
+      });
+      if (tro.events.length) wRec.track = tro.events;
+      const got = HV.leaseObserve(st, lease, res, profile, wrun,
+        { eps, excluded: OC.track.excludedEps(track) });
       let added = 0, dup = 0, quarantined = 0, conflicts = 0;
       got.events.forEach(e => {
         if (e.ev === "bank") { added += e.added || 0; dup += e.dup || 0; quarantined += e.quarantined || 0; conflicts += e.conflicts || 0; }
@@ -756,6 +821,8 @@ async function harvestDecode(v, geo, file) {
       wRec.locked = lockedAny;
       wRec.rows = res.emitters.map((em, ei) => ({
         e: ei, tile: em.tile, fid: em.fiducialWidthPx, reg: em.method,
+        c: em.center, hyp: tro.out[ei] ? tro.out[ei].hyp : undefined,
+        ep: tro.out[ei] ? tro.out[ei].ep : undefined,
         annuli: (em.annuli || []).map(a => a && ({
           ann: a.annulus, beacon: a.beacon || undefined, method: a.alignMethod,
           lag: a.alignLag, carrier: a.carrierRatio, snr: a.snr_db,
@@ -823,6 +890,66 @@ async function harvestDecode(v, geo, file) {
     const cPre = await prefetch.p;
     seeks += cPre.seeks; prefetch = null;
   }
+  // ——— CURE RUNG 3 (phase A): span re-decode under the track ———
+  // Exclusion alone cannot refill a poisoned span: its windows are marked
+  // visited, so the planner never returns. Each convicted epoch's span is
+  // re-decoded once under the track's adopted poses (tripod: the consensus
+  // pose IS the registration; handheld: the per-frame solve chains from the
+  // prior and re-earns). Honest bytes landing on poison-held slots arrive as
+  // conflicts and are RETAINED as witnesses — the excluded view re-projects
+  // from them. Seeks are spent honestly and capped.
+  pa = peelAll();
+  let redecodes = 0;
+  if (!(pa.any && pa.allOk)) {
+    const cureSpans = OC.track.convictedSpans(track);
+    const curePoses = OC.track.trackPoses(track);
+    if (cureSpans.length && curePoses.length) {
+      $("harvest").innerHTML += "<span class='warn'>convicted epochs poisoned " + cureSpans.length +
+        " span(s) — re-decoding under the track's consensus pose</span><br>";
+      for (const sp of cureSpans) {
+        if (redecodes >= 4 || (pa.any && pa.allOk)) break;
+        wrun++;
+        setStatus("cure w" + wrun + ": re-decoding " + (sp.f0 / R).toFixed(1) + "–" + (sp.f1 / R).toFixed(1) + " s under the track…", "warn");
+        const capC = await seekWindow(v, geo, sp.f0 / R, sp.f1 / R, capFps, R, () => {});
+        seeks += capC.seeks;
+        const isV3c2 = !!(profile.bands && profile.plate);
+        const resC = await decodeAsync(capC.frames, profile, {
+          aligned: false, handheld: $("m_hand").checked,
+          loopSeconds: +$("m_loop").value || 60, mirror: { receive: false },
+          maxEmitters: isV3c2 ? 6 : 4, payload: true,
+          plateSolve: isV3c2 && $("m_solve").checked, beacon: isV3c2 && $("m_beacon").checked,
+          regPrior: curePoses
+        });
+        const wRecC = { w: wrun, t0: +(sp.f0 / R).toFixed(1), t1: +(sp.f1 / R).toFixed(1),
+                        seeks: capC.seeks, redecode: sp.ep };
+        if (resC.error) { wRecC.error = stripHtml(resC.error); }
+        else {
+          const solvesC = resC.emitters.map((em, ei) => ({ e: ei, center: em.center,
+            fid: em.fiducialWidthPx, method: em.method, tile: em.tile, H: em.H }));
+          const troC = OC.track.trackObserve(track, wrun, solvesC, { f0: sp.f0, f1: sp.f1 });
+          const epsC = [];
+          resC.emitters.forEach((em, ei) => {
+            const o = troC.out[ei];
+            if (!o) return;
+            epsC[ei] = o.ep;
+            if (em.tile !== undefined && o.tileOut !== em.tile) em.tile = o.tileOut;
+          });
+          const gotC = HV.leaseObserve(st, lease, resC, profile, wrun, { eps: epsC, excluded: OC.track.excludedEps(track) });
+          let addedC = 0, confC = 0;
+          gotC.events.forEach(e => { if (e.ev === "bank") { addedC += e.added || 0; confC += e.conflicts || 0; } });
+          wRecC.added = addedC; if (confC) wRecC.conflicts = confC;
+          pa = peelAll();
+          wRecC.peel = stripHtml(peelBrief(pa));
+          $("harvest").innerHTML += "cure w" + wrun + " [" + (sp.f0 / R).toFixed(1) + "–" + (sp.f1 / R).toFixed(1) +
+            " s] +" + addedC + " droplets" + (confC ? " (<span class='warn'>" + confC +
+            " conflicts — honest witnesses retained for the excluded view</span>)" : "") +
+            " — " + peelBrief(pa) + "<br>";
+        }
+        fieldLog.windows.push(wRecC);
+        redecodes++;
+      }
+    }
+  }
   const wall = ((performance.now() - t0Wall) / 1000).toFixed(1);
   const saved = Math.max(0, Math.round(100 * (1 - seeks / baseline)));
   const visitedS = visited.reduce((s, sp) => s + (sp[1] - sp[0]), 0) / R;
@@ -846,9 +973,12 @@ async function harvestDecode(v, geo, file) {
     peels: pa.list.map(({ key, p }) => ({
       key, ok: p.ok === true, K: p.K, recovered: p.recovered, droplets: p.droplets,
       validatedBy: p.validatedBy, excluded: p.excluded,
+      coalition: p.coalition, excludedEps: p.excludedEps, coalitionsTried: p.coalitionsTried,
       headerOutvoted: p.headerOutvoted, eliminationTried: p.eliminationTried,
       text: p.ok === true ? p.text : undefined, reason: p.ok === true ? undefined : p.reason
     })),
+    redecodes: redecodes || undefined,
+    track: OC.track.trackSummary(track),
     receipt: stripHtml(receipt)
   };
   // The ending STORE persists beside the log (2026-08-30, the registry's
@@ -858,6 +988,7 @@ async function harvestDecode(v, geo, file) {
   try {
     const stStamp = String(fieldLog.started || "").replace(/[^0-9]/g, "").slice(0, 14);
     fieldLog.store_name = "store-" + stStamp + ".json";
+    st.epochs = track.epochs;   // the epoch registry rides the store — it names its own epochs
     fetch("/harness-result?page=store-" + stStamp, { method: "POST", body: HV.serializeStore(st) }).catch(() => {});
   } catch (e) {}
   postFieldLog(fieldLog);
@@ -956,6 +1087,13 @@ function synthSource(msg, loopS) {
       if ($("m_minwin") && q.get("minwin")) $("m_minwin").value = q.get("minwin");
       if ($("m_maxwin") && q.get("maxwin")) $("m_maxwin").value = q.get("maxwin");
       if ($("m_harvest")) $("m_harvest").checked = true;
+      // The cure fixture (?poison=w0-w1[&poisonscale=]): windows in range get
+      // the engineered false-solve treatment — see the injection block in the
+      // harvest loop. The clean lane never sets this.
+      if (q.get("poison")) {
+        const mP = /^(\d+)-(\d+)$/.exec(q.get("poison"));
+        if (mP) window.ocPoison = { w0: +mP[1], w1: +mP[2], scale: +q.get("poisonscale") || (1 / 3) };
+      }
       // Self-description: the log's settings field carries the canonical
       // string for a synthetic run too — the record reads like any take's.
       if ($("pasteStr")) $("pasteStr").value = ["oc1", "prof=" + (($("m_prof") && $("m_prof").value) || "v3"),
@@ -978,9 +1116,24 @@ function synthSource(msg, loopS) {
         { name: "peel complete + content-validated", ok: !!okPeel },
         { name: "decoded text matches the emitted message byte-for-byte", ok: !!okPeel && okPeel.text === msg }
       ];
+      // The cure fixture's own bar: conviction fired, a trusted coalition
+      // excluded the poisoned epochs AND validated, and rung 3 re-decoded
+      // the span the poison had marked visited. The clean lane never adds
+      // these — its bar is byte-exact trajectory parity with the baselines.
+      if (window.ocPoison) {
+        const fTrack = fin.track || {};
+        asserts.push(
+          { name: "the false hypothesis was convicted", ok: (fTrack.convicted || []).length >= 1 },
+          { name: "a coalition excluded the poisoned epochs and validated",
+            ok: !!(okPeel && okPeel.coalition && okPeel.coalition !== "all" && (okPeel.excludedEps || []).length >= 1) },
+          { name: "the cure re-decoded the poisoned span under the track", ok: (fin.redecodes || 0) >= 1 }
+        );
+      }
       const fails = asserts.filter(a => !a.ok).length;
       verdict = {
         synth: true, dring: code, loop_s: loopS, K: window.ocSynth.K,
+        poison: q.get("poison") || undefined,
+        poison_windows_hit: window.ocPoison ? window.ocPoison.hit : undefined,
         passes: asserts.length - fails, fails: fails, asserts: asserts,
         seal_w: sealW, windows: fin.windows, visited_s: fin.visited_s,
         skipped_pct: fin.skipped_pct, wall_s: fin.wall_s, receipt: fin.receipt
@@ -995,8 +1148,12 @@ function synthSource(msg, loopS) {
     // so a later camera take has "what good looks like" to be held against —
     // pipeline faults get caught here, before the encoding-vs-capture
     // question can even be asked. Error verdicts overwrite too: a stale
-    // green baseline is worse than an honest red one.
-    try { await fetch("/harness-result?page=synth-harvest-" + encodeURIComponent(code), { method: "POST", body: vBody }); } catch (e) {}
+    // green baseline is worse than an honest red one. A POISONED run never
+    // writes the baseline — the cure fixture must not masquerade as clean.
+    if (!window.ocPoison)
+      try { await fetch("/harness-result?page=synth-harvest-" + encodeURIComponent(code), { method: "POST", body: vBody }); } catch (e) {}
+    else
+      try { await fetch("/harness-result?page=synth-cure-" + encodeURIComponent(code), { method: "POST", body: vBody }); } catch (e) {}
     if (q.get("return") === "runner") setTimeout(() => { location.href = "runner.html"; }, 1200);
   });
 })();
@@ -1393,6 +1550,9 @@ window.ocIntakeReady = (async function () {
   if (q.get("take")) {
     let phys = null;
     try { phys = JSON.parse(q.get("phys") || "null"); } catch (e) {}
+    // The card's mount drives the handheld toggle (the tripod-ingest fix:
+    // the checkbox default rode checked onto tripod takes).
+    if (phys && phys.mount && $("m_hand")) $("m_hand").checked = /hand/i.test(String(phys.mount));
     window.ocTake = { id: q.get("take"), physical: phys };
     const el = document.createElement("div");
     el.style.cssText = "margin:.4rem 0;padding:.4rem .7rem;border:1px solid #7ce38b;color:#7ce38b;font-weight:600";

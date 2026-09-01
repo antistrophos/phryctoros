@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>optical-carriage — suite 5: the registration track</title>
+<style>
+  body { font: 14px/1.45 system-ui, sans-serif; margin: 1.2rem; background: #14161a; color: #d8dce2; }
+  h1 { font-size: 1.15rem; } code { color: #9ecbff; }
+  table { border-collapse: collapse; margin: .6rem 0; }
+  td, th { border: 1px solid #333; padding: .25rem .6rem; font-size: 13px; }
+  .pass { color: #7ce38b; } .fail { color: #ff8b8b; } .info { color: #c0a6f7; }
+  #log div { margin: .1rem 0; }
+  pre { background: #0d0f12; padding: .8rem; overflow: auto; max-height: 340px; }
+</style>
+</head>
+<body>
+<h1>optical-carriage — suite page 5: the registration track (continuous receiver, phase A)</h1>
+<p>TR: persistent registration/designation state, burst×hypothesis epochs, adaptive
+conviction, coalition exclusion at the peel — and the committed 2026-09-01 range-take
+specimen as the ranking-math regression fixture. Pages: <a href="test.html">v2</a> ·
+<a href="test-v3.html">v3</a> · <a href="test-v3-dring.html">D-ring</a> ·
+<a href="test-saddle.html">saddles</a>.</p>
+<div id="status" class="info">loading…</div>
+<div id="log"></div>
+<h3>Summary</h3>
+<pre id="results-json">(pending)</pre>
+
+<script src="../src/prng.js"></script>
+<script src="../src/dtrig.js"></script>
+<script src="../src/geom.js"></script>
+<script src="../src/flicker.js"></script>
+<script src="../src/profile.js"></script>
+<script src="../src/emission.js"></script>
+<script src="../src/register.js"></script>
+<script src="../src/plate.js"></script>
+<script src="../src/saddle.js"></script>
+<script src="../src/sample.js"></script>
+<script src="../src/conic.js"></script>
+<script src="../src/transform.js"></script>
+<script src="../src/separate.js"></script>
+<script src="../src/rowtime.js"></script>
+<script src="../src/demap.js"></script>
+<script src="../src/fountain.js"></script>
+<script src="../src/harvest.js"></script>
+<script src="../src/track.js"></script>
+<script src="../src/ser.js"></script>
+<script src="../src/degrade.js"></script>
+<script src="../src/pipeline.js"></script>
+
+<script src="suite-lib.js"></script>
+<script>
+"use strict";
+window.SUITE_PAGE = 'track';
+
+async function main() {
+  const OC = window.OC;
+  const T = OC.track, HV = OC.harvest;
+
+  // ——— TR1: hypothesis lifecycle — identity, hardening, continuity, forking ———
+  if (caseOn("TR1")) {
+    await tick("TR1: hypothesis lifecycle — scale classes, EMA continuity, the fork…");
+    const t = T.trackCreate();
+    // one emitter, slow zoom 100 → ~117 in 2% steps: ONE hypothesis (the EMA
+    // rides continuous drift), then a jump to 40 FORKS (a different claim
+    // about the pose gets its own hypothesis, never a silent adoption)
+    let fid = 100, out1 = null;
+    for (let w = 1; w <= 8; w++) {
+      out1 = T.trackObserve(t, w, [{ e: 0, center: [200, 200], fid, method: "saddles", tile: -1, H: [1,0,0,0,1,0,0,0,1] }], { f0: w * 100, f1: w * 100 + 90 });
+      fid *= 1.02;
+    }
+    const em = t.emitters[0];
+    const oneHyp = t.emitters.length === 1 && em.hyps.length === 1 && em.hyps[0].count === 8;
+    const outJ = T.trackObserve(t, 9, [{ e: 0, center: [200, 200], fid: 40, method: "rings", tile: -1 }], { f0: 900, f1: 990 });
+    const forked = em.hyps.length === 2 && outJ.out[0].isNew && outJ.out[0].divergent &&
+      outJ.out[0].hyp !== em.hyps[0].id && outJ.out[0].ep === "w9h" + outJ.out[0].hyp;
+    const adopted = T.adoptedHyp(em, t.hardenN);
+    const poses = T.trackPoses(t);
+    record("TR1 hypothesis lifecycle: a 2%-step zoom rides one hypothesis (EMA continuity, count 8), a ⅓-scale jump forks a NEW divergent hypothesis with its own (burst, hypothesis) epoch id, the dominant stays adopted and its pose is the track's prior",
+      oneHyp && forked && !!adopted && adopted.id === em.hyps[0].id && poses.length === 1 && !!poses[0].H,
+      "hyps " + em.hyps.length + " counts " + em.hyps.map(h => h.count).join("/") +
+      " fork ep " + (outJ.out[0] && outJ.out[0].ep) + " adopted h" + (adopted && adopted.id) +
+      " poses " + poses.length);
+  }
+
+  // ——— TR2: designation by majority — place, unplace, stickiness ———
+  if (caseOn("TR2")) {
+    await tick("TR2: designation majority — the flap judged, the unplaced rescued…");
+    const t = T.trackCreate();
+    const mk = (t0, t1) => [
+      { e: 0, center: [100, 100], fid: 50, method: "saddles", tile: t0 },
+      { e: 1, center: [300, 100], fid: 50, method: "saddles", tile: t1 }];
+    T.trackObserve(t, 1, mk(0, 1));
+    T.trackObserve(t, 2, mk(0, 1));                 // majorities establish (2 votes each)
+    const swap = T.trackObserve(t, 3, mk(1, 0));    // the w4-class flap: both contradict
+    const unplacedBoth = swap.out[0].tileOut === -1 && swap.out[0].unplaced &&
+                         swap.out[1].tileOut === -1 && swap.out[1].unplaced;
+    const resc = T.trackObserve(t, 4, mk(-1, 1));   // e0 unplaced by the pipeline
+    const placed = resc.out[0].tileOut === 0 && resc.out[0].placed && resc.out[1].tileOut === 1;
+    // stickiness: the flap's one contradicting vote must not topple the majority
+    const sticky = T.majorityOf(t, t.emitters[0]) === 0 && T.majorityOf(t, t.emitters[1]) === 1;
+    record("TR2 designation majority: an established majority UNPLACES a contradicting window (the flap banks nowhere, the ledger is never re-keyed), FILLS an unplaced read from clip-wide evidence, and holds sticky through one bad vote",
+      unplacedBoth && placed && sticky,
+      "swap → " + swap.out.map(o => o.tileOut).join("/") +
+      " rescue → " + resc.out.map(o => o.tileOut).join("/") +
+      " majorities " + T.majorityOf(t, t.emitters[0]) + "/" + T.majorityOf(t, t.emitters[1]));
+  }
+
+  // ——— TR3: adaptive conviction — the three signals, and retention ———
+  if (caseOn("TR3")) {
+    await tick("TR3: adaptive conviction — specimen shape convicts, a zoom cut recovers…");
+    // (a) the specimen shape: tight honest population, ⅓-scale rings challenger
+    const ta = T.trackCreate();
+    const honest = w => [{ e: 0, center: [200, 200], fid: 122 + (w % 3) * 0.2, method: "saddles", tile: 0 }];
+    const liar = w => [{ e: 0, center: [200, 200], fid: 40.6, method: "rings", tile: 0 }];
+    T.trackObserve(ta, 1, honest(1));
+    T.trackObserve(ta, 2, liar(2));
+    T.trackObserve(ta, 3, liar(3));
+    [4, 5, 6, 7].forEach(w => T.trackObserve(ta, w, honest(w)));
+    const emA = ta.emitters[0];
+    const liarHyp = emA.hyps.find(h => h.fid < 60), domHyp = emA.hyps.find(h => h.fid > 100);
+    const convA = ta.convicted[liarHyp.id];
+    const reasonsOk = convA && convA.reasons.length >= 3 &&
+      convA.reasons.some(r => /scale-break/.test(r)) &&
+      convA.reasons.some(r => /support/.test(r)) &&
+      convA.reasons.some(r => /method/.test(r));
+    const domClear = !ta.convicted[domHyp.id];
+    const ladderA = T.coalitionLadder(ta);
+    const ladderOk = ladderA && ladderA[0].name === "trusted" &&
+      Object.keys(ladderA[0].excluded).sort().join(",") === "w2h" + liarHyp.id + ",w3h" + liarHyp.id &&
+      ladderA[1].name === "all" && Object.keys(ladderA[1].excluded).length === 0 &&
+      ladderA.some(c => c.name === "alt:h" + liarHyp.id);
+    // (b) same-method zoom cut: convicted while support is thin (retention
+    // holds the data), UN-convicted the moment support catches up — the
+    // reversible-verdict arc, on camera
+    const tb = T.trackCreate();
+    [1, 2, 3, 4, 5].forEach(w => T.trackObserve(tb, w, [{ e: 0, center: [200, 200], fid: 100, method: "saddles", tile: 0 }]));
+    T.trackObserve(tb, 6, [{ e: 0, center: [200, 200], fid: 130, method: "saddles", tile: 0 }]);
+    const zoomHyp = tb.emitters[0].hyps.find(h => h.fid > 120);
+    const conv1 = !!tb.convicted[zoomHyp.id];
+    T.trackObserve(tb, 7, [{ e: 0, center: [200, 200], fid: 130, method: "saddles", tile: 0 }]);
+    const conv2 = !!tb.convicted[zoomHyp.id];
+    T.trackObserve(tb, 8, [{ e: 0, center: [200, 200], fid: 130, method: "saddles", tile: 0 }]);
+    const conv3 = !!tb.convicted[zoomHyp.id];   // 3/5 support > half — conviction lifts
+    record("TR3 adaptive conviction: the specimen shape convicts on all three signals (scale-break vs the honest population's own spread, support minority, method minority) with the dominant untouched and the ladder trusted→all→alternate; a same-method zoom cut is convicted only while support is thin and UN-convicts as it accumulates (exclusion reversible, retention priced in)",
+      !!(convA && reasonsOk && domClear && ladderOk && conv1 && conv2 && !conv3),
+      "specimen reasons [" + (convA ? convA.reasons.join(" · ") : "none") + "] ladder " +
+      (ladderA ? ladderA.map(c => c.name).join(">") : "none") +
+      " · zoom conv@1 " + conv1 + " @2 " + conv2 + " @3 " + conv3);
+  }
+
+  // ——— TR4: coalition exclusion at the peel — first-seen poison dies ———
+  if (caseOn("TR4")) {
+    await tick("TR4: the coalition peel — 5 first-seen liars, exclusion validates…");
+    const p4 = OC.profile.profileV3("high-rate", {});
+    const msg4 = "EXCLUSION IS A VIEW, NEVER A DELETION - THE COALITION DECIDES";
+    const enc4 = OC.fountain.encodeCarousels(p4, OC.fountain.textToBytes(msg4));
+    const ringsHonest = p4.annuli.map((a, ri) => {
+      const dec = Array.from(enc4.carousels[ri], (s, i) => ({ i, s, resid: 0 }));
+      const col = OC.fountain.collect(dec, p4.preamble_symbols, a, p4);
+      return { seed: a.rotation.seed, ann: a.index,
+               droplets: col.passed.map(d => ({ c: d.c, hex: HV.bytesToHex(d.bytes) })) };
+    });
+    const st4 = HV.createStore(p4);
+    const key4 = HV.contentKeyOf({ K: enc4.K, len: enc4.wireLen, pcrc: enc4.wireCrc16 }, st4.droplet_bits);
+    st4.ledgers[key4] = HV.createLedger(p4);
+    const lease4 = HV.leaseCreate({});
+    // 12 poison droplets bank FIRST, spread across EVERY ring: far past the
+    // droplet-eliminator's pair/triple reach even after the rateless pool's
+    // redundancy is spent (the first lap taught this — 5 liars on one ring
+    // left ≤3 actually participating, and elimination beat them), under the
+    // convicted-to-be epoch
+    const xor = hex => hex.replace(/../g, b => ((parseInt(b, 16) ^ 0x5a)).toString(16).padStart(2, "0"));
+    ringsHonest.forEach(r => {
+      const slots = r.droplets.filter(d => !OC.fountain.isHeaderSlot(d.c)).slice(0, 3);
+      HV.absorb(st4.ledgers[key4], { emitters: [{ annuli: [{ annulus: r.ann, alignLag: 0,
+        droplets: slots.map(d => ({ c: d.c, hex: xor(d.hex) })) }] }] }, p4, "w2h9");
+    });
+    // then the honest corpus (poisoned slots arrive as conflicts — retained witnesses)
+    let conflicts4 = 0;
+    ringsHonest.forEach(r => {
+      const got = HV.absorb(st4.ledgers[key4], { emitters: [{ annuli: [{ annulus: r.ann,
+        alignLag: 0, droplets: r.droplets }] }] }, p4, "w1h1");
+      conflicts4 += got.conflicts;
+    });
+    const bare = HV.tryPeelStore(st4, lease4, key4, p4);
+    const bareBlocked = !(bare.ok === true && bare.validatedBy);
+    const ladder4 = [{ name: "trusted", excluded: { "w2h9": true } }, { name: "all", excluded: {} }];
+    const cured = HV.tryPeelStore(st4, lease4, key4, p4, { coalitions: ladder4 });
+    const curedOk = cured.ok === true && !!cured.validatedBy && cured.text === msg4 &&
+      cured.coalition === "trusted" && (cured.excludedEps || []).join(",") === "w2h9";
+    record("TR4 the coalition peel: 12 poison droplets banked FIRST across every ring (past the droplet-eliminator's reach) block the honest bytes — the legacy peel cannot validate; the trusted coalition re-projects every slot from retained witnesses and validates byte-exact, with the winning coalition and its exclusions on the receipt",
+      conflicts4 === ringsHonest.length * 3 && bareBlocked && curedOk,
+      "conflicts " + conflicts4 + " · bare ok=" + bare.ok + " validatedBy=" + (bare.validatedBy || "none") +
+      (bare.eliminationTried ? " elim-tried" : "") +
+      " · cured ok=" + cured.ok + " via " + cured.coalition + " excl [" + (cured.excludedEps || []).join(",") + "] text " + (cured.text === msg4));
+  }
+
+  // ——— TR5: THE SPECIMEN — the committed range-take fixture, replayed ———
+  if (caseOn("TR5")) {
+    await tick("TR5: the specimen fixture — field-20260901003751 through the track…");
+    const fl = await (await fetch("fixtures/field-20260901003751.json", { cache: "no-store" })).json();
+    const t = T.trackCreate();
+    let poisonAdded = 0;
+    for (const w of fl.windows) {
+      if (!w.rows) continue;
+      const solves = w.rows.map(r => ({ e: r.e, fid: r.fid, method: r.reg, tile: r.tile }));
+      T.trackObserve(t, w.w, solves, { f0: Math.round(w.t0 * fl.emit_fps), f1: Math.round(w.t1 * fl.emit_fps) });
+      if (w.rows.every(r => r.fid < 60)) poisonAdded += w.added || 0;
+    }
+    const sum = T.trackSummary(t);
+    const emOk = sum.emitters.length === 2;
+    const convictedHyps = sum.emitters.flatMap(e => e.hyps.filter(h => h.convicted));
+    const domHyps = sum.emitters.map(e => e.hyps.find(h => !h.convicted && h.count >= 5));
+    const convOk = convictedHyps.length === 2 && convictedHyps.every(h => h.fid < 60 && h.method === "rings") &&
+      domHyps.every(h => h && h.fid > 100 && h.method === "saddles");
+    const ex = Object.keys(T.excludedEps(t)).sort();
+    const epsOk = ex.length === 4 && ex.every(e => /^w[23]h/.test(e));
+    // designation: e0's majority resolves to tile 0 on honest votes; e1
+    // resolves to tile 1 (the w4 flap's single contested vote cannot topple
+    // it under stickiness, and the convicted windows' votes are discounted)
+    const desigOk = sum.emitters[0].majority === 0 && sum.emitters[1].majority === 1;
+    record("TR5 THE SPECIMEN (field-20260901003751, committed fixture): replayed through the track, both emitters' fid-40 ring-path hypotheses convict, the fid-122 saddle consensus stands (count 5), the excluded epochs are exactly the w2/w3 pair, the poison they banked is exactly 127 droplets, and designation resolves 0/1 with the flap discounted",
+      emOk && convOk && epsOk && poisonAdded === 127 && desigOk,
+      "convicted " + convictedHyps.map(h => "fid" + h.fid).join(",") + " excluded [" + ex.join(",") + "] poison " +
+      poisonAdded + " majorities " + sum.emitters.map(e => e.majority).join("/"));
+  }
+
+  // ——— TR6: chunk-bank epochs — a poisoned sweep majority dies by exclusion ———
+  if (caseOn("TR6")) {
+    await tick("TR6: chunk-bank exclusion — poison majority blocks the seal, exclusion seals…");
+    const p6 = OC.profile.profileV3();
+    const enc6 = OC.fountain.encodeCarousels(p6, OC.fountain.textToBytes("chunk bank test payload"));
+    const wire6 = OC.fountain.selfFrame(OC.fountain.textToBytes("chunk bank test payload"), 1);
+    const env6 = OC.emission.envelopeBytes(p6, { K: enc6.K, len: wire6.length, pcrc: OC.fountain.crc16(wire6), capability: 1 });
+    const chunkHex = i => HV.bytesToHex(env6.subarray(4 * (i - 1), 4 * i));
+    const sweepHonest = {}, sweepPoison = {};
+    for (let i = 1; i <= 5; i++) {
+      sweepHonest[i] = chunkHex(i);
+      sweepPoison[i] = chunkHex(i).replace(/../g, b => ((parseInt(b, 16) ^ 0x77)).toString(16).padStart(2, "0"));
+    }
+    const st6 = HV.createStore(p6);
+    const lease6 = HV.leaseCreate({ operator: true });
+    const obs = sweep => ({ emitters: [{ center: [100, 100], fiducialWidthPx: 100,
+      annuli: [{ annulus: 90, beacon: true, chunkSweep: sweep, chunkSweepPasses: 5 }] }] });
+    const binds = evs => evs.filter(e => e.ev === "bank-seal" || e.ev === "bind").length;
+    let sealEarly = 0;
+    for (let w = 1; w <= 3; w++)
+      sealEarly += binds(HV.leaseObserve(st6, lease6, obs(sweepPoison), p6, w, { eps: ["w1hP"] }).events);
+    const r4 = HV.leaseObserve(st6, lease6, obs(sweepHonest), p6, 4, { eps: ["w4hH"] });
+    const sealHonestBlocked = binds(r4.events) === 0;   // poison 3 > honest 1 — majority lies, CRC refuses
+    const r5 = HV.leaseObserve(st6, lease6, obs(sweepHonest), p6, 5,
+      { eps: ["w5hH"], excluded: { "w1hP": true } });
+    const sealed = binds(r5.events) >= 1;               // poison discounted → honest majority → CRC16 seals
+    const epsTagged = lease6.operatorBankEps && lease6.operatorBankEps["1"] &&
+      lease6.operatorBankEps["1"][sweepPoison[1]] && lease6.operatorBankEps["1"][sweepPoison[1]]["w1hP"] === 3;
+    record("TR6 chunk-bank epochs: every sighting carries its epoch; a poisoned sweep's 3-sighting majority blocks the honest seal (the CRC refuses the lying majority), and the conviction view discounts it — the honest minority assembles and BINDS",
+      sealEarly === 0 && sealHonestBlocked && sealed && !!epsTagged,
+      "early seals " + sealEarly + " · blocked@w4 " + sealHonestBlocked + " · sealed@w5(excluded) " + sealed +
+      " · poison sightings tagged " + (epsTagged ? "3×w1hP" : "MISSING"));
+  }
+}
+
+suiteStart(main);
+</script>
+</body>
+</html>

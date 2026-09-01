@@ -46,7 +46,18 @@
     var regOpts = { profile: profile, maxEmitters: opts.maxEmitters };
     var reg = null, regFrame = 0;
     var tReg = T && tnow();
-    if (opts.registerOn) {
+    if (opts.regPrior && opts.regPrior.length) {
+      // THE POSE PRIOR (continuous receiver, phase A): the caller's
+      // registration track supplies the pose — re-acquisition after a
+      // window where fresh registration found nothing, and the span
+      // re-decode under the consensus track (cure rung 3; tripod truth).
+      // The prior only SEEDS: the per-frame solve below still re-earns
+      // geometry locally — a frozen prior would be the full-span aligner
+      // that already lost once to clock drift (the a82 lesson).
+      reg = { emitters: opts.regPrior.map(function (pr) {
+        return { H: pr.H, fiducialWidthPx: pr.fid || 100, method: pr.method || "prior" };
+      }) };
+    } else if (opts.registerOn) {
       reg = register.registerAll(opts.registerOn, regOpts);
     } else {
       // For a TILED profile the operator declared how many plates exist, so
@@ -735,7 +746,11 @@
       // Plate centre in capture pixels (H maps plate units → image): the
       // spatial identity of this emitter for anything keyed per plate.
       var cPx = em.H ? dep("geom").applyH(em.H, 0, 0) : null;
+      // The last frame's homography (post conic/solve) — the freshest pose,
+      // for a registration track to carry into the next burst as a prior.
+      var Hlast = tracksH[emIdx].Hs[groups.length - 1] || em.H;
       return { fiducialWidthPx: Math.round(em.fiducialWidthPx * 10) / 10, method: em.method || "finder",
+               H: Hlast,
                center: cPx ? [Math.round(cPx[0] * 10) / 10, Math.round(cPx[1] * 10) / 10] : undefined,
                conic: conicBriefs ? conicBriefs[emIdx] : undefined,
                plateSolve: solveBriefs ? solveBriefs[emIdx] : undefined,
