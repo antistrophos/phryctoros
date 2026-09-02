@@ -43,6 +43,7 @@ specimen as the ranking-math regression fixture. Pages: <a href="test.html">v2</
 <script src="../src/fountain.js"></script>
 <script src="../src/harvest.js"></script>
 <script src="../src/track.js"></script>
+<script src="../src/stream.js"></script>
 <script src="../src/ser.js"></script>
 <script src="../src/degrade.js"></script>
 <script src="../src/pipeline.js"></script>
@@ -257,6 +258,100 @@ async function main() {
       sealEarly === 0 && sealHonestBlocked && sealed && !!epsTagged,
       "early seals " + sealEarly + " · blocked@w4 " + sealHonestBlocked + " · sealed@w5(excluded) " + sealed +
       " · poison sightings tagged " + (epsTagged ? "3×w1hP" : "MISSING"));
+  }
+
+  // ——— TR7: the beacon STREAM — an envelope frames across window seams ———
+  if (caseOn("TR7")) {
+    await tick("TR7: the beacon stream — windows too short to seal, the stream seals across seams…");
+    // A real a42q twin at the module level: render the loop lazily, decode
+    // SHORT overlapping windows (each under the envelope cycle, so no window
+    // can frame the envelope alone), feed each window's beacon phase track
+    // into the per-emitter stream, and read the stream after each window.
+    const p7 = OC.profile.profileV3();
+    p7.plate.corner_style = "quadrant";
+    OC.profile.applyDring(p7, "a42q");
+    p7.render = Object.assign({}, p7.render, { size_px: 448, scale_px_per_unit: 70 });
+    const loop7 = 40;
+    p7.countdown = { freeze_s: 0, loop_s: loop7 };
+    const R7 = p7.frame_rate_hz, n7 = Math.round(loop7 * R7);
+    const pay7 = OC.fountain.textToBytes("the stream seals what no window could");
+    const enc7 = OC.fountain.encodeCarousels(p7, pay7);
+    const wire7 = OC.fountain.selfFrame(pay7, 1);
+    const env7 = OC.emission.envelopeBytes(p7, { K: enc7.K, len: wire7.length, pcrc: OC.fountain.crc16(wire7), capability: 1 });
+    const want7 = OC.plate.parseEnvelope(env7);
+    const sched7 = OC.emission.buildSchedules(p7, n7, enc7.carousels);
+    const bsched7 = OC.emission.buildBeaconSchedule(p7, n7, env7);
+    const bAnn7 = OC.plate.beaconAnnulus(p7);
+    const streams7 = OC.stream.streamsCreate({ spanFrames: Math.round(60 * R7) });
+    // windows in seconds: three overlapping (0.5 s back-pad), then one that
+    // overlaps NOTHING (the unstitched-seam path, blanked and erased honestly)
+    const wins7 = [[0, 8], [7.5, 15.5], [15, 23], [26, 34]];
+    const per = [];
+    for (let wi = 0; wi < wins7.length; wi++) {
+      const f0 = Math.round(wins7[wi][0] * R7), f1 = Math.round(wins7[wi][1] * R7);
+      const frames = [];
+      for (let f = f0; f < f1; f++)
+        frames.push({ f: f - f0, img: OC.emission.renderFrameV3(p7, f, { schedules: sched7, beaconSchedule: bsched7, envBytes: env7 }) });
+      const res = OC.pipeline.decodeSequence(frames, p7, { payload: true, beacon: true, plateSolve: true });
+      const em = !res.error && res.emitters[0];
+      const b = em && em.annuli.find(a => a && a.beacon);
+      const winSealed = !!(b && b.envelopeFields);
+      const rec = b && b.phi ? OC.stream.streamAbsorb(streams7, 1, f0, b.phi, { meanMag: b.phiMeanMag }) : null;
+      const read = rec ? OC.stream.streamRead(streams7, 1, bAnn7, p7, {}) : null;
+      per.push({ w: wi + 1, hasPhi: !!(b && b.phi), winSealed, rec, read,
+                 sealed: !!(read && read.sealed), session: read && read.envelopeFields ? read.envelopeFields.session32 : null });
+      await tick("TR7: window " + (wi + 1) + "/4 — " + (read && read.sealed ? "STREAM SEALED" : "accumulating…"));
+    }
+    const allPhi = per.every(x => x.hasPhi);
+    const noWindowSeals = per.every(x => !x.winSealed);
+    const firstSeal = per.findIndex(x => x.sealed);
+    const sealedBy3 = firstSeal >= 0 && firstSeal <= 2;
+    const sessionOk = per.filter(x => x.sealed).every(x => x.session === want7.session32);
+    const stitchedSeams = per.slice(1, 3).every(x => x.rec && x.rec.stitched);
+    const unstitched = per[3].rec && per[3].rec.seam === true && per[3].rec.blanked === 2;
+    record("TR7 the beacon stream: 8-s windows under a 13-s envelope cycle never seal alone, the per-emitter stream STITCHES the overlapping seams (whole-turn offsets) and frames the sealed envelope across them by the third window with the emitted session32; a window overlapping nothing is marked an honest seam (two frames blanked) — no window fit, no bank",
+      allPhi && noWindowSeals && sealedBy3 && sessionOk && stitchedSeams && !!unstitched,
+      "phi " + allPhi + " · window seals " + per.map(x => x.winSealed ? 1 : 0).join("") +
+      " · stream seals " + per.map(x => x.sealed ? 1 : 0).join("") + " (first w" + (firstSeal + 1) + ")" +
+      " · stitch " + per.map(x => x.rec ? (x.rec.stitched ? "S" + x.rec.turns : (x.rec.seam ? "seam" : "-")) : "?").join("/") +
+      " · session " + sessionOk);
+  }
+
+  // ——— TR8: per-emitter operator banks — the 2-up mixed-bank limitation dies ———
+  if (caseOn("TR8")) {
+    await tick("TR8: per-emitter banks — two tiles' chunks never pool; the legacy bank shows the old failure…");
+    const p8 = OC.profile.profileV3();
+    p8.tiling = 2;
+    const enc8 = OC.fountain.encodeCarousels(p8, OC.fountain.textToBytes("two tiles two envelopes"));
+    const wire8 = OC.fountain.selfFrame(OC.fountain.textToBytes("two tiles two envelopes"), 1);
+    const info8 = { K: enc8.K, len: wire8.length, pcrc: OC.fountain.crc16(wire8), capability: 1 };
+    const envT = [OC.emission.envelopeBytes(p8, info8, 0), OC.emission.envelopeBytes(p8, info8, 1)];
+    const tileByteDiffers = envT[0][16] !== envT[1][16];
+    const sweepOf = env => { const s = {}; for (let i = 1; i <= 5; i++) s[i] = HV.bytesToHex(env.subarray(4 * (i - 1), 4 * i)); return s; };
+    const obs2 = () => ({ emitters: [
+      { center: [100, 100], fiducialWidthPx: 100, tile: 0, annuli: [{ annulus: 90, beacon: true, chunkSweep: sweepOf(envT[0]), chunkSweepPasses: 5 }] },
+      { center: [400, 100], fiducialWidthPx: 100, tile: 1, annuli: [{ annulus: 90, beacon: true, chunkSweep: sweepOf(envT[1]), chunkSweepPasses: 5 }] }] });
+    const seals = evs => evs.filter(e => e.ev === "bank-seal").map(e => e.tag);
+    // the cure: per-emitter keys — both tiles seal, two different tags
+    const stA = HV.createStore(p8), lsA = HV.leaseCreate({ operator: true });
+    const rA = HV.leaseObserve(stA, lsA, obs2(), p8, 1, { eps: ["w1h1", "w1h2"], emIds: [1, 2] });
+    const sealsA = seals(rA.events);
+    const curedOk = sealsA.length === 2 && sealsA[0] !== sealsA[1] && Object.keys(stA.contexts).length === 2;
+    // the disease, as actually observed (first lap): the legacy single
+    // operator bank pools both tiles' chunks, and each landing tips the
+    // idx-5 majority to ITS tile — the pool's identity FLAPS, sealing over
+    // and over as the two tiles alternate (5 seals in 3 windows for 2
+    // tiles), every seal re-keying the pool's plates. Per-emitter keys seal
+    // each tile exactly once.
+    const stB = HV.createStore(p8), lsB = HV.leaseCreate({ operator: true });
+    let sealsB = [];
+    for (let w = 1; w <= 3; w++) sealsB = sealsB.concat(seals(HV.leaseObserve(stB, lsB, obs2(), p8, w, { eps: ["w" + w + "h1", "w" + w + "h2"] }).events));
+    const diseaseShown = sealsB.length > 2;   // more seals than tiles = identity flapping
+    record("TR8 per-emitter operator banks: a 2-up's two envelopes differ at the tile byte — under the track's emitter keys each tile's bank assembles and BINDS exactly once on the first window (two contexts, two tags); the legacy single bank pools both and its identity FLAPS between the tiles, re-sealing as each landing tips the majority (the mixed-bank limitation, reproduced on camera and cured)",
+      tileByteDiffers && curedOk && diseaseShown,
+      "tile bytes differ " + tileByteDiffers + " · per-emitter seals " + JSON.stringify(sealsA) +
+      " contexts " + Object.keys(stA.contexts).length + " · legacy seals over 3 windows " + sealsB.length +
+      " contexts " + Object.keys(stB.contexts).length);
   }
 }
 

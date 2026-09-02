@@ -497,6 +497,14 @@
             return { annulus: a.index, layer: a.layer, beacon: a.beacon || undefined,
                      present: true, contrast: round3(meanContrast), validFrames: valid,
                      carrierRatio: carrierRatio, tear: tearBrief(tearX), snr_db: snrNL,
+                     // THE STREAM (continuous receiver, phase B): a beacon row
+                     // hands its per-frame phase track out, so the driver can
+                     // accumulate it per EMITTER across windows on the absolute
+                     // frame axis and align/frame the envelope wherever it
+                     // completes — window fit stops being a constraint.
+                     phi: a.beacon ? Array.from(track.phi) : undefined,
+                     phiFirstValid: a.beacon ? track.firstValid : undefined,
+                     phiMeanMag: a.beacon ? track.meanMag : undefined,
                      chunkSweep: sweep && sweep.passes ? sweep.chunks : undefined,
                      chunkSweepPasses: sweep ? sweep.passes : undefined,
                      tagSeen: sweep && sweep.tagSeen != null ? ("0000" + (sweep.tagSeen >>> 0).toString(16)).slice(-4) : undefined,
@@ -556,6 +564,8 @@
             return {
               annulus: a.index, layer: a.layer, present: true, beacon: true,
               contrast: round3(meanContrast), validFrames: valid, snr_db: snrBk,
+              // the stream's raw material (phase B) — see the no-lock row
+              phi: Array.from(track.phi), phiFirstValid: track.firstValid, phiMeanMag: track.meanMag,
               carrierRatio: carrierRatio, alignMethod: align.method || "preamble",
               alignOffset: align.offset, alignLag: align.lag,
               framing: align.framing || "frame",

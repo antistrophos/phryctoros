@@ -346,11 +346,23 @@
      sightings are confirmed the moment assembly succeeds. Same-index chunks
      that disagree mark the slot conflicted (first-seen kept — assembly then
      fails the seal unless the first was right; the counters surface it). */
+  /* MAJORITY ASSEMBLY (the continuous receiver, phase B): the scan used to
+     keep the FIRST bytes seen per index, so one chance-passed junk chunk
+     (12-bit check; a long scan tries thousands of positions) poisoned that
+     index for the whole scan — a window's loss at most, but over a per-
+     emitter STREAM spanning a minute it blocked the seal indefinitely (the
+     first phase-B twin: tile 0's idx-5 held a junk chunk with tile byte 67
+     for 49 s of otherwise honest stream). Now every distinct payload per
+     index is counted, assembly tries the majority first and then the
+     CRC16-verified alternates (≤3 candidates per index, bounded combos);
+     the seal is the 16-bit check as ever — only the CHOICE of candidate
+     changed. chunkBytesHex reports the majority per index (what the bank
+     banks). `conflicts` still counts disagreeing same-index payloads. */
   function beaconChunkScan(decoded, lag, M) {
     var F = (typeof module !== "undefined" && module.exports) ? require("./fountain.js") : global.OC.fountain;
     var bytes = beaconBytes(decoded, lag, M);
     var nBytes = bytes.length;
-    var data = {}, counts = [0, 0, 0, 0, 0, 0], conflicts = 0, tags = {};
+    var seen = {}, counts = [0, 0, 0, 0, 0, 0], conflicts = 0, tags = {};
     for (var at = 0; at < nBytes; at++) {
       var h = bytes[at];
       if (h === null || h < 0xC0 || h > 0xDF) continue;
@@ -374,29 +386,45 @@
         for (var uq = 0; uq < 4; uq++) du[1 + uq] ^= mk[uq];
         if (F.crc8(du, 5) !== du[5]) continue;
         var key = "" + idx;
-        if (data[key]) {
-          var samePayload = true;
-          for (var q = 1; q <= 4; q++) if (data[key][q] !== du[q]) { samePayload = false; break; }
-          if (!samePayload) conflicts++;
-        } else data[key] = du;
+        var hx0 = "";
+        for (var hq = 1; hq <= 4; hq++) hx0 += (du[hq] < 16 ? "0" : "") + du[hq].toString(16);
+        var slotS = seen[key] || (seen[key] = {});
+        if (!slotS[hx0]) {
+          if (Object.keys(slotS).length) conflicts++;
+          slotS[hx0] = { bytes: du, n: 0, hex: hx0 };
+        }
+        slotS[hx0].n++;
         counts[idx]++;
       }
     }
+    // candidates per index, majority first (ties by first appearance)
+    var cands = {};
+    for (var ck0 in seen) {
+      var list = [];
+      for (var hk in seen[ck0]) list.push(seen[ck0][hk]);
+      list.sort(function (a, b) { return b.n - a.n; });
+      cands[ck0] = list.slice(0, 3);
+    }
     var envelope = null, tag = null;
-    if (data["1"] && data["2"] && data["3"] && data["4"] && data["5"]) {
-      var env = new Uint8Array(20);
-      for (var c = 1; c <= 5; c++) for (var j = 0; j < 4; j++) env[4 * (c - 1) + j] = data["" + c][1 + j];
-      var crc = F.crc16(env.subarray(0, 18));
-      if (((env[18] << 8) | env[19]) === crc) { envelope = env; tag = crc; }
+    if (cands["1"] && cands["2"] && cands["3"] && cands["4"] && cands["5"]) {
+      var pick = [0, 0, 0, 0, 0], total = 1;
+      for (var c0 = 1; c0 <= 5; c0++) total *= cands["" + c0].length;
+      for (var combo = 0; combo < total && !envelope; combo++) {
+        var rem = combo;
+        for (var c1 = 5; c1 >= 1; c1--) { var L = cands["" + c1].length; pick[c1 - 1] = rem % L; rem = Math.floor(rem / L); }
+        var env = new Uint8Array(20);
+        for (var c = 1; c <= 5; c++) {
+          var cb0 = cands["" + c][pick[c - 1]].bytes;
+          for (var j = 0; j < 4; j++) env[4 * (c - 1) + j] = cb0[1 + j];
+        }
+        var crc = F.crc16(env.subarray(0, 18));
+        if (((env[18] << 8) | env[19]) === crc) { envelope = env; tag = crc; }
+      }
     }
     var bestTag = null, bestTagN = 0;
     for (var tv in tags) if (tags[tv] > bestTagN) { bestTagN = tags[tv]; bestTag = +tv; }
     var chunkBytesHex = {};
-    for (var ck in data) {
-      var hx = "";
-      for (var cb = 1; cb <= 4; cb++) hx += (data[ck][cb] < 16 ? "0" : "") + data[ck][cb].toString(16);
-      chunkBytesHex[ck] = hx;
-    }
+    for (var ck in cands) chunkBytesHex[ck] = cands[ck][0].hex;
     return { envelope: envelope, tag: tag, sealed: envelope !== null,
              tagSeen: bestTag, tagSightings: bestTagN,
              tagMatchesSeal: envelope !== null && bestTag !== null && bestTag === tag,
@@ -618,10 +646,63 @@
              chunks: chunks, tagSeen: best.scan.tagSeen, tagSightings: best.scan.tagSightings };
   }
 
+  /* THE FULL BEACON READ over any phase track (the continuous receiver,
+     phase B): align (framed or chunked, with optional tag confirmation),
+     decode at the winning offset, parse the first sealed envelope, fall back
+     to the chunk sweep when nothing sealed — the pipeline's beacon branch as
+     one call, so a per-emitter STREAM accumulated across windows reads
+     through exactly the machinery a single window does. Returns the beacon
+     row's vocabulary (envelope/envelopeFields/tag/tagConfirmed/chunkSweep …)
+     with alignMethod "stream". */
+  function beaconRead(track, annulus, profile, opts) {
+    opts = opts || {};
+    var demap = (typeof module !== "undefined" && module.exports) ? require("./demap.js") : global.OC.demap;
+    var M = annulus.rotation.M;
+    var hexOf = function (u8) {
+      var s = "";
+      for (var i = 0; i < u8.length; i++) s += (u8[i] < 16 ? "0" : "") + u8[i].toString(16);
+      return s;
+    };
+    var align = beaconAlign(track, annulus, profile, undefined, { expectTag: opts.expectTag });
+    var out = { sealed: false };
+    if (align) {
+      out.alignMethod = "stream"; out.framing = align.framing || "frame";
+      out.alignOffset = align.offset; out.alignLag = align.lag;
+      var decoded = demap.decode(track, annulus, profile, align.offset);
+      var frames = beaconFramesFor(decoded, align, M);
+      var env = null, fields = null;
+      for (var i = 0; i < frames.length && !fields; i++) {
+        var pf = parseEnvelope(frames[i].envelope);
+        if (pf) { env = frames[i]; fields = pf; }
+      }
+      if (!env && frames.length) env = frames[0];
+      out.envelope = env ? hexOf(env.envelope) : null;
+      out.envelopeFields = fields || undefined;
+      out.envelopeFrames = frames.length;
+      out.tag = env && env.envelope.length === 20
+        ? hexOf(env.envelope.subarray ? env.envelope.subarray(18, 20) : env.envelope.slice(18, 20))
+        : (align.tag || undefined);
+      out.tagConfirmed = align.tagConfirmed || undefined;
+      out.tagSightings = align.tagSightings;
+      out.folded = align.folded || undefined;
+      out.sealed = !!fields;
+    }
+    if (!out.envelopeFields && !out.tagConfirmed) {
+      var sweep = beaconChunkSweep(track, annulus, profile);
+      if (sweep && sweep.passes) {
+        out.chunkSweep = sweep.chunks; out.chunkSweepPasses = sweep.passes;
+        out.tagSeen = sweep.tagSeen != null ? ("0000" + (sweep.tagSeen >>> 0).toString(16)).slice(-4) : undefined;
+        if (out.tagSightings === undefined) out.tagSightings = sweep.tagSightings;
+      }
+    }
+    return out;
+  }
+
   var API = { findBullseye: findBullseye, plateSolve: plateSolve, fitCircleEdge: fitCircleEdge,
               beaconAnnulus: beaconAnnulus, beaconDecode: beaconDecode, beaconFrames: beaconFrames,
               beaconBytes: beaconBytes, beaconChunkScan: beaconChunkScan, beaconChunkSweep: beaconChunkSweep,
-              beaconFramesFor: beaconFramesFor, beaconAlign: beaconAlign, parseEnvelope: parseEnvelope };
+              beaconFramesFor: beaconFramesFor, beaconAlign: beaconAlign, parseEnvelope: parseEnvelope,
+              beaconRead: beaconRead };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   global.OC = global.OC || {}; global.OC.plate = API;
 })(typeof window !== "undefined" ? window : globalThis);

@@ -91,6 +91,7 @@
 <script src="../src/fountain.js"></script>
 <script src="../src/harvest.js"></script>
 <script src="../src/track.js"></script>
+<script src="../src/stream.js"></script>
 <script src="../src/ser.js"></script>
 <script src="../src/degrade.js"></script>
 <script src="../src/pipeline.js"></script>
@@ -507,6 +508,47 @@ async function harvestDecode(v, geo, file) {
   // feed it; every banked droplet carries its (burst, hypothesis) epoch; the
   // peel trusts the track's ranked coalitions and retries down the ladder.
   const track = OC.track.trackCreate();
+  // THE STREAMS (continuous receiver, phase B): each emitter's beacon phase
+  // track accumulates across windows on the absolute frame axis, and the
+  // full beacon read runs over the accumulated stream — an envelope frames
+  // wherever it completes, across seams. The stream OVERLAYS the window's
+  // own beacon row when it knows more (a seal, or a tag confirmation, the
+  // window alone could not frame). The window's own chunk sightings still
+  // feed the bank — now keyed PER EMITTER — so each physical chunk counts
+  // once and no two tiles ever pool. Rolling span: 60 s (drift-bounded; the
+  // a82 lesson), long enough for any envelope to complete across one seam.
+  const streams = OC.stream.streamsCreate({ spanFrames: Math.round(60 * R) });
+  const beaconAnnFor = (tile) => profile.beacon_variants
+    ? OC.plate.beaconAnnulus(profile, OC.profile.beaconVariantFor(profile, tile))
+    : OC.plate.beaconAnnulus(profile);
+  const streamStep = (resX, troX, fBaseX, liveTagsX) => {
+    const emIds = [];
+    resX.emitters.forEach((em, ei) => {
+      const o = troX.out[ei];
+      if (o) emIds[ei] = o.em;
+      const b = (em.annuli || []).find(a => a && a.beacon && a.phi);
+      if (!b || !o) return;
+      const rec = OC.stream.streamAbsorb(streams, o.em, fBaseX, b.phi, { meanMag: b.phiMeanMag });
+      delete b.phi; delete b.phiFirstValid; delete b.phiMeanMag;   // consumed — keep the row light
+      const read = OC.stream.streamRead(streams, o.em, beaconAnnFor(em.tile), profile,
+        { expectTag: liveTagsX.length === 1 ? liveTagsX[0] : undefined });
+      if (!read) return;
+      b.stream = { held: read.held, windows: read.windows, seams: read.seams, stitched: rec.stitched,
+                   turns: rec.turns, sealed: read.sealed, tagConfirmed: !!read.tagConfirmed };
+      if (read.sealed && !b.envelopeFields) {
+        Object.assign(b, { envelope: read.envelope, envelopeFields: read.envelopeFields,
+          envelopeFrames: read.envelopeFrames, tag: read.tag, tagSightings: read.tagSightings,
+          tagConfirmed: undefined, alignMethod: "stream", framing: read.framing, folded: read.folded,
+          viaStream: true });
+        delete b.error;
+      } else if (!b.envelopeFields && read.tagConfirmed && !b.tagConfirmed) {
+        Object.assign(b, { tagConfirmed: true, tag: read.tag, tagSightings: read.tagSightings,
+          alignMethod: "stream", viaStream: true });
+        delete b.error;
+      }
+    });
+    return emIds;
+  };
   const peelAll = () => {
     const ladder = OC.track.coalitionLadder(track);
     const out = { list: [], allOk: true, any: false, best: null };
@@ -615,6 +657,7 @@ async function harvestDecode(v, geo, file) {
   // windows after the payload peels, capped at HOLD_BANK_CAP held windows.
   const HOLD_BANK_N = 2, HOLD_BANK_CAP = 4;
   const bankState = {};   // target → { have, freshW }
+  const bankTargetsOfIndex = {};   // emitter index → every bank label it has used (phase B)
   let heldForBank = 0;
   while (queue.length) {
     const [wf0, wf1] = queue.shift();
@@ -743,8 +786,9 @@ async function harvestDecode(v, geo, file) {
         if (em.tile !== undefined && o.tileOut !== em.tile) em.tile = o.tileOut;
       });
       if (tro.events.length) wRec.track = tro.events;
+      const emIds = streamStep(res, tro, cap.fBase, liveTags);
       const got = HV.leaseObserve(st, lease, res, profile, wrun,
-        { eps, excluded: OC.track.excludedEps(track) });
+        { eps, excluded: OC.track.excludedEps(track), emIds });
       let added = 0, dup = 0, quarantined = 0, conflicts = 0;
       got.events.forEach(e => {
         if (e.ev === "bank") { added += e.added || 0; dup += e.dup || 0; quarantined += e.quarantined || 0; conflicts += e.conflicts || 0; }
@@ -752,9 +796,19 @@ async function harvestDecode(v, geo, file) {
           const bs = bankState[e.target] || (bankState[e.target] = { have: 0, freshW: -1 });
           bs.have = e.have || 0;
           if (e.fresh > 0) bs.freshW = wrun;
+          if (e.index !== undefined) (bankTargetsOfIndex[e.index] || (bankTargetsOfIndex[e.index] = {}))[e.target] = true;
         }
         if (e.ev === "bank-seal" || e.ev === "bind" || e.ev === "rebind") {
-          for (const t in bankState) bankState[t].have = 5;  // assembled — nothing left to hold for
+          // Only THIS emitter's banks are done (phase B: banks are per
+          // emitter; a 2-up's second tile keeps its own hold) — every label
+          // the emitter ever banked under (its pre-bind operator bank, its
+          // plate bank) retires together. Legacy events without an index
+          // reset everything, as before.
+          if (e.index !== undefined) {
+            const labels = Object.assign({}, bankTargetsOfIndex[e.index] || {});
+            if (e.target) labels[e.target] = true;
+            for (const t in labels) if (bankState[t]) bankState[t].have = 5;
+          } else for (const t2 in bankState) bankState[t2].have = 5;
         }
       });
       totalAdded += added;
@@ -825,6 +879,7 @@ async function harvestDecode(v, geo, file) {
         ep: tro.out[ei] ? tro.out[ei].ep : undefined,
         annuli: (em.annuli || []).map(a => a && ({
           ann: a.annulus, beacon: a.beacon || undefined, method: a.alignMethod,
+          stream: a.stream || undefined, viaStream: a.viaStream || undefined,
           lag: a.alignLag, carrier: a.carrierRatio, snr: a.snr_db,
           droplets: a.dropletsPassed, framing: a.framing, tag: a.tag,
           tagN: a.tagSightings, folded: a.folded || undefined,
@@ -934,7 +989,9 @@ async function harvestDecode(v, geo, file) {
             epsC[ei] = o.ep;
             if (em.tile !== undefined && o.tileOut !== em.tile) em.tile = o.tileOut;
           });
-          const gotC = HV.leaseObserve(st, lease, resC, profile, wrun, { eps: epsC, excluded: OC.track.excludedEps(track) });
+          const liveTagsC = Object.keys(st.contexts).filter(t => st.contexts[t].state !== "clipped");
+          const emIdsC = streamStep(resC, troC, sp.f0, liveTagsC);
+          const gotC = HV.leaseObserve(st, lease, resC, profile, wrun, { eps: epsC, excluded: OC.track.excludedEps(track), emIds: emIdsC });
           let addedC = 0, confC = 0;
           gotC.events.forEach(e => { if (e.ev === "bank") { addedC += e.added || 0; confC += e.conflicts || 0; } });
           wRecC.added = addedC; if (confC) wRecC.conflicts = confC;
@@ -979,6 +1036,7 @@ async function harvestDecode(v, geo, file) {
     })),
     redecodes: redecodes || undefined,
     track: OC.track.trackSummary(track),
+    streams: OC.stream.streamsSummary(streams),
     receipt: stripHtml(receipt)
   };
   // The ending STORE persists beside the log (2026-08-30, the registry's

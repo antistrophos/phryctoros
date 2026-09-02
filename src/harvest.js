@@ -470,7 +470,7 @@
           store.ledgers[ctx.contentKey].fields = o.fields;
           events.push({ ev: "ledger", key: ctx.contentKey });
         }
-        events.push({ ev: "bind", tag: tag, session: o.fields.session32, key: ctx.contentKey });
+        events.push({ ev: "bind", tag: tag, session: o.fields.session32, key: ctx.contentKey, index: o.index });
         // The operator ledger predates this seal: by declaration it is this
         // very emission, so its droplets adopt into the announced content
         // ledger (first-seen kept, conflicts surfaced — and the peel's own
@@ -610,11 +610,29 @@
     obs.forEach(function (o) {
       var sw = o.beacon && o.beacon.chunkSweep;
       if (!sw) return;
-      var bank = null, bankEps = null;
+      var bank = null, bankEps = null, opKey = "operator";
       var epO = opts && opts.eps ? opts.eps[o.index] : null;
       if (o.ctx && o.plate) { bank = o.plate.chunkBank || (o.plate.chunkBank = {}); bankEps = o.plate.chunkBankEps || (o.plate.chunkBankEps = {}); }
       else if (o.prov) { bank = o.prov.chunkBank || (o.prov.chunkBank = {}); bankEps = o.prov.chunkBankEps || (o.prov.chunkBankEps = {}); }
-      else if (o.operator) { bank = lease.operatorBank || (lease.operatorBank = {}); bankEps = lease.operatorBankEps || (lease.operatorBankEps = {}); }
+      else if (o.operator) {
+        // PER-EMITTER operator banks (the continuous receiver, phase B): with
+        // the registration track naming each emitter (opts.emIds[i]), the
+        // pre-bind rung banks each emitter's chunks under its OWN key — a
+        // 2-up's two envelopes (differing at the tile byte) never pool into
+        // one majority again: the mixed-bank limitation and the window-floor
+        // doctrine it forced both dissolve here. Without emIds the single
+        // legacy bank stands, byte-for-byte.
+        if (opts && opts.emIds && opts.emIds[o.index] != null) {
+          opKey = "operator:" + opts.emIds[o.index];
+          var banks = lease.operatorBanks || (lease.operatorBanks = {});
+          var banksE = lease.operatorBanksEps || (lease.operatorBanksEps = {});
+          bank = banks[opKey] || (banks[opKey] = {});
+          bankEps = banksE[opKey] || (banksE[opKey] = {});
+        } else {
+          bank = lease.operatorBank || (lease.operatorBank = {});
+          bankEps = lease.operatorBankEps || (lease.operatorBankEps = {});
+        }
+      }
       else return;
       var newIdx = 0;
       for (var ix2 in sw) {
@@ -627,8 +645,9 @@
           eHex[epO] = (eHex[epO] || 0) + 1;
         }
       }
+      var targetLabel = o.ctx ? o.ctx.tag : (o.provId || opKey);
       events.push({ ev: "chunk-bank", chunks: Object.keys(sw).length, fresh: newIdx,
-                    have: Object.keys(bank).length, target: o.ctx ? o.ctx.tag : (o.provId || "operator") });
+                    have: Object.keys(bank).length, target: targetLabel, index: o.index });
       if (o.fields) return;                       // a real seal already routed this window
       var env2 = assembleBank(bank, bankEps);
       if (env2) {
@@ -637,7 +656,7 @@
           o.fields = fields2;
           o.sealedTag = ("0000" + (((env2[18] << 8) | env2[19]) >>> 0).toString(16)).slice(-4);
           routeSeal(o);                            // binds/rebinds; operator-merge + adoption ride along
-          events.push({ ev: "bank-seal", tag: o.sealedTag, session: fields2.session32 });
+          events.push({ ev: "bank-seal", tag: o.sealedTag, session: fields2.session32, target: targetLabel, index: o.index });
         }
       }
     });
