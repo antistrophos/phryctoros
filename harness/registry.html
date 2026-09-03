@@ -199,6 +199,16 @@ function extractCapture(log) {
       beacon_snr_top: bSnrs.length ? +(+mean0(bSnrs)).toFixed(1) : null,
       beacon_lock_duty: bDuties.length ? +mean0(bDuties).toFixed(3) : null,
       fid_px_mean: fids.length ? +(fids.reduce((s, x) => s + x, 0) / fids.length).toFixed(1) : null,
+      // The continuous receiver's receipts (phase C, event-derived): how the
+      // run ended, what the track convicted, how many spans were re-decoded
+      // under it, how many windows the beacon STREAM sealed that the window
+      // alone could not, and whether the source was live. Absent on logs
+      // that predate the receiver (null, never guessed).
+      exit_reason: (fin.scheduler && fin.scheduler.exit) || null,
+      convictions: fin.track && fin.track.convicted ? fin.track.convicted.length : null,
+      redecodes: fin.redecodes || (fin.scheduler ? fin.scheduler.cures : null) || 0,
+      stream_seals: log.windows.reduce((n, w) => n + (w.rows || []).reduce((m, r) => m + (r.annuli || []).filter(a => a && a.viaStream).length, 0), 0) || null,
+      live: !!log.live,
       rings: ringOut
     },
     take: log.take || undefined,
@@ -323,7 +333,7 @@ function render() {
 
   // captures
   let ch = "<table><tr><th>started</th><th>code</th><th>type</th><th>clip</th><th>bind/seal w</th><th>exit/loop</th>" +
-    "<th>goodput</th><th>wire avg/peak</th><th>beacon SNR</th><th>data SNR</th><th>fid px</th><th>dist</th><th>angle</th><th>zoom</th><th>peel</th></tr>";
+    "<th>goodput</th><th>wire avg/peak</th><th>beacon SNR</th><th>data SNR</th><th>fid px</th><th>dist</th><th>angle</th><th>zoom</th><th>peel</th><th>receiver</th></tr>";
   reg.captures.forEach(c => {
     const m = c.metrics, p = c.physical || {};
     ch += "<tr class='cap" + (c.id === selId ? " sel" : "") + "' data-id=\"" + c.id + "\">" +
@@ -337,7 +347,11 @@ function render() {
       "<td>" + fmt(m.beacon_snr_top) + "</td><td>" + fmt(m.data_snr_mean) + "</td>" +
       "<td>" + fmt(m.fid_px_mean, 0) + "</td>" +
       "<td>" + fmt(p.distance_ft) + "</td><td>" + fmt(p.angle_deg, 0) + "</td><td>" + fmt(p.zoom_x) + "</td>" +
-      "<td>" + (m.peel_ok ? "<span class='ok'>✓ " + (m.validatedBy || "") + "</span>" : "<span class='warn'>" + fmt(m.recovered, 0) + "/" + fmt(m.K, 0) + "</span>") + "</td></tr>";
+      "<td>" + (m.peel_ok ? "<span class='ok'>✓ " + (m.validatedBy || "") + "</span>" : "<span class='warn'>" + fmt(m.recovered, 0) + "/" + fmt(m.K, 0) + "</span>") + "</td>" +
+      "<td class='dim'>" + (m.exit_reason ? m.exit_reason + (m.live ? " · live" : "") +
+        (m.convictions ? " · <span class='warn'>" + m.convictions + " convicted</span>" : "") +
+        (m.redecodes ? " · " + m.redecodes + " re-decoded" : "") +
+        (m.stream_seals ? " · " + m.stream_seals + " stream seals" : "") : "—") + "</td></tr>";
   });
   $("captures").innerHTML = ch + "</table>";
   document.querySelectorAll("tr.cap").forEach(el => el.onclick = () => selectCap(el.dataset.id));

@@ -45,6 +45,7 @@ specimen as the ranking-math regression fixture. Pages: <a href="test.html">v2</
 <script src="../src/track.js"></script>
 <script src="../src/stream.js"></script>
 <script src="../src/schedule.js"></script>
+<script src="../src/source.js"></script>
 <script src="../src/ser.js"></script>
 <script src="../src/degrade.js"></script>
 <script src="../src/pipeline.js"></script>
@@ -460,6 +461,49 @@ async function main() {
       flowOk && cureOk && liveOk,
       "flow " + trail.join(" ") + " holds " + holds + " exit " + sum.exit + " · cure " + queued + "/" + s2.cures + " " + s2.exitReason +
       " · live wait " + JSON.stringify(wl));
+  }
+
+  // ——— TR12: the source interface — recording, synthetic-live, the live ring buffer ———
+  if (caseOn("TR12")) {
+    await tick("TR12: sources — a recording answers at once, a live ring buffer answers what has arrived and waits for the rest…");
+    const SRC = OC.source;
+    // recording: everything exists; window passes straight through
+    const rec = SRC.sourceRecording(30, (tA, tB) => ({ frames: [{ f: 0, img: null }], seeks: 7, fBase: Math.round(tA * 30) }));
+    const rw = rec.window(2, 4);
+    const recOk = rec.availS() === 30 && !rec.live && rw.seeks === 7 && rw.fBase === 60;
+    // live ring buffer: frames arrive with media times; a window maps them to
+    // local emission indices at the emission rate with at most 2 looks each;
+    // availS is the high-water mark; waitFor resolves when the frames exist
+    const live = SRC.sourceLive(30, { looks: 2, retentionS: 90, pollMs: 20 });
+    for (let i = 0; i < 90; i++) live.push({ t: i / 60, img: { i } });   // 1.5 s at 60 fps
+    const lw = live.window(0.5, 1.0);
+    const idxs = lw.frames.map(f => f.f);
+    const perIdx = {}; idxs.forEach(i => { perIdx[i] = (perIdx[i] || 0) + 1; });
+    const looksOk = Object.values(perIdx).every(n => n <= 2) && Math.min.apply(null, idxs) === 0 && Math.max.apply(null, idxs) === 14;
+    const liveOk = live.live && Math.abs(live.availS() - 89 / 60) < 1e-9 && lw.seeks === 0 && lw.grabs === lw.frames.length && lw.fBase === 15 && looksOk;
+    const tWait = performance.now();
+    const waitP = live.waitFor(2.0);
+    setTimeout(() => { for (let i = 90; i < 130; i++) live.push({ t: i / 60, img: { i } }); }, 60);
+    const waited = await waitP;
+    const waitOk = waited === true && (performance.now() - tWait) >= 50 && live.availS() >= 2.0;
+    live.end();
+    const endOk = live.ended === true && live.duration() === live.availS();
+    // synthetic live: availability rides the wall clock at the emission rate.
+    // Compared against the MEASURED elapsed time, not an assumed sleep — a
+    // background tab's throttled timers stretch a 120-ms sleep to tens of
+    // seconds (the full-lap catch), and the source is right to say so.
+    const syn = SRC.sourceSynth(10, (tA, tB) => ({ frames: [], seeks: 0, fBase: Math.round(tA * 30) }), { live: true, latencyS: 0, pollMs: 20 });
+    const tS = performance.now();
+    const a0 = syn.availS();
+    await sleep(120);
+    const elapsed = (performance.now() - tS) / 1000;
+    const a1 = syn.availS();
+    const synOk = syn.live && a0 < 0.05 && a1 > a0 && Math.abs(a1 - Math.min(10, elapsed)) < 0.05 &&
+      (elapsed >= 10 ? syn.ended === true : syn.ended === false);
+    record("TR12 the source interface: a recording exists at once; the live ring buffer maps media time to local emission indices at the emission rate (≤2 looks per frame), reports grabs not seeks, and waitFor resolves only once the frames have arrived; a synthetic-live source advances its availability on the wall clock",
+      recOk && liveOk && waitOk && endOk && synOk,
+      "rec " + recOk + " · live " + liveOk + " (idx " + Math.min.apply(null, idxs) + ".." + Math.max.apply(null, idxs) + ", " + lw.frames.length + " frames) · wait " + waitOk +
+      " · end " + endOk + " · synth-live " + synOk + " (" + a0.toFixed(3) + "→" + a1.toFixed(3) + ")");
   }
 }
 

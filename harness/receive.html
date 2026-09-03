@@ -48,6 +48,8 @@
   <button id="selftestBtn">Run self-test (no camera)</button>
   <button id="camBtn">Start camera</button>
   <button id="capBtn" disabled>Capture <input id="capSecs" type="number" value="8" min="3" style="width:3rem"> s → decode</button>
+  <button id="liveBtn" disabled title="the continuous receiver on the camera: take-what-comes, telemetry until it comes back with data or doesn't">Live harvest</button>
+  <button id="liveStopBtn" disabled>Stop live</button>
   <label style="border:1px dashed #555; padding:.4rem .6rem">video file (§9.1): <input id="fileIn" type="file" accept="video/*"></label>
 </p>
 
@@ -93,6 +95,7 @@
 <script src="../src/track.js"></script>
 <script src="../src/stream.js"></script>
 <script src="../src/schedule.js"></script>
+<script src="../src/source.js"></script>
 <script src="../src/ser.js"></script>
 <script src="../src/degrade.js"></script>
 <script src="../src/pipeline.js"></script>
@@ -331,8 +334,8 @@ $("camBtn").onclick = async () => {
       video: { facingMode: $("m_cam").value === "front" ? "user" : "environment", width: { ideal: 1280 }, frameRate: { ideal: 30 } }
     });
     const v = $("vid"); v.srcObject = stream; v.style.display = ""; await v.play();
-    $("capBtn").disabled = false;
-    setStatus("camera live — frame the emitter, prop the phone (or tick handheld), then Capture", "ok");
+    $("capBtn").disabled = false; $("liveBtn").disabled = false;
+    setStatus("camera live — frame the emitter, prop the phone (or tick handheld), then Capture — or Live harvest", "ok");
   } catch (e) { setStatus("camera failed: " + e.message + " (C1: HTTPS or localhost only — use the file path instead)", "bad"); }
 };
 
@@ -373,6 +376,42 @@ $("capBtn").onclick = () => {
   if ("requestVideoFrameCallback" in v) v.requestVideoFrameCallback(grab);
   else requestAnimationFrame(grab);
 };
+
+/* ---------- LIVE HARVEST (phase C ii) ----------
+   The camera feeds a ring buffer (OC.source.sourceLive) and the SAME harvest
+   driver — scheduler, track, streams, lease, peel — consumes it as it fills:
+   take-what-comes, telemetry until it comes back with data or doesn't. Frames
+   are full-frame 640-px luma (the recording path's pre-scan crop is a later
+   refinement for live); retention 30 s covers the scheduler's lag. Stop ends
+   the source: the driver drains what remains and exits. */
+let liveSrc = null, liveGrabbing = false;
+$("liveBtn").onclick = async () => {
+  const v = $("vid");
+  if (!v.srcObject) { setStatus("start the camera first", "warn"); return; }
+  if (!payloadMode()) { setStatus("live harvest needs a “+ payload” profile", "bad"); return; }
+  const R = currentProfile().frame_rate_hz;
+  const W = 640, H = Math.round(640 * v.videoHeight / v.videoWidth) || 360;
+  const c = document.createElement("canvas"); c.width = W; c.height = H;
+  const ctx = c.getContext("2d", { willReadFrequently: true });
+  liveSrc = OC.source.sourceLive(R, { retentionS: 30, looks: 2 });
+  liveGrabbing = true;
+  $("liveBtn").disabled = true; $("liveStopBtn").disabled = false;
+  const t0Wall = performance.now();
+  const grab = (now, meta) => {
+    if (!liveGrabbing) return;
+    const t = meta ? meta.mediaTime : (now - t0Wall) / 1000;
+    ctx.drawImage(v, 0, 0, W, H);
+    liveSrc.push({ t, img: toLumFromCanvas(ctx, W, H) });
+    if ("requestVideoFrameCallback" in v) v.requestVideoFrameCallback(grab); else requestAnimationFrame(grab);
+  };
+  if ("requestVideoFrameCallback" in v) v.requestVideoFrameCallback(grab); else requestAnimationFrame(grab);
+  window.ocSource = liveSrc;
+  setStatus("live harvest — the receiver follows the camera; Stop live to end", "ok");
+  try { await harvestDecode({ duration: Infinity }, null, { name: "camera-live" }); }
+  catch (e) { setStatus("live harvest failed: " + e.message, "bad"); console.error(e); }
+  finally { liveGrabbing = false; window.ocSource = null; $("liveBtn").disabled = false; $("liveStopBtn").disabled = true; }
+};
+$("liveStopBtn").onclick = () => { liveGrabbing = false; if (liveSrc) liveSrc.end(); };
 
 /* ---------- the harvest STORE (cross-clip: it outlives the clip) ----------
    v2, the lease build: CONTENT-addressed ledgers (droplets are session-
@@ -578,8 +617,16 @@ async function harvestDecode(v, geo, file) {
     (p.ok === true && !p.validatedBy ? " <span class='warn'>UNVALIDATED (bare peel — no content check)</span>" : "") +
     (p.provisionalsRejected ? " <span class='warn'>(" + p.provisionalsRejected + " provisional rejected)</span>" : "")
   ).join(" · ") || "no ledgers yet";
-  const durS = v.duration, durF = Math.floor((durS - 0.06) * R);
-  const baseline = Math.ceil(durS * capFps);
+  // THE SOURCE (phase C, part ii): live capture or a recording behind one
+  // interface. The file path wraps its seek loop as a recording; the synth
+  // lane wraps its lazy renderer (live or not); the camera live harvest
+  // hands in a ring buffer. Above this line nothing knows which.
+  const source = window.ocSource || OC.source.sourceRecording(v.duration,
+    (tA, tB, onStep) => seekWindow(v, geo, tA, tB, capFps, R, onStep));
+  const durS = source.live ? null : source.duration();
+  let durF = source.live ? Math.round(source.availS() * R) : Math.floor((durS - 0.06) * R);
+  let horizonF = durF;   // the planner's horizon: the clip for a recording, what exists so far for live
+  const baseline = source.live ? null : Math.ceil(durS * capFps);
   // Window floor scales with the SLOWEST ring's droplet span. crcAlign needs
   // ≥2 CRC passes to lock, so a window has to offer the longest-droplet ring
   // several chances or one CRC miss costs it the whole window — measured: at
@@ -604,7 +651,8 @@ async function harvestDecode(v, geo, file) {
   const fieldLog = {
     kind: "harvest", started: new Date().toISOString(),
     clip: (file && file.name) || "camera",
-    duration_s: Math.round(durS * 10) / 10,
+    source: source.kind, live: source.live || undefined,
+    duration_s: durS !== null ? Math.round(durS * 10) / 10 : undefined,
     settings: ($("pasteStr") && $("pasteStr").value) || undefined,
     take: (window.ocTake && window.ocTake.id) || undefined,
     physical: (window.ocTake && window.ocTake.physical) || undefined,
@@ -619,7 +667,11 @@ async function harvestDecode(v, geo, file) {
     },
     tiling: window.ocTiling || 1, cap_fps: capFps, emit_fps: R,
     windows_cfg: { min_s: minWinF / R, max_s: maxWinF / R, boot_s: bootF / R },
-    windows: [], notes: [], final: null
+    // EVENT TELEMETRY (phase C): one clip-wide stream — windows with their
+    // kind and peel progress, the lease's receipts, the track's
+    // adjudications, the scheduler's decisions, the exit — beside the
+    // per-window rows the registry already reads.
+    windows: [], events: [], notes: [], final: null
   };
   // Windows worth seeking, planned per (context locks × its content ledger),
   // earliest first; contexts whose ledger already peels plan nothing.
@@ -633,7 +685,7 @@ async function harvestDecode(v, geo, file) {
       const ledKey = key === "operator" ? "operator" : (st.contexts[key] && st.contexts[key].contentKey);
       const led2 = ledKey && st.ledgers[ledKey];
       if (!led2 || okKeys[ledKey]) continue;
-      const pl = HV.planSpans(led2, lk, 0, durF,
+      const pl = HV.planSpans(led2, lk, 0, horizonF,
         { visited: visitedArr, minFrames: minWinF, joinGap: joinGapF, maxFrames: maxWinF, overlap: overlapF });
       if (pl.windows.length && (!bestW || pl.windows[0][0] < bestW[0])) bestW = pl.windows[0];
     }
@@ -641,8 +693,8 @@ async function harvestDecode(v, geo, file) {
   };
   const clipLog = { name: file.name, windows: [] };
   st.clips.push(clipLog);
-  $("harvest").innerHTML = "<b>harvest: " + file.name + "</b> — " + durS.toFixed(1) + " s, baseline " + baseline +
-    " seeks, overlap " + (overlapF / R).toFixed(1) + " s, window floor " + (minWinF / R).toFixed(1) + " s" +
+  $("harvest").innerHTML = "<b>harvest: " + file.name + "</b> — " + (source.live ? "LIVE (" + source.kind + ")" : durS.toFixed(1) + " s, baseline " + baseline + " seeks") +
+    ", overlap " + (overlapF / R).toFixed(1) + " s, window floor " + (minWinF / R).toFixed(1) + " s" +
     (minWinF > userMinF ? " <span class='warn'>(raised from " + (userMinF / R).toFixed(1) +
       " s — the slowest ring needs " + (dropletF / R).toFixed(1) + " s per droplet)</span>" : "") + "<br>";
   // THE SCHEDULER AS ITS OWN STAGE (phase C): which spans to materialize
@@ -655,8 +707,10 @@ async function harvestDecode(v, geo, file) {
   const sched = OC.schedule.schedCreate({
     R, minWinF, maxWinF, joinGapF, chunkF, overlapF, bootF,
     holdCapS: cycleS ? 4 * cycleS : null, holdCapWindows: 4,
+    live: !!source.live, deadAirS: 30,
     carriedComplete: pa.any && pa.allOk
   });
+  let grabs = 0, waits = 0;
   if (pa.any && pa.allOk) $("harvest").innerHTML += "<span class='ok'>carried store already peels — the clip is not needed</span><br>";
   // Tier-1 seek∥decode overlap (parallel-harvest design note): the video
   // element is idle while the worker decodes, so the PROVISIONAL next window
@@ -685,7 +739,21 @@ async function harvestDecode(v, geo, file) {
   });
   let curePoses = null;
   while (true) {
-    let win = OC.schedule.schedNext(sched, nextPlanned, durF);
+    // what exists so far: the whole clip for a recording, the ring buffer's
+    // high-water mark for live (the planner's horizon follows it)
+    const availF = source.live ? Math.round(source.availS() * R) : durF;
+    horizonF = availF;
+    let win = OC.schedule.schedNext(sched, nextPlanned, availF);
+    if (win && win.wait) {
+      // LIVE: the next span does not exist yet — wait for the frames (the
+      // source resolves when they arrive, or when it ends)
+      if (source.ended) { OC.schedule.schedStop(sched, "ended"); break; }
+      waits++;
+      setStatus("live: waiting for frames to " + (win.needF / R).toFixed(1) + " s (have " + (availF / R).toFixed(1) + " s)…", "warn");
+      if (waits === 1 || waits % 10 === 0) fieldLog.notes.push({ w: wrun, note: "waiting for frames to " + (win.needF / R).toFixed(1) + " s" });
+      await source.waitFor(win.needF / R);
+      continue;
+    }
     if (!win) {
       // Coverage exhausted. CURE RUNG 3 (phase A): exclusion alone cannot
       // refill a poisoned span (its windows are visited), so each convicted
@@ -702,10 +770,10 @@ async function harvestDecode(v, geo, file) {
         if (cureSpans.length && curePoses.length && OC.schedule.schedCure(sched, cureSpans)) {
           $("harvest").innerHTML += "<span class='warn'>convicted epochs poisoned " + cureSpans.length +
             " span(s) — re-decoding under the track's consensus pose</span><br>";
-          win = OC.schedule.schedNext(sched, nextPlanned, durF);
+          win = OC.schedule.schedNext(sched, nextPlanned, availF);
         }
       }
-      if (!win) break;
+      if (!win || win.wait) break;
     }
     const wf0 = win.f0, wf1 = win.f1;
     wrun++;
@@ -718,10 +786,10 @@ async function harvestDecode(v, geo, file) {
         const cPre = await prefetch.p;
         seeks += cPre.seeks; prefetch = null; prefetchCancel = false;
       }
-      cap = await seekWindow(v, geo, wf0 / R, wf1 / R, capFps, R,
+      cap = await source.window(wf0 / R, wf1 / R,
         t => setStatus((win.kind === "cure" ? "cure w" : "harvest w") + wrun + ": seeking " + t.toFixed(1) + " s…", "warn"));
     }
-    seeks += cap.seeks;
+    seeks += cap.seeks; grabs += cap.grabs || 0;
     // The majority-tile feed (phase C): the track's clip-wide designation
     // rides into the decode so an unplaced plate reads the RIGHT variant's
     // beacon harmonics; placed reads are never overridden here.
@@ -764,14 +832,15 @@ async function harvestDecode(v, geo, file) {
       // a cure window decodes under the track's consensus pose (rung 3)
       regPrior: win.kind === "cure" && curePoses && curePoses.length ? curePoses : undefined
     });
-    // kick the provisional next window's seeks under the decode
-    if (!prefetch) {
-      const nxt = OC.schedule.schedPeek(sched, nextPlanned, durF, win);
+    // kick the provisional next window's seeks under the decode (a live
+    // window is a buffer read — nothing to overlap)
+    if (!prefetch && !source.live) {
+      const nxt = OC.schedule.schedPeek(sched, nextPlanned, availF, win);
       if (nxt) {
         const pw = wrun;
         prefetch = {
           wf0: nxt.f0, wf1: nxt.f1,
-          p: seekWindow(v, geo, nxt.f0 / R, nxt.f1 / R, capFps, R,
+          p: source.window(nxt.f0 / R, nxt.f1 / R,
             t => prefetchCancel ? false
                : void setStatus("harvest w" + pw + ": decoding ∥ prefetching " + t.toFixed(1) + " s…", "warn"))
         };
@@ -949,8 +1018,17 @@ async function harvestDecode(v, geo, file) {
     // worth the extra windows, budgeted), early exit, the dead-clip guard.
     const verdict = OC.schedule.schedObserve(sched, win, {
       lockedAny, added: wRec.added || 0, peelDone: pa.any && pa.allOk,
-      bankLive: (pa.any && pa.allOk) ? bankLiveNow(wf1 / R) : false, availF: durF
+      bankLive: (pa.any && pa.allOk) ? bankLiveNow(wf1 / R) : false,
+      availF: source.live ? Math.round(source.availS() * R) : durF
     });
+    // the event stream: this window, then the receipts it produced
+    fieldLog.events.push({ ev: "window", w: wrun, t0: +(wf0 / R).toFixed(1), t1: +(wf1 / R).toFixed(1), kind: win.kind,
+      added: wRec.added || 0, locked: lockedAny, error: wRec.error || undefined,
+      peel: pa.best ? { recovered: pa.best.p.recovered, K: pa.best.p.K, ok: pa.best.p.ok === true } : undefined });
+    (wRec.events || []).forEach(e => fieldLog.events.push(Object.assign({ w: wrun, t: +(wf0 / R).toFixed(1) }, e)));
+    (wRec.track || []).forEach(e => fieldLog.events.push(Object.assign({ t: +(wf0 / R).toFixed(1) }, e)));
+    if (verdict.grew) fieldLog.events.push({ ev: "grow", w: wrun, t: +(wf0 / R).toFixed(1) });
+    if (verdict.hold) fieldLog.events.push({ ev: "hold", w: wrun, t: +(wf1 / R).toFixed(1), held_s: +sched.heldS.toFixed(1) });
     if (verdict.grew) line += " — <span class='warn'>no lock, growing ×2 → " + (sched.queue[0].f1 / R).toFixed(1) + " s</span>";
     wRec.text = stripHtml(line);
     fieldLog.windows.push(wRec);
@@ -976,8 +1054,11 @@ async function harvestDecode(v, geo, file) {
   }
   const redecodes = sched.cures;
   const wall = ((performance.now() - t0Wall) / 1000).toFixed(1);
-  const saved = Math.max(0, Math.round(100 * (1 - seeks / baseline)));
+  const saved = baseline ? Math.max(0, Math.round(100 * (1 - seeks / baseline))) : null;
   const visitedS = sched.visited.reduce((s, sp) => s + (sp[1] - sp[0]), 0) / R;
+  const durShown = durS !== null ? durS : source.availS();
+  fieldLog.events.push({ ev: "exit", reason: sched.exitReason, t: +visitedS.toFixed(1), windows: wrun, waits: waits || undefined });
+  if (source.live) fieldLog.duration_s = Math.round(source.availS() * 10) / 10;
   pa = peelAll();
   const done = pa.any && pa.allOk;
   const payloads = pa.list.filter(({ p }) => p.ok === true).map(({ key, p }) =>
@@ -985,15 +1066,18 @@ async function harvestDecode(v, geo, file) {
     ":</b> “" + p.text + "”</span> (" + p.recovered + "/" + p.K + " blocks, " + p.droplets + " droplets" +
     (p.validatedBy ? ", validated: " + p.validatedBy : ", <span class='warn'>UNVALIDATED — bare peel</span>") +
     (p.excluded && p.excluded.length ? ", <span class='warn'>liar excluded: " + p.excluded.join(", ") + "</span>" : "") + ")").join("<br>");
+  const seekTxt = source.live ? grabs + " frames grabbed live (" + (waits || 0) + " waits)"
+                              : seeks + " seeks of " + baseline + " baseline (" + saved + "% skipped)";
   const receipt = done
-    ? "<b class='ok'>EARLY EXIT — every live ledger in hand after " + visitedS.toFixed(1) + " s of " + durS.toFixed(1) + " s</b>" +
-      " — " + seeks + " seeks of " + baseline + " baseline (" + saved + "% skipped), wall " + wall + " s<br>" + payloads
-    : "<b class='warn'>clip exhausted — incomplete</b> (" + peelBrief(pa) +
-      ") — " + seeks + " seeks of " + baseline + " (" + saved + "% skipped), wall " + wall + " s — export the store and film another take: the next harvest mines only what this one lacked" +
+    ? "<b class='ok'>EARLY EXIT — every live ledger in hand after " + visitedS.toFixed(1) + " s of " + durShown.toFixed(1) + " s</b>" +
+      " — " + seekTxt + ", wall " + wall + " s<br>" + payloads
+    : "<b class='warn'>" + (source.live ? "live source ended (" + sched.exitReason + ") — incomplete" : "clip exhausted — incomplete") + "</b> (" + peelBrief(pa) +
+      ") — " + seekTxt + ", wall " + wall + " s — export the store and film another take: the next harvest mines only what this one lacked" +
       (payloads ? "<br>" + payloads : "");
   $("harvest").innerHTML += receipt + "<br>";
   fieldLog.final = {
     done, wall_s: +wall, seeks, baseline, skipped_pct: saved,
+    grabs: source.live ? grabs : undefined, waits: source.live ? waits : undefined,
     visited_s: +visitedS.toFixed(1), windows: wrun,
     peels: pa.list.map(({ key, p }) => ({
       key, ok: p.ok === true, K: p.K, recovered: p.recovered, droplets: p.droplets,
@@ -1129,7 +1213,15 @@ function synthSource(msg, loopS) {
         "dring=" + codesS.join(","), "loop=" + loopS, "freeze=0", "capfps=60"].join(" ");
       window.ocTiling = tilingS;
       window.ocSynth = synthSource(msg, loopS);
-      const log = await harvestDecode({ duration: loopS }, null, { name: "synthetic:" + code + ":" + loopS + "s" });
+      // THE SOURCE (phase C ii): the synth renderer behind the source
+      // interface — and with ?live=1 the LIVE TWIN: frames become available
+      // on the wall clock at the emission rate, the scheduler waits for
+      // them, and the live path certifies without a camera.
+      const liveS = q.get("live") === "1";
+      const Rs = window.ocSynth.profile.frame_rate_hz;
+      window.ocSource = OC.source.sourceSynth(loopS, (tA, tB, onStep) => synthWindow(window.ocSynth, tA, tB, Rs, onStep), { live: liveS });
+      const log = await harvestDecode({ duration: loopS }, null, { name: "synthetic:" + code + ":" + loopS + "s" + (liveS ? ":live" : "") });
+      window.ocSource = null;
       const fin = (log && log.final) || {};
       const peels = fin.peels || [];
       const okPeel = peels.find(pp => pp.ok && pp.validatedBy);
@@ -1157,9 +1249,21 @@ function synthSource(msg, loopS) {
           { name: "the cure re-decoded the poisoned span under the track", ok: (fin.redecodes || 0) >= 1 }
         );
       }
+      // The live twin's own bar: the source was live, the scheduler ran in
+      // live mode, the driver waited for frames at least once, and no seeks
+      // were spent (live windows are buffer reads).
+      if (q.get("live") === "1") {
+        const fs = fin.scheduler || {};
+        asserts.push(
+          { name: "the source was live and the scheduler ran live", ok: log.live === true && fs.live === true },
+          { name: "the driver waited for frames (take-what-comes)", ok: (fin.waits || 0) >= 1 },
+          { name: "the run ended by early exit, not dead-air", ok: fs.exit === "early-exit" }
+        );
+      }
       const fails = asserts.filter(a => !a.ok).length;
       verdict = {
         synth: true, dring: code, loop_s: loopS, K: window.ocSynth.K,
+        live: q.get("live") === "1" || undefined, waits: fin.waits,
         poison: q.get("poison") || undefined,
         poison_windows_hit: window.ocPoison ? window.ocPoison.hit : undefined,
         passes: asserts.length - fails, fails: fails, asserts: asserts,
@@ -1178,7 +1282,9 @@ function synthSource(msg, loopS) {
     // question can even be asked. Error verdicts overwrite too: a stale
     // green baseline is worse than an honest red one. A POISONED run never
     // writes the baseline — the cure fixture must not masquerade as clean.
-    if (!window.ocPoison)
+    if (q.get("live") === "1")
+      try { await fetch("/harness-result?page=synth-live-" + encodeURIComponent(code), { method: "POST", body: vBody }); } catch (e) {}
+    else if (!window.ocPoison)
       try { await fetch("/harness-result?page=synth-harvest-" + encodeURIComponent(code), { method: "POST", body: vBody }); } catch (e) {}
     else
       try { await fetch("/harness-result?page=synth-cure-" + encodeURIComponent(code), { method: "POST", body: vBody }); } catch (e) {}
