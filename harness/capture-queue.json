@@ -1,98 +1,156 @@
 {
-    "version":  1,
-    "note":  "The capture queue — the agent\u0027s tickets for the recording kitchen. Declarative: orders.html derives completion from the posted harvest logs; nothing is checked off by hand. Authored by Pharos; committed because the experiment plan is provenance.",
-    "orders":  [
-                   {
-                       "id":  "arrayab-close-1",
-                       "title":  "2-up A/B: a42q | a42k, close (5×/5 ft)",
-                       "why":  "The A/B rematch under the array rig — both codes in ONE capture, every condition shared. Decides whether the k-split\u0027s +3.6 dB shows up as bind pace when focus/AE/timing confounds are gone.",
-                       "twin":  true,
-                       "count":  1,
-                       "card":  {
-                                    "t_dring":  "a42q",
-                                    "t_tiling":  "2",
-                                    "t_dring2":  "a42k",
-                                    "t_prof":  "v3",
-                                    "t_loop":  "180",
-                                    "t_quad":  true,
-                                    "t_freeze":  false,
-                                    "t_msg":  "When IBM discovered that it was not in the business of making office equipment or business machines, but that it was in the business of processing information, then it began to navigate with clear vision.",
-                                    "p_dist":  5,
-                                    "p_zoom":  5,
-                                    "p_angle":  0,
-                                    "p_mount":  "tripod",
-                                    "t_minwin":  16,
-                                    "t_maxwin":  24
-                                },
-                       "match":  {
-                                     "dring":  "a42q,a42k",
-                                     "tiling":  2,
-                                     "distance_ft":  5,
-                                     "zoom_x":  5,
-                                     "angle_deg":  0,
-                                     "peel_ok":  true
-                                 }
-                   },
-                   {
-                       "id":  "arrayab-close-2-swap",
-                       "title":  "2-up A/B swapped: a42k | a42q (position counterbalance)",
-                       "why":  "Same ticket with the tiles permuted — the off-axis/position confound cancels across the pair, which is the array rig\u0027s one added confound.",
-                       "twin":  true,
-                       "count":  1,
-                       "card":  {
-                                    "t_dring":  "a42k",
-                                    "t_tiling":  "2",
-                                    "t_dring2":  "a42q",
-                                    "t_prof":  "v3",
-                                    "t_loop":  "180",
-                                    "t_quad":  true,
-                                    "t_freeze":  false,
-                                    "t_msg":  "When IBM discovered that it was not in the business of making office equipment or business machines, but that it was in the business of processing information, then it began to navigate with clear vision.",
-                                    "p_dist":  5,
-                                    "p_zoom":  5,
-                                    "p_angle":  0,
-                                    "p_mount":  "tripod",
-                                    "t_minwin":  16,
-                                    "t_maxwin":  24
-                                },
-                       "match":  {
-                                     "dring":  "a42k,a42q",
-                                     "tiling":  2,
-                                     "distance_ft":  5,
-                                     "zoom_x":  5,
-                                     "angle_deg":  0,
-                                     "peel_ok":  true
-                                 }
-                   },
-                   {
-                       "id":  "arrayab-range",
-                       "title":  "2-up A/B at range: a42q | a42k (13 ft, your zoom call)",
-                       "why":  "The range leg of the same A/B — a42q sealed in-window at 13 ft in the v4 era; whether the k-split holds its dB advantage through the long path is the open half of the contest. Zoom at your judgment given the 10×-hybrid finding; annotate what you use.",
-                       "twin":  true,
-                       "count":  1,
-                       "card":  {
-                                    "t_dring":  "a42q",
-                                    "t_tiling":  "2",
-                                    "t_dring2":  "a42k",
-                                    "t_prof":  "v3",
-                                    "t_loop":  "196",
-                                    "t_quad":  true,
-                                    "t_freeze":  false,
-                                    "t_msg":  "The General Electric Company makes a considerable portion of its profits from electric light bulbs and lighting systems. It has not yet discovered that, quite as much as A.T.\u0026T., it is in the business of moving information.",
-                                    "p_dist":  13,
-                                    "p_zoom":  10,
-                                    "p_angle":  0,
-                                    "p_mount":  "tripod",
-                                    "t_minwin":  16,
-                                    "t_maxwin":  24
-                                },
-                       "match":  {
-                                     "dring":  "a42q,a42k",
-                                     "tiling":  2,
-                                     "distance_ft":  13,
-                                     "distance_tol":  2,
-                                     "peel_ok":  true
-                                 }
-                   }
-               ]
+ "version": 1,
+ "note": "The capture queue \u2014 the agent's tickets for the recording kitchen. Declarative: orders.html derives completion from the posted harvest logs; nothing is checked off by hand. Authored by Pharos; committed because the experiment plan is provenance. Phase C (2026-09-03): the continuous receiver's field referees \u2014 the handheld range take under the streams and the first live take. The third referee, a second false-solve, cannot be ordered: it is whatever the field produces next.",
+ "orders": [
+  {
+   "id": "arrayab-close-1",
+   "title": "2-up A/B: a42q | a42k, close (5\u00d7/5 ft)",
+   "why": "The A/B rematch under the array rig \u2014 both codes in ONE capture, every condition shared. Decides whether the k-split's +3.6 dB shows up as bind pace when focus/AE/timing confounds are gone.",
+   "twin": true,
+   "count": 1,
+   "card": {
+    "t_dring": "a42q",
+    "t_tiling": "2",
+    "t_dring2": "a42k",
+    "t_prof": "v3",
+    "t_loop": "180",
+    "t_quad": true,
+    "t_freeze": false,
+    "t_msg": "When IBM discovered that it was not in the business of making office equipment or business machines, but that it was in the business of processing information, then it began to navigate with clear vision.",
+    "p_dist": 5,
+    "p_zoom": 5,
+    "p_angle": 0,
+    "p_mount": "tripod",
+    "t_minwin": 16,
+    "t_maxwin": 24
+   },
+   "match": {
+    "dring": "a42q,a42k",
+    "tiling": 2,
+    "distance_ft": 5,
+    "zoom_x": 5,
+    "angle_deg": 0,
+    "peel_ok": true
+   }
+  },
+  {
+   "id": "arrayab-close-2-swap",
+   "title": "2-up A/B swapped: a42k | a42q (position counterbalance)",
+   "why": "Same ticket with the tiles permuted \u2014 the off-axis/position confound cancels across the pair, which is the array rig's one added confound.",
+   "twin": true,
+   "count": 1,
+   "card": {
+    "t_dring": "a42k",
+    "t_tiling": "2",
+    "t_dring2": "a42q",
+    "t_prof": "v3",
+    "t_loop": "180",
+    "t_quad": true,
+    "t_freeze": false,
+    "t_msg": "When IBM discovered that it was not in the business of making office equipment or business machines, but that it was in the business of processing information, then it began to navigate with clear vision.",
+    "p_dist": 5,
+    "p_zoom": 5,
+    "p_angle": 0,
+    "p_mount": "tripod",
+    "t_minwin": 16,
+    "t_maxwin": 24
+   },
+   "match": {
+    "dring": "a42k,a42q",
+    "tiling": 2,
+    "distance_ft": 5,
+    "zoom_x": 5,
+    "angle_deg": 0,
+    "peel_ok": true
+   }
+  },
+  {
+   "id": "arrayab-range",
+   "title": "2-up A/B at range: a42q | a42k (13 ft, your zoom call)",
+   "why": "The range leg of the same A/B \u2014 a42q sealed in-window at 13 ft in the v4 era; whether the k-split holds its dB advantage through the long path is the open half of the contest. Zoom at your judgment given the 10\u00d7-hybrid finding; annotate what you use.",
+   "twin": true,
+   "count": 1,
+   "card": {
+    "t_dring": "a42q",
+    "t_tiling": "2",
+    "t_dring2": "a42k",
+    "t_prof": "v3",
+    "t_loop": "196",
+    "t_quad": true,
+    "t_freeze": false,
+    "t_msg": "The General Electric Company makes a considerable portion of its profits from electric light bulbs and lighting systems. It has not yet discovered that, quite as much as A.T.&T., it is in the business of moving information.",
+    "p_dist": 13,
+    "p_zoom": 10,
+    "p_angle": 0,
+    "p_mount": "tripod",
+    "t_minwin": 16,
+    "t_maxwin": 24
+   },
+   "match": {
+    "dring": "a42q,a42k",
+    "tiling": 2,
+    "distance_ft": 13,
+    "distance_tol": 2,
+    "peel_ok": true
+   }
+  },
+  {
+   "id": "stream-handheld-range",
+   "title": "2-up at range, HANDHELD: a42q | a42k (13 ft, 5\u00d7 optical) \u2014 the streams' first handheld take",
+   "why": "The continuous receiver's per-emitter beacon streams accumulate a rolling 60-s phase track per tile and stitch window seams by whole turns; every twin is tripod-still. A handheld take at range prices that 60-s span against real clock wander and hand sway \u2014 the referee named on the phase-B record. Keep 5\u00d7 OPTICAL (10\u00d7 is software past 5\u00d7 and kills the beacon); handheld, no rest. The receiver runs at default windows now \u2014 no minwin/maxwin needed.",
+   "twin": true,
+   "count": 1,
+   "match": {
+    "dring": "a42q,a42k",
+    "tiling": 2,
+    "distance_ft": 13,
+    "distance_tol": 2,
+    "zoom_x": 5,
+    "mount": "hand",
+    "peel_ok": true
+   },
+   "card": {
+    "t_dring": "a42q",
+    "t_tiling": "2",
+    "t_dring2": "a42k",
+    "t_prof": "v3",
+    "t_loop": "180",
+    "t_quad": true,
+    "t_freeze": false,
+    "t_msg": "When IBM discovered that it was not in the business of making office equipment or business machines, but that it was in the business of processing information, then it began to navigate with clear vision.",
+    "p_dist": 13,
+    "p_zoom": 5,
+    "p_angle": 0,
+    "p_mount": "handheld",
+    "p_light": "indoor LED"
+   }
+  },
+  {
+   "id": "live-first-take",
+   "title": "The first LIVE take: a42q, close (5\u00d7/5 ft, tripod) \u2014 the receiver on the camera, no clip",
+   "why": "Phase C put live capture behind the same source interface as recordings; the synthetic live twin certified the path on a wall clock, but no photon has crossed the ring buffer yet. This take prices the buffer's memory budget (640-px luma, 30-s retention) and the dead-air guard on a real phone. THE FLOW DIFFERS: arm the emitter from this card as usual; on the receiver page (on the phone or a laptop with a camera) paste the same settings, Start camera, frame the plate, then LIVE HARVEST \u2014 not Capture, not a clip file. The harvest posts its own log (clip 'camera-live', source live); Stop live when it reports the peel (or after ~60 s if it does not \u2014 that is evidence too).",
+   "twin": true,
+   "count": 1,
+   "match": {
+    "dring": "a42q",
+    "tiling": 1,
+    "live": true,
+    "peel_ok": true
+   },
+   "card": {
+    "t_dring": "a42q",
+    "t_tiling": "1",
+    "t_prof": "v3",
+    "t_loop": "180",
+    "t_quad": true,
+    "t_freeze": false,
+    "t_msg": "When IBM discovered that it was not in the business of making office equipment or business machines, but that it was in the business of processing information, then it began to navigate with clear vision.",
+    "p_dist": 5,
+    "p_zoom": 5,
+    "p_angle": 0,
+    "p_mount": "tripod",
+    "p_light": "indoor LED"
+   }
+  }
+ ]
 }

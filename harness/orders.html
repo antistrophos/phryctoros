@@ -57,6 +57,10 @@ function logMatches(log, order, type) {
     if (m.zoom_x != null && !near(p.zoom_x, m.zoom_x, 0.51)) return false;
     if (m.angle_deg != null && !near(p.angle_deg, m.angle_deg, m.angle_tol != null ? m.angle_tol : 8)) return false;
     if (m.peel_ok && !((log.final || {}).peels || []).some(pl => pl.ok)) return false;
+    // the continuous receiver's referees (phase C): a HANDHELD take (the
+    // card's mount, substring) and a LIVE take (the log's source was live)
+    if (m.mount && String(p.mount || "").toLowerCase().indexOf(String(m.mount).toLowerCase()) < 0) return false;
+    if (m.live && !log.live) return false;
   }
   return true;
 }
