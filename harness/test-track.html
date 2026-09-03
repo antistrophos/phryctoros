@@ -44,6 +44,7 @@ specimen as the ranking-math regression fixture. Pages: <a href="test.html">v2</
 <script src="../src/harvest.js"></script>
 <script src="../src/track.js"></script>
 <script src="../src/stream.js"></script>
+<script src="../src/schedule.js"></script>
 <script src="../src/ser.js"></script>
 <script src="../src/degrade.js"></script>
 <script src="../src/pipeline.js"></script>
@@ -352,6 +353,113 @@ async function main() {
       "tile bytes differ " + tileByteDiffers + " · per-emitter seals " + JSON.stringify(sealsA) +
       " contexts " + Object.keys(stA.contexts).length + " · legacy seals over 3 windows " + sealsB.length +
       " contexts " + Object.keys(stB.contexts).length);
+  }
+
+  // ——— TR9: the lease time-priced — cycles and seconds, not windows ———
+  if (caseOn("TR9")) {
+    await tick("TR9: the lease time-priced — grace in cycles, coasting ends on an 8-s zero-lock stretch…");
+    const p9 = OC.profile.profileV3();
+    OC.profile.applyDring(p9, "a42q");
+    const cyc = HV.envelopeCycleSeconds(p9);
+    const cycV2 = HV.envelopeCycleSeconds(OC.profile.defaultProfile());
+    const enc9 = OC.fountain.encodeCarousels(p9, OC.fountain.textToBytes("time-priced lease"));
+    const wire9 = OC.fountain.selfFrame(OC.fountain.textToBytes("time-priced lease"), 1);
+    const env9 = OC.emission.envelopeBytes(p9, { K: enc9.K, len: wire9.length, pcrc: OC.fountain.crc16(wire9), capability: 1 });
+    const fields9 = OC.plate.parseEnvelope(env9);
+    const tag9 = HV.bytesToHex(env9.subarray(18, 20));
+    const sealed = () => ({ emitters: [{ center: [100, 100], fiducialWidthPx: 100, annuli: [
+      { annulus: 90, beacon: true, envelope: HV.bytesToHex(env9), envelopeFields: fields9, tag: tag9 }] }] });
+    const dataOnly = () => ({ emitters: [{ center: [100, 100], fiducialWidthPx: 100, annuli: [
+      { annulus: p9.annuli[0].index, alignLag: 3, alignOffset: 0, droplets: [] }] }] });
+    const nothing = () => ({ emitters: [] });
+    const run = (timed) => {
+      const st = HV.createStore(p9), ls = HV.leaseCreate({ operator: true, cycleSeconds: timed ? cyc : null });
+      const steps = [[sealed(), [0, 10]], [dataOnly(), [10, 20]], [nothing(), [20, 25]], [nothing(), [25, 30]],
+                     [nothing(), [30, 42]], [nothing(), [42, 54]], [nothing(), [54, 60]]];
+      const trail = [];
+      steps.forEach((s, i) => {
+        const r = HV.leaseObserve(st, ls, s[0], p9, i + 1, timed ? { span: s[1] } : undefined);
+        const ctx = st.contexts[tag9];
+        trail.push((ctx ? ctx.state : "-") + (r.events.some(e => e.ev === "coast-hold") ? "(coast-hold)" : "") +
+                   (r.events.some(e => e.ev === "hold-end") ? "(hold-end)" : "") + (r.events.some(e => e.ev === "clip") ? "(clip)" : ""));
+      });
+      return trail;
+    };
+    const timed = run(true), legacy = run(false);
+    // timed: bound → coasting → coasting (5-s zero-lock, held) → grace (hold-end at 10 s ≥ 8)
+    //        → grace (26.6 − 12 = 14.6 left) → grace (2.6 left) → clipped
+    // legacy: bound → coasting → grace (hold-end at the FIRST zero-lock window) → clipped (2 windows) → …
+    const timedOk = timed[0] === "bound" && timed[1] === "coasting" && timed[2] === "coasting(coast-hold)" &&
+      timed[3] === "grace(hold-end)" && timed[4] === "grace" && timed[5] === "grace" && timed[6] === "clipped(clip)";
+    const legacyOk = legacy[0] === "bound" && legacy[1] === "coasting" && legacy[2] === "grace(hold-end)" &&
+      legacy[3] === "grace" && legacy[4] === "clipped(clip)";
+    record("TR9 the lease time-priced: the envelope cycle is 13.3 s for the A-inner M=4/F=2 family (null for v2), a 5-s zero-lock window no longer ends a coasting hold (the hold ends when the stretch reaches 8 s), and grace runs 2 cycles of window-seconds instead of 2 windows — while the legacy window counting stands byte-for-byte without a span",
+      cyc === 13.3 && cycV2 === null && timedOk && legacyOk,
+      "cycle " + cyc + " (v2 " + cycV2 + ") · timed " + timed.join(">") + " · legacy " + legacy.join(">"));
+  }
+
+  // ——— TR10: the majority-tile feed — hints place only the unplaced ———
+  if (caseOn("TR10")) {
+    await tick("TR10: placeByHints — unplaced plates take the track's tile, placed reads stand…");
+    const centers = [[100, 100], [400, 100], [700, 100]];
+    const fids = [100, 100, 100];
+    const tileOf = [-1, 1, -1];
+    const hints = [{ center: [105, 98], fid: 100, tile: 0 }, { center: [398, 103], fid: 100, tile: 0 },
+                   { center: [1500, 900], fid: 100, tile: 2 }];
+    const hinted = OC.pipeline.placeByHints(centers, fids, tileOf, hints);
+    record("TR10 the majority-tile feed: an unplaced plate near a hint takes the hint's tile; a placed read is never overridden (even by a contradicting hint — the driver's majority judges that); a plate near no hint stays unplaced",
+      tileOf[0] === 0 && hinted[0] === true && tileOf[1] === 1 && hinted[1] === false && tileOf[2] === -1 && hinted[2] === false,
+      "tileOf " + JSON.stringify(tileOf) + " hinted " + JSON.stringify(hinted));
+  }
+
+  // ——— TR11: the scheduler as its own stage — growth, hold, exit, cure, live wait ———
+  if (caseOn("TR11")) {
+    await tick("TR11: the scheduler — boot, growth, sweep, hold budget, early exit, the cure worklist, the live wait…");
+    const S = OC.schedule;
+    const cfg = { R: 30, minWinF: 240, maxWinF: 360, chunkF: 300, overlapF: 48, bootF: 300, holdCapWindows: 4 };
+    const s = S.schedCreate(cfg);
+    const trail = [];
+    // boot locks nothing → grows once (not marked visited); the grown window
+    // locks → visited; sweeps follow with the overlap back-pad; the peel
+    // completes with a bank still progressing → held to the budget → exit
+    let w = S.schedNext(s, null, 3000); trail.push(w.kind + "[" + w.f0 + "," + w.f1 + "]");
+    let v = S.schedObserve(s, w, { lockedAny: false, added: 0, peelDone: false, bankLive: false, availF: 3000 });
+    trail.push(v.grew ? "grew" : "novisit");
+    w = S.schedNext(s, null, 3000); trail.push(w.kind + "[" + w.f0 + "," + w.f1 + "]");
+    v = S.schedObserve(s, w, { lockedAny: true, added: 10, peelDone: false, bankLive: false, availF: 3000 });
+    w = S.schedNext(s, null, 3000); trail.push(w.kind + "[" + w.f0 + "," + w.f1 + "]");
+    let holds = 0, exits = 0;
+    for (let i = 0; i < 8 && w; i++) {
+      v = S.schedObserve(s, w, { lockedAny: true, added: 10, peelDone: true, bankLive: true, availF: 3000 });
+      if (v.hold) holds++;
+      if (v.exit) { exits++; break; }
+      w = S.schedNext(s, null, 3000);
+    }
+    const sum = S.schedSummary(s);
+    // the sweep: nextUnvisited pads one overlap BEFORE the gap and runs one
+    // chunk FROM the gap start — [600−48, 600+300]
+    const flowOk = trail[0] === "boot[0,300]" && trail[1] === "grew" && trail[2] === "grow[0,600]" &&
+      trail[3] === "sweep[552,900]" && holds === 4 && exits === 1 && sum.exit === "early-exit" && sum.grown === 1;
+    // the cure worklist: an exhausted run (boot consumed first) re-opens for
+    // convicted spans, capped, in order
+    const s2 = S.schedCreate(Object.assign({}, cfg, { cureCap: 4 }));
+    const b2 = S.schedNext(s2, null, 3000);
+    S.schedObserve(s2, b2, { lockedAny: true, added: 5, peelDone: false, bankLive: false, availF: 3000 });
+    S.schedExhausted(s2);
+    const queued = S.schedCure(s2, [{ ep: "w2h2", f0: 300, f1: 600 }, { ep: "w3h2", f0: 600, f1: 900 }]);
+    const c1 = S.schedNext(s2, null, 3000), c2 = S.schedNext(s2, null, 3000);
+    S.schedObserve(s2, c1, { lockedAny: true, added: 0, peelDone: false, bankLive: false, availF: 3000 });
+    S.schedObserve(s2, c2, { lockedAny: true, added: 0, peelDone: true, bankLive: false, availF: 3000 });
+    const cureOk = queued === 2 && c1.kind === "cure" && c1.ep === "w2h2" && c2.kind === "cure" && c2.ep === "w3h2" &&
+      s2.cures === 2 && s2.exitReason === "early-exit";
+    // live: the next span would outrun what exists → WAIT with the frame count needed
+    const s3 = S.schedCreate(Object.assign({}, cfg, { live: true }));
+    const wl = S.schedNext(s3, null, 100);
+    const liveOk = !!(wl && wl.wait && wl.needF === 240);
+    record("TR11 the scheduler: boot → one growth on a lock-less window (never marked visited) → the grown window → an overlap-padded sweep; a completed peel with a progressing bank holds exactly the budget then exits early; an exhausted run re-opens for the cure worklist (capped, in order) and exits when the peel validates; a live source that lacks the frames gets WAIT with the count needed",
+      flowOk && cureOk && liveOk,
+      "flow " + trail.join(" ") + " holds " + holds + " exit " + sum.exit + " · cure " + queued + "/" + s2.cures + " " + s2.exitReason +
+      " · live wait " + JSON.stringify(wl));
   }
 }
 

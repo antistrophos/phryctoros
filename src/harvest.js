@@ -345,10 +345,37 @@
              tiling: store.tiling, session: null, header: null, rings: {}, clips: [] };
   }
 
+  /* THE ENVELOPE CYCLE in seconds — the beacon's own clock, config-aware:
+     one full envelope copy on the air. Chunked framing carries 5 × (4-byte
+     tag chunk + 6-byte data chunk) = 50 bytes per rotor block; the v0 frame
+     framing 23 bytes per frame. symbols = bytes·8/bitsPer(M), frames =
+     symbols·F, seconds = frames/fps — 13.3 s for the A-inner M=4/F=2 family
+     at 30 fps. null without a beacon (v2), and callers keep counting
+     windows. The lease's time-pricing UNIT (the mini-ruling, 2026-09-01):
+     beacon-priced rules count cycles, data-priced rules plain seconds. */
+  function envelopeCycleSeconds(profile) {
+    var b = profile && profile.beacon;
+    if (!b || !b.rotation || !b.rotation.M) return null;
+    var M = b.rotation.M, F = b.rotation.frames_per_symbol || 1;
+    var bitsPer = M === 8 ? 3 : (M === 4 ? 2 : 1);
+    var bytes = b.framing === "chunked" ? 50 : 23;
+    return Math.round(10 * (bytes * 8 / bitsPer) * F / (profile.frame_rate_hz || 30)) / 10;
+  }
+
   function leaseCreate(opts) {
     opts = opts || {};
     return {
       graceWindows: opts.graceWindows !== undefined ? opts.graceWindows : 2,
+      // TIME-PRICING (the lease mini-ruling, ruled as defaults 2026-09-01;
+      // phase C): with the envelope cycle known, grace runs 2 CYCLES and a
+      // coasting hold ends only when a zero-lock stretch reaches
+      // coastEndSeconds (8 s, data-priced) — the hold matrix's semantics are
+      // unchanged, only the units move from windows to time. Callers pass
+      // each window's span (opts.span, seconds) to leaseObserve; without a
+      // cycle (or a span) the window counting stands byte-for-byte.
+      cycleSeconds: opts.cycleSeconds || null,
+      graceSeconds: opts.cycleSeconds ? 2 * opts.cycleSeconds : null,
+      coastEndSeconds: opts.cycleSeconds ? (opts.coastEndSeconds || 8) : null,
       matchFidFrac: opts.matchFidFrac !== undefined ? opts.matchFidFrac : 0.75,
       // The degrade ladder's TOP rung: with no announced context live, the
       // operator's own declaration (the profile they selected) is the
@@ -433,6 +460,10 @@
   function leaseObserve(store, lease, res, profile, w, opts) {
     var events = [], bankedKeys = {};
     var emitters = (!res || res.error || !res.emitters) ? [] : res.emitters;
+    // time-priced when the lease carries a cycle AND this window carries its span
+    var spanS = (opts && opts.span && opts.span.length === 2) ? Math.max(0, opts.span[1] - opts.span[0]) : null;
+    var timed = !!(lease.graceSeconds && spanS !== null);
+    var graceInit = timed ? lease.graceSeconds : lease.graceWindows;
 
     // ——— classify each emitter ———
     var obs = emitters.map(function (em, ei) {
@@ -462,7 +493,7 @@
         ctx = store.contexts[tag] = {
           tag: tag, session32: o.fields.session32, fields: o.fields,
           contentKey: contentKeyOf(o.fields, store.droplet_bits),
-          state: "bound", graceLeft: lease.graceWindows,
+          state: "bound", graceLeft: graceInit,
           plates: [], boundAt: w, lastSeen: w
         };
         if (!store.ledgers[ctx.contentKey]) {
@@ -708,15 +739,23 @@
         if (o.dataLocked) sawData = true;
       });
       var was = ctx.state;
-      if (sawTag) { ctx.state = "bound"; ctx.graceLeft = lease.graceWindows; ctx.lastSeen = w; }
+      if (sawTag) { ctx.state = "bound"; ctx.graceLeft = graceInit; ctx.zeroLockS = 0; ctx.lastSeen = w; }
       else if (sawData) {
         if (ctx.state !== "grace") ctx.state = "coasting";   // grace needs the tag to resume — handled in routing
+        ctx.zeroLockS = 0;
         ctx.lastSeen = w;
       } else {
         if (ctx.state === "grace") {
-          if (--ctx.graceLeft <= 0) { ctx.state = "clipped"; events.push({ ev: "clip", tag: ctx.tag }); }
+          ctx.graceLeft -= timed ? spanS : 1;
+          if (ctx.graceLeft <= 0) { ctx.state = "clipped"; events.push({ ev: "clip", tag: ctx.tag }); }
+        } else if (timed && ctx.state === "coasting" &&
+                   (ctx.zeroLockS = (ctx.zeroLockS || 0) + spanS) < lease.coastEndSeconds) {
+          // time-priced coasting: a short zero-lock stretch does not end the
+          // hold — only a stretch reaching coastEndSeconds does (framing
+          // cannot see a content switch, so the binding still must not coast far)
+          events.push({ ev: "coast-hold", tag: ctx.tag, zero_lock_s: Math.round(ctx.zeroLockS * 10) / 10 });
         } else {
-          ctx.state = "grace"; ctx.graceLeft = lease.graceWindows;
+          ctx.state = "grace"; ctx.graceLeft = graceInit; ctx.zeroLockS = 0;
           events.push({ ev: was === "coasting" ? "hold-end" : "all-lost", tag: ctx.tag });
         }
       }
@@ -1043,6 +1082,7 @@
     counts: counts, absorb: absorb, ringsFor: ringsFor, tryPeel: tryPeel, seenTileSeeds: seenTileSeeds,
     contentKeyOf: contentKeyOf, createStore: createStore, serializeStore: serializeStore,
     parseStore: parseStore, storeCounts: storeCounts, leaseCreate: leaseCreate,
+    envelopeCycleSeconds: envelopeCycleSeconds,
     leaseNewClip: leaseNewClip, mergeLedger: mergeLedger,
     leaseObserve: leaseObserve, tryPeelStore: tryPeelStore,
     lockFrom: lockFrom, frameOfSymbol: frameOfSymbol, symbolAtFrame: symbolAtFrame,

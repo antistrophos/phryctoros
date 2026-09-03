@@ -92,6 +92,7 @@
 <script src="../src/harvest.js"></script>
 <script src="../src/track.js"></script>
 <script src="../src/stream.js"></script>
+<script src="../src/schedule.js"></script>
 <script src="../src/ser.js"></script>
 <script src="../src/degrade.js"></script>
 <script src="../src/pipeline.js"></script>
@@ -502,7 +503,13 @@ async function harvestDecode(v, geo, file) {
   // operator's declared profile is the top degrade rung, provisionals are
   // clip-scoped. Contexts are tag-addressed; ledgers are content-addressed.
   HV.leaseNewClip(st);
-  const lease = HV.leaseCreate({ operator: true });
+  // THE LEASE, TIME-PRICED (phase C, the mini-ruling as defaults): the
+  // envelope cycle is the beacon-priced unit — grace 2 cycles, stream
+  // staleness 1.5 cycles, hold cap 4 cycles; coasting ends on a zero-lock
+  // stretch of 8 s (data-priced). Profiles without a beacon keep the
+  // window counting.
+  const cycleS = HV.envelopeCycleSeconds(profile);
+  const lease = HV.leaseCreate({ operator: true, cycleSeconds: cycleS });
   // THE REGISTRATION TRACK (continuous receiver, phase A): registration and
   // designation state that SURVIVES window boundaries. Every window's solves
   // feed it; every banked droplet carries its (burst, hypothesis) epoch; the
@@ -592,7 +599,7 @@ async function harvestDecode(v, geo, file) {
   const overlapF = HV.maxDropletFrames(profile);
   const bootF = Math.min(Math.max(minWinF, Math.round((+$("m_boot").value || 10) * R)), durF);
   const t0Wall = performance.now();
-  const visited = [], ctxLocks = {}, grown = {};
+  const ctxLocks = {};
   let seeks = 0, wrun = 0, pa = peelAll();
   const fieldLog = {
     kind: "harvest", started: new Date().toISOString(),
@@ -638,9 +645,18 @@ async function harvestDecode(v, geo, file) {
     " seeks, overlap " + (overlapF / R).toFixed(1) + " s, window floor " + (minWinF / R).toFixed(1) + " s" +
     (minWinF > userMinF ? " <span class='warn'>(raised from " + (userMinF / R).toFixed(1) +
       " s — the slowest ring needs " + (dropletF / R).toFixed(1) + " s per droplet)</span>" : "") + "<br>";
-  // Already in hand? Then nothing is seeked at all — the carried store
-  // completes before the clip is touched (never pay twice for the same drop).
-  const queue = (pa.any && pa.allOk) ? [] : [[0, bootF]];
+  // THE SCHEDULER AS ITS OWN STAGE (phase C): which spans to materialize
+  // and when to stop — bootstrap, the ledger-steered plan (nextPlanned is
+  // handed in as the planner), the unvisited sweep, growth, hold-for-bank,
+  // the dead-clip guard, the cure worklist, termination — all live in
+  // OC.schedule now; this loop fetches, decodes, and reports. Already in
+  // hand? Then nothing is seeked at all — the carried store completes
+  // before the clip is touched (never pay twice for the same drop).
+  const sched = OC.schedule.schedCreate({
+    R, minWinF, maxWinF, joinGapF, chunkF, overlapF, bootF,
+    holdCapS: cycleS ? 4 * cycleS : null, holdCapWindows: 4,
+    carriedComplete: pa.any && pa.allOk
+  });
   if (pa.any && pa.allOk) $("harvest").innerHTML += "<span class='ok'>carried store already peels — the clip is not needed</span><br>";
   // Tier-1 seek∥decode overlap (parallel-harvest design note): the video
   // element is idle while the worker decodes, so the PROVISIONAL next window
@@ -648,19 +664,50 @@ async function harvestDecode(v, geo, file) {
   // (droplets bank by identity, visited marks truthfully) — the plan is
   // advisory, so a post-absorb divergence just cancels the prefetch with its
   // seeks counted honestly.
-  let prefetch = null, prefetchCancel = false, everLocked = false, totalAdded = 0;
+  let prefetch = null, prefetchCancel = false;
   // Hold-for-bank (practitioner's ruling 2026-08-27): the payload winning the
   // race must not forfeit identity — the a82 real-photon take reached 4/5
   // chunk indices and the early exit abandoned the bank with half the clip
   // unread. While any beacon bank is mid-assembly and PROGRESSING (a fresh
-  // idx within the last HOLD_BANK_N windows), the harvest keeps taking
-  // windows after the payload peels, capped at HOLD_BANK_CAP held windows.
+  // idx within the staleness bound — 1.5 cycles when time-priced, else 2
+  // windows), the harvest keeps taking windows after the payload peels;
+  // the scheduler caps the hold (4 cycles / 4 windows). Patience scales
+  // with proximity: at 4/5 the bank gets the whole cap.
   const HOLD_BANK_N = 2, HOLD_BANK_CAP = 4;
-  const bankState = {};   // target → { have, freshW }
+  const HOLD_STALE_S = cycleS ? 1.5 * cycleS : null, HOLD_CAP_S = cycleS ? 4 * cycleS : null;
+  const bankState = {};   // target → { have, freshW, freshT }
   const bankTargetsOfIndex = {};   // emitter index → every bank label it has used (phase B)
-  let heldForBank = 0;
-  while (queue.length) {
-    const [wf0, wf1] = queue.shift();
+  const bankLiveNow = (tNowS) => Object.keys(bankState).some(t => {
+    const bs = bankState[t];
+    if (!(bs.have > 0 && bs.have < 5)) return false;
+    if (HOLD_STALE_S) return (tNowS - bs.freshT) <= (bs.have >= 4 ? HOLD_CAP_S : HOLD_STALE_S);
+    return (wrun - bs.freshW) <= (bs.have >= 4 ? HOLD_BANK_CAP : HOLD_BANK_N);
+  });
+  let curePoses = null;
+  while (true) {
+    let win = OC.schedule.schedNext(sched, nextPlanned, durF);
+    if (!win) {
+      // Coverage exhausted. CURE RUNG 3 (phase A): exclusion alone cannot
+      // refill a poisoned span (its windows are visited), so each convicted
+      // epoch's span is re-decoded under the track's adopted poses (tripod:
+      // the consensus pose IS the registration; handheld: the per-frame
+      // solve chains from the prior and re-earns). Honest bytes landing on
+      // poison-held slots arrive as conflicts, are RETAINED as witnesses,
+      // and the excluded view re-projects from them.
+      OC.schedule.schedExhausted(sched);
+      pa = peelAll();
+      if (!(pa.any && pa.allOk) && !sched.cures) {
+        const cureSpans = OC.track.convictedSpans(track);
+        curePoses = OC.track.trackPoses(track);
+        if (cureSpans.length && curePoses.length && OC.schedule.schedCure(sched, cureSpans)) {
+          $("harvest").innerHTML += "<span class='warn'>convicted epochs poisoned " + cureSpans.length +
+            " span(s) — re-decoding under the track's consensus pose</span><br>";
+          win = OC.schedule.schedNext(sched, nextPlanned, durF);
+        }
+      }
+      if (!win) break;
+    }
+    const wf0 = win.f0, wf1 = win.f1;
     wrun++;
     let cap;
     if (prefetch && prefetch.wf0 === wf0 && prefetch.wf1 === wf1) {
@@ -672,9 +719,14 @@ async function harvestDecode(v, geo, file) {
         seeks += cPre.seeks; prefetch = null; prefetchCancel = false;
       }
       cap = await seekWindow(v, geo, wf0 / R, wf1 / R, capFps, R,
-        t => setStatus("harvest w" + wrun + ": seeking " + t.toFixed(1) + " s…", "warn"));
+        t => setStatus((win.kind === "cure" ? "cure w" : "harvest w") + wrun + ": seeking " + t.toFixed(1) + " s…", "warn"));
     }
     seeks += cap.seeks;
+    // The majority-tile feed (phase C): the track's clip-wide designation
+    // rides into the decode so an unplaced plate reads the RIGHT variant's
+    // beacon harmonics; placed reads are never overridden here.
+    const tileHints = track.emitters.map(em => ({ center: em.center, fid: em.fid, tile: OC.track.majorityOf(track, em) }))
+      .filter(h => h.center && h.tile !== null);
     clipLog.windows.push([Math.round(wf0 / R * 10) / 10, Math.round(wf1 / R * 10) / 10]);
     // Hints only when exactly ONE clock is live (the deferral): with several
     // independent contexts one hint map would be wrong for all but one, and a
@@ -707,18 +759,19 @@ async function harvestDecode(v, geo, file) {
       // the envelope had never been read from a field capture. With the
       // framing-based aligner it joins mid-loop like everything else.
       beacon: isV3h && $("m_beacon").checked,
-      beaconAlign: liveTags.length === 1 ? { expectTag: liveTags[0] } : undefined
+      beaconAlign: liveTags.length === 1 ? { expectTag: liveTags[0] } : undefined,
+      tileHints: tileHints.length ? tileHints : undefined,
+      // a cure window decodes under the track's consensus pose (rung 3)
+      regPrior: win.kind === "cure" && curePoses && curePoses.length ? curePoses : undefined
     });
     // kick the provisional next window's seeks under the decode
-    if (!queue.length && !prefetch) {
-      const visProv = visited.map(s => s.slice());
-      HV.markVisited(visProv, wf0, wf1);
-      const nxt = nextPlanned(visProv) || HV.nextUnvisited(visProv, 0, durF, chunkF, overlapF);
-      if (nxt && nxt[1] - nxt[0] >= Math.round(2 * R)) {
+    if (!prefetch) {
+      const nxt = OC.schedule.schedPeek(sched, nextPlanned, durF, win);
+      if (nxt) {
         const pw = wrun;
         prefetch = {
-          wf0: nxt[0], wf1: nxt[1],
-          p: seekWindow(v, geo, nxt[0] / R, nxt[1] / R, capFps, R,
+          wf0: nxt.f0, wf1: nxt.f1,
+          p: seekWindow(v, geo, nxt.f0 / R, nxt.f1 / R, capFps, R,
             t => prefetchCancel ? false
                : void setStatus("harvest w" + pw + ": decoding ∥ prefetching " + t.toFixed(1) + " s…", "warn"))
         };
@@ -734,7 +787,7 @@ async function harvestDecode(v, geo, file) {
     // in the field (the 2026-09-01 specimen); the fixture supplies it on
     // demand. Poisoned windows' spans are visited-subtracted like any other,
     // so exclusion alone cannot refill them — the cure MUST walk rung 3.
-    if (window.ocPoison && !res.error && wrun >= window.ocPoison.w0 && wrun <= window.ocPoison.w1) {
+    if (window.ocPoison && !res.error && win.kind !== "cure" && wrun >= window.ocPoison.w0 && wrun <= window.ocPoison.w1) {
       const scaleP = window.ocPoison.scale;
       for (const em of res.emitters) {
         em.fiducialWidthPx = Math.round(em.fiducialWidthPx * scaleP * 10) / 10;
@@ -763,10 +816,12 @@ async function harvestDecode(v, geo, file) {
       });
       if (!res2.error) { res = res2; res.reacquired = true; }
     }
-    let line = "w" + wrun + " [" + (wf0 / R).toFixed(1) + "–" + (wf1 / R).toFixed(1) + " s] " + cap.seeks + " seeks";
+    let line = (win.kind === "cure" ? "cure w" : "w") + wrun + " [" + (wf0 / R).toFixed(1) + "–" + (wf1 / R).toFixed(1) + " s] " + cap.seeks + " seeks";
     if (res.reacquired) line += " — <span class='warn'>re-acquired under the track's pose</span>";
     let lockedAny = false;
     const wRec = { w: wrun, t0: +(wf0 / R).toFixed(1), t1: +(wf1 / R).toFixed(1), seeks: cap.seeks };
+    if (win.kind !== "plan" && win.kind !== "boot") wRec.kind = win.kind;
+    if (win.kind === "cure") wRec.redecode = win.ep;
     if (res.reacquired) wRec.reacquired = true;
     if (res.error) { line += " — <span class='bad'>" + res.error + "</span>"; wRec.error = stripHtml(res.error); }
     else {
@@ -788,14 +843,14 @@ async function harvestDecode(v, geo, file) {
       if (tro.events.length) wRec.track = tro.events;
       const emIds = streamStep(res, tro, cap.fBase, liveTags);
       const got = HV.leaseObserve(st, lease, res, profile, wrun,
-        { eps, excluded: OC.track.excludedEps(track), emIds });
+        { eps, excluded: OC.track.excludedEps(track), emIds, span: [wf0 / R, wf1 / R] });
       let added = 0, dup = 0, quarantined = 0, conflicts = 0;
       got.events.forEach(e => {
         if (e.ev === "bank") { added += e.added || 0; dup += e.dup || 0; quarantined += e.quarantined || 0; conflicts += e.conflicts || 0; }
         if (e.ev === "chunk-bank") {
-          const bs = bankState[e.target] || (bankState[e.target] = { have: 0, freshW: -1 });
+          const bs = bankState[e.target] || (bankState[e.target] = { have: 0, freshW: -1, freshT: -1e9 });
           bs.have = e.have || 0;
-          if (e.fresh > 0) bs.freshW = wrun;
+          if (e.fresh > 0) { bs.freshW = wrun; bs.freshT = wf1 / R; }
           if (e.index !== undefined) (bankTargetsOfIndex[e.index] || (bankTargetsOfIndex[e.index] = {}))[e.target] = true;
         }
         if (e.ev === "bank-seal" || e.ev === "bind" || e.ev === "rebind") {
@@ -811,7 +866,7 @@ async function harvestDecode(v, geo, file) {
           } else for (const t2 in bankState) bankState[t2].have = 5;
         }
       });
-      totalAdded += added;
+      wRec.added = added;
       // Locks per context/operator clock (the routing already knows whose
       // emitter each row belongs to); the lag-consensus quarantine still
       // gates each lock, per emitter, in FRAMES.
@@ -828,7 +883,6 @@ async function harvestDecode(v, geo, file) {
           if (lk) (ctxLocks[key] || (ctxLocks[key] = {}))[a.annulus] = lk;
         }
       });
-      if (lockedAny) everLocked = true;
       pa = peelAll();
       // The beacon's envelope, read off the air: the emitter's own statement of
       // preset / session / K / tiling / loop — the settings string, from the wire.
@@ -890,126 +944,40 @@ async function harvestDecode(v, geo, file) {
       wRec.events = got.events.filter(e => e.ev !== "ledger" && e.ev !== "state");
       wRec.peel = stripHtml(peelBrief(pa));
     }
-    // Adaptive growth (run-1's lock-failure lesson): a window that locks
-    // NOTHING gets one doubled retry before its stretch is declared dead —
-    // short windows can't accumulate CRC evidence on marginal footage where
-    // a long segment locks fine. The failed window is NOT marked visited
-    // (the grown window re-covers it and marks for both).
-    if (!lockedAny && !(pa.any && pa.allOk) && !grown[wf0] && wf1 < durF) {
-      grown[wf0] = 1;
-      const gw1 = Math.min(wf0 + 2 * (wf1 - wf0), durF);
-      queue.unshift([wf0, gw1]);
-      line += " — <span class='warn'>no lock, growing ×2 → " + (gw1 / R).toFixed(1) + " s</span>";
-    } else {
-      HV.markVisited(visited, wf0, wf1);
-    }
+    // The window's verdict goes to the scheduler: growth (a lock-less window
+    // gets one doubled retry, not marked visited), hold-for-bank (identity
+    // worth the extra windows, budgeted), early exit, the dead-clip guard.
+    const verdict = OC.schedule.schedObserve(sched, win, {
+      lockedAny, added: wRec.added || 0, peelDone: pa.any && pa.allOk,
+      bankLive: (pa.any && pa.allOk) ? bankLiveNow(wf1 / R) : false, availF: durF
+    });
+    if (verdict.grew) line += " — <span class='warn'>no lock, growing ×2 → " + (sched.queue[0].f1 / R).toFixed(1) + " s</span>";
     wRec.text = stripHtml(line);
     fieldLog.windows.push(wRec);
     $("harvest").innerHTML += line + "<br>";
     ledgerInfo();
-    // Early exit: every content ledger any live context (or the operator)
-    // feeds has peeled and validated — UNLESS a beacon bank is mid-assembly
-    // and progressing (hold-for-bank; identity is worth the extra windows).
-    if (pa.any && pa.allOk) {
-      const bankLive = Object.keys(bankState).some(t => {
-        const bs = bankState[t];
-        // Patience scales with proximity: at 4/5 every window holds ~1–2
-        // occurrences of exactly the missing index, so a bank one index from
-        // BIND gets the whole cap; farther banks get the short staleness bound.
-        const staleBound = bs.have >= 4 ? HOLD_BANK_CAP : HOLD_BANK_N;
-        return bs.have > 0 && bs.have < 5 && (wrun - bs.freshW) <= staleBound;
-      });
-      if (!bankLive || heldForBank >= HOLD_BANK_CAP) break;
-      heldForBank++;
+    if (verdict.hold) {
       const bh = Object.keys(bankState).map(t => bankState[t].have + "/5").join(", ");
-      fieldLog.notes.push({ w: wrun, note: "holding for the chunk bank (" + bh + " idx; held " + heldForBank + "/" + HOLD_BANK_CAP + ")" });
-      $("harvest").innerHTML += "<span class='warn'>payload complete — holding for the chunk bank (" + bh +
-        " idx; held " + heldForBank + "/" + HOLD_BANK_CAP + ")</span><br>";
+      const heldTxt = HOLD_CAP_S ? (sched.heldS.toFixed(1) + "/" + HOLD_CAP_S.toFixed(1) + " s") : (sched.heldWindows + "/" + HOLD_BANK_CAP);
+      fieldLog.notes.push({ w: wrun, note: "holding for the chunk bank (" + bh + " idx; held " + heldTxt + ")" });
+      $("harvest").innerHTML += "<span class='warn'>payload complete — holding for the chunk bank (" + bh + " idx; held " + heldTxt + ")</span><br>";
     }
-    // Dead-clip guard: bootstrap + its growth + a second stretch all silent
-    // on an empty take = stop burning seeks (the 29-minute exhaustion of a
-    // clip where nothing ever locked). Anything carried in stays banked.
-    if (!everLocked && totalAdded === 0 && wrun >= 4) {
+    if (verdict.exit && sched.exitReason === "dead-clip") {
       fieldLog.notes.push({ w: wrun, note: "dead-clip guard: nothing locks anywhere — stopped early" });
       $("harvest").innerHTML += "<span class='bad'>nothing locks anywhere after " + wrun +
         " windows — stopping early. Check the EMIT side first (HUD skip receipt, mode summary green, payload K=… line), then range/zoom.</span><br>";
-      break;
     }
-    if (!queue.length) {
-      const nxt2 = nextPlanned(visited) || HV.nextUnvisited(visited, 0, durF, chunkF, overlapF);
-      if (nxt2 && (nxt2[1] - nxt2[0] >= Math.round(2 * R) || nxt2[1] - nxt2[0] >= minWinF)) queue.push(nxt2);
-    }
+    if (verdict.exit) break;
   }
   if (prefetch) { // in-flight prefetch at exit — cancel, count its seeks honestly
     prefetchCancel = true;
     const cPre = await prefetch.p;
     seeks += cPre.seeks; prefetch = null;
   }
-  // ——— CURE RUNG 3 (phase A): span re-decode under the track ———
-  // Exclusion alone cannot refill a poisoned span: its windows are marked
-  // visited, so the planner never returns. Each convicted epoch's span is
-  // re-decoded once under the track's adopted poses (tripod: the consensus
-  // pose IS the registration; handheld: the per-frame solve chains from the
-  // prior and re-earns). Honest bytes landing on poison-held slots arrive as
-  // conflicts and are RETAINED as witnesses — the excluded view re-projects
-  // from them. Seeks are spent honestly and capped.
-  pa = peelAll();
-  let redecodes = 0;
-  if (!(pa.any && pa.allOk)) {
-    const cureSpans = OC.track.convictedSpans(track);
-    const curePoses = OC.track.trackPoses(track);
-    if (cureSpans.length && curePoses.length) {
-      $("harvest").innerHTML += "<span class='warn'>convicted epochs poisoned " + cureSpans.length +
-        " span(s) — re-decoding under the track's consensus pose</span><br>";
-      for (const sp of cureSpans) {
-        if (redecodes >= 4 || (pa.any && pa.allOk)) break;
-        wrun++;
-        setStatus("cure w" + wrun + ": re-decoding " + (sp.f0 / R).toFixed(1) + "–" + (sp.f1 / R).toFixed(1) + " s under the track…", "warn");
-        const capC = await seekWindow(v, geo, sp.f0 / R, sp.f1 / R, capFps, R, () => {});
-        seeks += capC.seeks;
-        const isV3c2 = !!(profile.bands && profile.plate);
-        const resC = await decodeAsync(capC.frames, profile, {
-          aligned: false, handheld: $("m_hand").checked,
-          loopSeconds: +$("m_loop").value || 60, mirror: { receive: false },
-          maxEmitters: isV3c2 ? 6 : 4, payload: true,
-          plateSolve: isV3c2 && $("m_solve").checked, beacon: isV3c2 && $("m_beacon").checked,
-          regPrior: curePoses
-        });
-        const wRecC = { w: wrun, t0: +(sp.f0 / R).toFixed(1), t1: +(sp.f1 / R).toFixed(1),
-                        seeks: capC.seeks, redecode: sp.ep };
-        if (resC.error) { wRecC.error = stripHtml(resC.error); }
-        else {
-          const solvesC = resC.emitters.map((em, ei) => ({ e: ei, center: em.center,
-            fid: em.fiducialWidthPx, method: em.method, tile: em.tile, H: em.H }));
-          const troC = OC.track.trackObserve(track, wrun, solvesC, { f0: sp.f0, f1: sp.f1 });
-          const epsC = [];
-          resC.emitters.forEach((em, ei) => {
-            const o = troC.out[ei];
-            if (!o) return;
-            epsC[ei] = o.ep;
-            if (em.tile !== undefined && o.tileOut !== em.tile) em.tile = o.tileOut;
-          });
-          const liveTagsC = Object.keys(st.contexts).filter(t => st.contexts[t].state !== "clipped");
-          const emIdsC = streamStep(resC, troC, sp.f0, liveTagsC);
-          const gotC = HV.leaseObserve(st, lease, resC, profile, wrun, { eps: epsC, excluded: OC.track.excludedEps(track), emIds: emIdsC });
-          let addedC = 0, confC = 0;
-          gotC.events.forEach(e => { if (e.ev === "bank") { addedC += e.added || 0; confC += e.conflicts || 0; } });
-          wRecC.added = addedC; if (confC) wRecC.conflicts = confC;
-          pa = peelAll();
-          wRecC.peel = stripHtml(peelBrief(pa));
-          $("harvest").innerHTML += "cure w" + wrun + " [" + (sp.f0 / R).toFixed(1) + "–" + (sp.f1 / R).toFixed(1) +
-            " s] +" + addedC + " droplets" + (confC ? " (<span class='warn'>" + confC +
-            " conflicts — honest witnesses retained for the excluded view</span>)" : "") +
-            " — " + peelBrief(pa) + "<br>";
-        }
-        fieldLog.windows.push(wRecC);
-        redecodes++;
-      }
-    }
-  }
+  const redecodes = sched.cures;
   const wall = ((performance.now() - t0Wall) / 1000).toFixed(1);
   const saved = Math.max(0, Math.round(100 * (1 - seeks / baseline)));
-  const visitedS = visited.reduce((s, sp) => s + (sp[1] - sp[0]), 0) / R;
+  const visitedS = sched.visited.reduce((s, sp) => s + (sp[1] - sp[0]), 0) / R;
   pa = peelAll();
   const done = pa.any && pa.allOk;
   const payloads = pa.list.filter(({ p }) => p.ok === true).map(({ key, p }) =>
@@ -1037,6 +1005,8 @@ async function harvestDecode(v, geo, file) {
     redecodes: redecodes || undefined,
     track: OC.track.trackSummary(track),
     streams: OC.stream.streamsSummary(streams),
+    scheduler: OC.schedule.schedSummary(sched),
+    lease_pricing: cycleS ? { cycle_s: cycleS, grace_s: 2 * cycleS, stale_s: 1.5 * cycleS, hold_cap_s: 4 * cycleS, coast_end_s: 8 } : "windows",
     receipt: stripHtml(receipt)
   };
   // The ending STORE persists beside the log (2026-08-30, the registry's

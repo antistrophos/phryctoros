@@ -267,6 +267,22 @@
         }
       }
     }
+    // THE MAJORITY-TILE FEED (continuous receiver, phase C): the caller's
+    // registration track knows each plate's tile from clip-wide evidence
+    // (opts.tileHints = [{ center, fid, tile }], capture pixels). A plate the
+    // fresh read could not place — or a frame where no designated tile was
+    // found at all — takes its hinted tile, so the beacon descriptor below
+    // reads the RIGHT variant's harmonics (a wrong guess yields a wrong-
+    // harmonic phase track for the whole window — the phase-B learning).
+    // Placed reads are never overridden here; the driver's majority
+    // judgment governs contradictions.
+    var tileHinted = null;
+    if (tileOf && opts.tileHints && opts.tileHints.length) {
+      var gH = dep("geom");
+      var centersH = emitters.map(function (em) { return gH.applyH(em.H, 0, 0); });
+      var fidsH = emitters.map(function (em) { return em.fiducialWidthPx; });
+      tileHinted = placeByHints(centersH, fidsH, tileOf, opts.tileHints);
+    }
     var ringsByEmitter = tilesN > 1 && opts.payload ? [] : null;
 
     var results = emitters.map(function (em, emIdx) {
@@ -765,6 +781,7 @@
                conic: conicBriefs ? conicBriefs[emIdx] : undefined,
                plateSolve: solveBriefs ? solveBriefs[emIdx] : undefined,
                tile: tileOf ? tileOf[emIdx] : undefined,
+               tileHinted: tileHinted && tileHinted[emIdx] ? true : undefined,
                annuli: annuli, payload: payload };
     });
 
@@ -831,6 +848,26 @@
     return s;
   }
 
+  /* Place unplaced tiles from the track's hints by plate-center proximity
+     (the lease's nearPlate tolerance: 0.75 × the larger fiducial width).
+     Mutates tileOf in place for entries at −1; returns a per-emitter
+     hinted flag array. Pure — the suite drives it directly. */
+  function placeByHints(centers, fids, tileOf, hints) {
+    var hinted = new Array(tileOf.length);
+    for (var i = 0; i < tileOf.length; i++) {
+      hinted[i] = false;
+      if (tileOf[i] !== -1 || !centers[i]) continue;
+      for (var h = 0; h < hints.length; h++) {
+        var hint = hints[h];
+        if (!hint || !hint.center || hint.tile === null || hint.tile === undefined || hint.tile < 0) continue;
+        var tol = 0.75 * Math.max(fids[i] || 0, hint.fid || 0, 1);
+        var dx = centers[i][0] - hint.center[0], dy = centers[i][1] - hint.center[1];
+        if (dx * dx + dy * dy <= tol * tol) { tileOf[i] = hint.tile; hinted[i] = true; break; }
+      }
+    }
+    return hinted;
+  }
+
   function tearBrief(t) {
     if (!t) return undefined;
     return { applied: t.applied, scanned: t.scanned, torn: t.torn, repaired: t.repaired, warped: t.warped, warpRate: t.warpRate, invalidated: t.invalidated, slipSuspect: t.slipSuspect, reasons: t.reasons, cuts: t.cuts };
@@ -849,7 +886,7 @@
   function round3(x) { return Math.round(x * 1000) / 1000; }
   function round1(x) { return Math.round(x * 10) / 10; }
 
-  var API = { decodeSequence: decodeSequence, decodeV3Auto: decodeV3Auto };
+  var API = { decodeSequence: decodeSequence, decodeV3Auto: decodeV3Auto, placeByHints: placeByHints };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   global.OC = global.OC || {}; global.OC.pipeline = API;
 })(typeof window !== "undefined" ? window : globalThis);
