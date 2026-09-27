@@ -1,5 +1,13 @@
 # Phase 0 field protocol — the afternoon in the hallway
 
+> **Historical: the v2 era (August 2026).** This is the acuity walk for the v2
+> profile: 15 fps emission, a countdown freeze, per-layer SER against a seeded
+> reference. The method still stands — walk the range, sweep cameras and
+> lighting, log the conditions honestly — but the details do not: the v3.1
+> profile emits at 30 fps for 60 fps capture with no countdown, and captures
+> now run through the take console and the registry. For current captures,
+> follow [field-workflow.md](field-workflow.md).
+
 Spec §6: produce the acuity curve — per device pair, range, lighting: which layers
 decode, at what rate. The harness logs everything; you provide legs and phones.
 "This is an afternoon in a long hallway or a car park, not an engineering project."

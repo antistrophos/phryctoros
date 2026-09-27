@@ -1,6 +1,7 @@
-/* ser.js — stage-9 stand-in for Phase 0: score decoded symbols against the known
-   seeded reference. The harness measures SER/erasure-rate per layer; the fountain
-   layer proper is deferred (measurement needs no payload framing). */
+/* ser.js — stage-9 scoring for reference-mode streams: score decoded symbols
+   against the known seeded reference and report SER/erasure-rate per layer (the
+   Phase 0 measurement, still used by the v2 suite). Payload mode does not use
+   it: fountain.js carries the droplets and the peel. */
 (function (global) {
   "use strict";
 

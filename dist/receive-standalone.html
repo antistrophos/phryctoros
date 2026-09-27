@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- single-file build 2026-08-30 — regenerate with build_standalone.py -->
+<!-- single-file build 2026-09-26 — regenerate with build_standalone.py -->
 
 <html lang="en">
 <head>
@@ -22,7 +22,7 @@
 </style>
 </head>
 <body>
-<h1>Receiver — acuity harness (Phase 0)</h1>
+<h1>Receiver — video-file harvest, live harvest, synthetic twins</h1>
 <div id="caps" class="dim"></div>
 
 <fieldset style="border-color:#4a5568"><legend style="font-weight:bold;color:#9ecbff">Emitter settings — paste the string from the emit page</legend>
@@ -41,7 +41,7 @@
   <label>handheld <input id="m_hand" type="checkbox" checked></label>
   <label>emitter loop (s) <input id="m_loop" type="number" value="60" style="width:4rem"></label>
   <label>profile <select id="m_prof"><option value="v2">v2 (current)</option><option value="v2p">v2 + payload (Phase 1)</option><option value="v3">v3.1 resilient (paced standard; payload; film at 60 fps)</option><option value="v3hr">v3.1 high-rate (paced; payload; film at 60 fps)</option><option value="v3f">V3 FLAT (legacy: flat F, pre-ruling clips)</option><option value="v3hrf">V3 high-rate FLAT (legacy)</option><option value="v3c">V3 CLASSIC ladder (legacy: base outermost, pre-2026-08-21 clips)</option><option value="v3a">V3 auto-detect preset (payload)</option></select></label>
-  <label id="v3opts" style="display:none"><input id="m_solve" type="checkbox" checked> plate solve <input id="m_beacon" type="checkbox" checked> beacon <input id="m_quad" type="checkbox"> quadrant corners (v3.1) <input id="m_qrp" type="checkbox"> persistent QR (diagnostic) D-ring <select id="m_dring"><option value="f24">v0 M=2/F=4</option><option value="c42">chunked M=4/F=2 (trial)</option><option value="c82">chunked M=8/F=2 (A/B)</option><option value="a42">A-inner M=4/F=2 (1b)</option><option value="a42r">A-inner re-split (amp trial)</option><option value="a42x">A-inner k5 ladder (amp trial)</option><option value="a42g">a42g geometry trial (floor 1.00, class 0.075)</option><option value="a42q">a42q center revision (quadrant3 + variant)</option><option value="a44q">a44q center revision @ F=4 (rate lever)</option><option value="a42v">a42v v4 dividend (floor 0.95, class 0.090, family 4)</option><option value="a42u">a42u under-ceiling probe (v4 plate, class 0.075)</option><option value="a82">A-inner M=8/F=2 (1b+A/B)</option></select></label>
+  <label id="v3opts" style="display:none"><input id="m_solve" type="checkbox" checked> plate solve <input id="m_beacon" type="checkbox" checked> beacon <input id="m_quad" type="checkbox"> quadrant corners (v3.1) <input id="m_qrp" type="checkbox"> persistent QR (diagnostic) D-ring <select id="m_dring"><option value="f24">v0 M=2/F=4</option><option value="c42">chunked M=4/F=2 (trial)</option><option value="c82">chunked M=8/F=2 (A/B)</option><option value="a42">A-inner M=4/F=2 (1b)</option><option value="a42r">A-inner re-split (amp trial)</option><option value="a42x">A-inner k5 ladder (amp trial)</option><option value="a42g">a42g geometry trial (floor 1.00, class 0.075)</option><option value="a42q">a42q center revision (quadrant3 + variant)</option><option value="a44q">a44q center revision @ F=4 (rate lever)</option><option value="a42v">a42v v4 dividend (floor 0.95, class 0.090, family 4)</option><option value="a42u">a42u under-ceiling probe (v4 plate, class 0.075)</option><option value="a42k">a42k k-split rescue [2,3,5] no-k1 (class 0.075)</option><option value="a42c">a42c k-split rescue circular end (Σ 0.050)</option><option value="a82">A-inner M=8/F=2 (1b+A/B)</option></select></label>
   <label>capture fps <select id="m_capfps"><option value="30">30</option><option value="60">60</option></select></label>
   <label>notes <input id="m_notes" style="width:12rem"></label>
 </fieldset>
@@ -50,6 +50,8 @@
   <button id="selftestBtn">Run self-test (no camera)</button>
   <button id="camBtn">Start camera</button>
   <button id="capBtn" disabled>Capture <input id="capSecs" type="number" value="8" min="3" style="width:3rem"> s → decode</button>
+  <button id="liveBtn" disabled title="the continuous receiver on the camera: take-what-comes, telemetry until it comes back with data or doesn't">Live harvest</button>
+  <button id="liveStopBtn" disabled>Stop live</button>
   <label style="border:1px dashed #555; padding:.4rem .6rem">video file (§9.1): <input id="fileIn" type="file" accept="video/*"></label>
 </p>
 
@@ -344,6 +346,25 @@
         if (inBand) worstBandHit = true;
         if (inPeak) worstPeakHit = true;
         rows.push({ annulus: a.index, k: k, f_nominal_hz: round2(fNominal), f_worst_hz: round2(fWorst), in_band_3_60: inBand, in_peak_15_25: inPeak });
+      }
+    }
+    // The beacon (2026-08-30): its rotating contour rides p.beacon, not
+    // p.annuli, so this report never saw it — the a42x notes called the
+    // k=5 in-band question unanalyzed for exactly that reason. Same
+    // worst-case convention as the data rings; rows tag annulus "beacon".
+    // v2 profiles carry no beacon and are unchanged.
+    if (p.beacon && p.beacon.rotation && p.beacon.harmonics) {
+      var b = p.beacon;
+      var devB = 0.5 * (fps / b.rotation.frames_per_symbol);
+      for (var jb = 0; jb < b.harmonics.length; jb++) {
+        var kb = b.harmonics[jb];
+        var fN = kb * b.rotation.nominal_hz;
+        var fW = kb * (b.rotation.nominal_hz + devB);
+        var inB = (fW >= BAND_LO && fN <= BAND_HI);
+        var inP = (fW >= PEAK_LO && fN <= PEAK_HI);
+        if (inB) worstBandHit = true;
+        if (inP) worstPeakHit = true;
+        rows.push({ annulus: "beacon", k: kb, f_nominal_hz: round2(fN), f_worst_hz: round2(fW), in_band_3_60: inB, in_peak_15_25: inP });
       }
     }
     var contrast = p.render.background - p.render.fill;
@@ -922,6 +943,49 @@
     else if (!dringAt && beaconSum > 0.030 + 1e-9)
       warnings.push("beacon amplitude sum " + beaconSum.toFixed(3) + " above 0.030 — quiet-zone margin thins");
 
+    // THE ARRAY EXPERIMENT RIG (phase 1): a variant map is one dring code
+    // per tile. Every code must be recognized; every variant must agree
+    // with the base on GEOMETRY, FAMILY and the SYMBOL CLOCK (registration,
+    // band edges, M/F and framing are shared across the array — tiles
+    // differ only in what the beacon contour spends); and each variant's
+    // amplitude sum must fit the geometry-priced class on its own.
+    if (p.beacon_variants !== undefined) {
+      var bvv = p.beacon_variants, tilesNv = p.tiling || 1;
+      if (!Array.isArray(bvv) || bvv.length < 2)
+        errors.push("beacon_variants must be an array of ≥ 2 dring codes (a single code is just applyDring)");
+      else if (bvv.length !== tilesNv)
+        errors.push("beacon_variants length " + bvv.length + " ≠ tiling " + tilesNv + " — one code per tile");
+      else {
+        for (var vi = 0; vi < bvv.length; vi++) {
+          var vc = bvv[vi];
+          if (vc !== "f24" && DRING_CHUNKED.indexOf(vc) < 0) {
+            errors.push("beacon_variants[" + vi + "] unrecognized code \"" + vc + "\"");
+            continue;
+          }
+          var vq = JSON.parse(JSON.stringify({ beacon: p.beacon, bands: p.bands, plate: p.plate }));
+          applyDring(vq, vc);
+          if (vq.bands[0].lo.fixed !== p.bands[0].lo.fixed || vq.plate.quiet_r !== pl.quiet_r ||
+              vq.plate.center_style !== pl.center_style || (vq.family || 3) !== (p.family || 3))
+            errors.push("beacon_variants[" + vi + "] \"" + vc + "\" moves geometry/family — the array shares ONE plate");
+          if (vq.beacon.rotation.M !== p.beacon.rotation.M ||
+              vq.beacon.rotation.frames_per_symbol !== p.beacon.rotation.frames_per_symbol ||
+              (vq.beacon.framing || "") !== (p.beacon.framing || "") ||
+              (vq.beacon.placement || "") !== (p.beacon.placement || ""))
+            errors.push("beacon_variants[" + vi + "] \"" + vc + "\" changes M/F/framing/placement — the symbol clock is shared across tiles");
+          var vSum = 0;
+          for (var vj = 0; vj < vq.beacon.amplitudes.length; vj++) vSum += vq.beacon.amplitudes[vj];
+          if (dringAt && vSum > classBound + 1e-9)
+            errors.push("beacon_variants[" + vi + "] \"" + vc + "\" amplitude sum " + vSum.toFixed(3) +
+                        " exceeds the geometry-priced class " + classBound.toFixed(3));
+        }
+        var v0q = JSON.parse(JSON.stringify({ beacon: p.beacon, bands: p.bands, plate: p.plate }));
+        applyDring(v0q, bvv[0]);
+        if (JSON.stringify(v0q.beacon.amplitudes) !== JSON.stringify(p.beacon.amplitudes) ||
+            JSON.stringify(v0q.beacon.harmonics) !== JSON.stringify(p.beacon.harmonics))
+          errors.push("beacon_variants[0] \"" + bvv[0] + "\" is not the applied base beacon — build with applyDringVariants");
+      }
+    }
+
     if (p.qr_persistent)
       warnings.push("qr_persistent is a DIAGNOSTIC variant — off the frozen contract (§ ruling 2: steady state is QR-free); for angled-capture data until saddle-first registration lands");
 
@@ -992,6 +1056,11 @@
      Every branch resets the beacon lists so toggling codes on a live
      profile never carries a previous trial's split. Mutates and returns
      the profile; anything unrecognised restores the default. */
+  // Every chunked D-ring code applyDring recognizes (f24 is the default/else).
+  // The validator's variant checks read this so a future code auto-qualifies.
+  var DRING_CHUNKED = ["c42", "c82", "a42", "a82", "a42r", "a42x", "a42g", "a42q", "a44q",
+                       "a42v", "a42u", "a42k", "a42c"];
+
   function applyDring(p, code) {
     if (!p || !p.beacon) return p;
     p.beacon.harmonics = [1, 2, 3];
@@ -1004,9 +1073,8 @@
     if (p.bands && p.bands[0] && p.bands[0].lo) p.bands[0].lo.fixed = 1.05;
     if (p.plate) { p.plate.quiet_r = 0.90; p.plate.center_style = "bullseye"; }
     delete p.family;
-    if (code === "c42" || code === "c82" || code === "a42" || code === "a82" ||
-        code === "a42r" || code === "a42x" || code === "a42g" || code === "a42q" || code === "a44q" ||
-        code === "a42v" || code === "a42u") {
+    delete p.beacon_variants;   // the stale-trap rule: no prior variant map rides a toggle
+    if (DRING_CHUNKED.indexOf(code) >= 0) {
       p.beacon.framing = "chunked";
       p.beacon.rotation.M = (code === "c82" || code === "a82") ? 8 : 4;
       p.beacon.rotation.gray = true;
@@ -1081,6 +1149,34 @@
         p.plate.center_style = "quadrant3";
         p.beacon.amplitudes = [0.012, 0.018, 0.045];
         p.family = 4;
+      } else if (code === "a42k" || code === "a42c") {
+        // THE k-SPLIT RESCUE A/B (2026-08-30, the practitioner's "more
+        // lobes / more circular" probe): the a42v/a42u conviction says
+        // relative EXCURSION is the camera path's enemy, and trackPhase
+        // weights phase votes by (k·a)² — so spend the class upward in k
+        // instead of upward in depth. Both codes drop k=1 ENTIRELY (F5b:
+        // the estimator is deaf to it; the branch guide is redundant at
+        // beacon speeds — 45° worst per-frame surprise inside k=2's ±90°
+        // window — and initialAnchor re-anchors on the k2/k3 coprime
+        // pair). Cost of the drop: meanMag[1], the centering-error
+        // diagnostic, has no row on these codes. a42q's proven plate
+        // carries both; family stays 3 — the receiver's tracker weights
+        // come from the settings string's dring code, as for every trial.
+        //   a42k: [2,3,5] at the full 0.075 class — Σ(k·a)² ×2.28 over
+        //         a42q (+3.6 dB) at UNCHANGED excursion.
+        //   a42c: the same shape scaled to Σ 0.050 (5.0% of the ring
+        //         radius — data-edge territory): a42q's estimation power
+        //         at two-thirds the excursion, the "more circular" end.
+        // k=5's NOMINAL temporal frequency 3.75 Hz enters the 3–60 Hz
+        // band (k3 sat below it at 2.25) — flicker.report now carries
+        // beacon rows (wired with this change) so the field session logs
+        // the row instead of guessing.
+        p.bands[0].lo.fixed = 1.00;
+        p.plate.quiet_r = 0.80;
+        p.plate.center_style = "quadrant3";
+        p.beacon.harmonics = [2, 3, 5];
+        p.beacon.phases_deg = [0, 45, 90];
+        p.beacon.amplitudes = code === "a42k" ? [0.015, 0.020, 0.040] : [0.010, 0.013, 0.027];
       }
     } else {
       delete p.beacon.framing;
@@ -1092,7 +1188,38 @@
     return p;
   }
 
-  var API = { defaultProfile: defaultProfile, profileV3: profileV3, isV3: isV3, bandBoundary: bandBoundary, validate: validate, sumAmp: sumAmp, sampleWindow: sampleWindow, deepMerge: deepMerge, applyDring: applyDring };
+  /* THE ARRAY EXPERIMENT RIG, phase 1 (2026-08-30, practitioner's design):
+     per-tile D-RING VARIANTS — one capture carries N beacon configs, so an
+     A/B (2-up) or a six-point sweep (6-up) shares every capture condition
+     by construction. codes[t] = the dring code tile t emits; codes[0] is
+     applied to the profile as the base (geometry, rotation, framing), and
+     the variant map rides p.beacon_variants for the renderer and decoder
+     to resolve per tile. GEOMETRY AND ROTATION STAY UNIFORM across tiles
+     (the validator enforces it): registration, band edges, M/F and the
+     symbol clock are shared — tiles differ only in what the beacon
+     contour SPENDS. Data rings are identical across tiles (per-tile
+     ladders = the banked phase 2). */
+  function applyDringVariants(p, codes) {
+    if (!p || !p.beacon || !codes || !codes.length) return p;
+    applyDring(p, codes[0]);
+    if (codes.length > 1) p.beacon_variants = codes.slice();
+    return p;
+  }
+
+  /* Resolve tile → the beacon params that tile emits/reads: {harmonics,
+     amplitudes, phases_deg} plus the shared rotation. Falls back to the
+     base beacon when no variant map rides (or the tile is unplaced). */
+  function beaconVariantFor(p, tile) {
+    if (!p || !p.beacon) return null;
+    if (!p.beacon_variants || tile == null || tile < 0) return p.beacon;
+    var code = p.beacon_variants[Math.min(tile, p.beacon_variants.length - 1)];
+    var q = JSON.parse(JSON.stringify({ beacon: p.beacon, bands: p.bands, plate: p.plate }));
+    applyDring(q, code);
+    q.beacon.rotation = p.beacon.rotation;   // rotation is SHARED (validator-enforced)
+    return q.beacon;
+  }
+
+  var API = { defaultProfile: defaultProfile, profileV3: profileV3, isV3: isV3, bandBoundary: bandBoundary, validate: validate, sumAmp: sumAmp, sampleWindow: sampleWindow, deepMerge: deepMerge, applyDring: applyDring, applyDringVariants: applyDringVariants, beaconVariantFor: beaconVariantFor, DRING_CHUNKED: DRING_CHUNKED };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   global.OC = global.OC || {}; global.OC.profile = API;
 })(typeof window !== "undefined" ? window : globalThis);
@@ -1116,6 +1243,7 @@
   "use strict";
 
   function P() { return (typeof module !== "undefined" && module.exports) ? require("./prng.js") : global.OC.prng; }
+  function PF() { return (typeof module !== "undefined" && module.exports) ? require("./profile.js") : global.OC.profile; }
 
   var TAU = Math.PI * 2;
 
@@ -1738,13 +1866,13 @@
 
     var dringAt = profile.beacon.placement === "a-inner";
     var centerQR = !!(opts.countdown || profile.qr_persistent);
-    var mkBetas = function (phiB) {
+    var mkBetas = function (bp, phiB) {
       var bSum = 0;
-      for (var q = 0; q < profile.beacon.amplitudes.length; q++) bSum += profile.beacon.amplitudes[q];
+      for (var q = 0; q < bp.amplitudes.length; q++) bSum += bp.amplitudes[q];
       return {
         sum: bSum,
-        betas: profile.beacon.harmonics.map(function (k, j) {
-          return { k: k, a: profile.beacon.amplitudes[j], beta: profile.beacon.phases_deg[j] * Math.PI / 180 - k * phiB };
+        betas: bp.harmonics.map(function (k, j) {
+          return { k: k, a: bp.amplitudes[j], beta: bp.phases_deg[j] * Math.PI / 180 - k * phiB };
         })
       };
     };
@@ -1754,16 +1882,24 @@
       // Ruling 1b: every tile carries the D-ring at band A's inner boundary,
       // each modulated by ITS OWN envelope (b[16] = the carrying tile), so the
       // schedules differ per tile. The ring is outside the donut, so it keeps
-      // its contour through the countdown face too.
+      // its contour through the countdown face too. THE ARRAY RIG (phase 1):
+      // with a variant map, each tile's contour also spends ITS OWN code's
+      // harmonic lists — geometry and the symbol clock stay shared.
       var bsT = opts.beaconSchedulesT;
       if (!bsT) {
         bsT = [];
         for (var bt0 = 0; bt0 < layout.n; bt0++)
           bsT.push(buildBeaconSchedule(profile, f + 1, envelopeBytes(profile, opts.payloadInfo || null, bt0)));
       }
+      var bvT = opts.beaconParamsT;
+      if (!bvT) {
+        bvT = [];
+        for (var bv0 = 0; bv0 < layout.n; bv0++)
+          bvT.push(profile.beacon_variants ? PF().beaconVariantFor(profile, bv0) : profile.beacon);
+      }
       beaconT = [];
       for (var bt1 = 0; bt1 < layout.n; bt1++) {
-        var bItem = mkBetas(bsT[bt1] ? phaseAt({ rotation: profile.beacon.rotation }, bsT[bt1], fps, f) : 0);
+        var bItem = mkBetas(bvT[bt1], bsT[bt1] ? phaseAt({ rotation: profile.beacon.rotation }, bsT[bt1], fps, f) : 0);
         beaconT.push(bItem);
         bandsT[bt1][0].lo.betas = bItem.betas;
         bandsT[bt1][0].lo.sum = bItem.sum;
@@ -1772,7 +1908,7 @@
     } else if (!centerQR) {
       var bs = opts.beaconSchedule;
       if (bs === undefined) bs = buildBeaconSchedule(profile, f + 1, opts.envBytes || envelopeBytes(profile, opts.payloadInfo || null));
-      beacon = mkBetas(bs ? phaseAt({ rotation: profile.beacon.rotation }, bs, fps, f) : 0);
+      beacon = mkBetas(profile.beacon, bs ? phaseAt({ rotation: profile.beacon.rotation }, bs, fps, f) : 0);
     }
     var qrm = null, qrHalf = 0, qrModU = 0, qrN = 0;
     if (centerQR) {
@@ -2015,10 +2151,15 @@
             : (opts.carouselsT ? opts.carouselsT[tt] : undefined);
           schedulesT.push(buildSchedules(profile, n, carT));
         }
+        var beaconParamsT = null;
+        if (profile.beacon_variants) {
+          beaconParamsT = [];
+          for (var bpt = 0; bpt < layout.n; bpt++) beaconParamsT.push(PF().beaconVariantFor(profile, bpt));
+        }
         var framesT = [];
         for (var ft = 0; ft < n; ft++)
-          framesT.push({ f: ft, img: renderFrameV3Tiled(profile, ft, { trig: opts.trig, schedulesT: schedulesT, beaconSchedule: beaconSchedule, beaconSchedulesT: beaconSchedulesT, envBytes: envB }) });
-        return { frames: framesT, schedulesT: schedulesT, beaconSchedule: beaconSchedule, beaconSchedulesT: beaconSchedulesT };
+          framesT.push({ f: ft, img: renderFrameV3Tiled(profile, ft, { trig: opts.trig, schedulesT: schedulesT, beaconSchedule: beaconSchedule, beaconSchedulesT: beaconSchedulesT, beaconParamsT: beaconParamsT, envBytes: envB }) });
+        return { frames: framesT, schedulesT: schedulesT, beaconSchedule: beaconSchedule, beaconSchedulesT: beaconSchedulesT, beaconParamsT: beaconParamsT };
       }
       // opts.payloadBytes triggers payload mode here exactly as in the tiled
       // branch (it used to be tiled-only — an untiled payloadBytes sequence
@@ -2883,24 +3024,27 @@
      ring's OUTER edge — the whole existing chain (sampleWindow, sampleBoundary
      "up", DFT, trackPhase, findAlignment on the all-flips preamble, demap at
      M=2/4) runs it unmodified. layer −1 keeps it out of every layer lookup. */
-  function beaconAnnulus(profile) {
+  function beaconAnnulus(profile, bv) {
     // D-ring ruling 1b: at placement "a-inner" the control channel is band
     // A's inner boundary (r0 1.05, light→dark walking outward = crossing
     // "down", per tile); the frozen default stays the breaker pair's outer
     // edge on the designated tile. Same chain either way — only the geometry
-    // descriptor moves.
+    // descriptor moves. bv (the array rig, phase 1): a per-tile VARIANT's
+    // beacon params — the descriptor's boundary lists come from the tile's
+    // own code while geometry and rotation stay the shared profile's.
+    var b = bv || profile.beacon;
     if (profile.beacon.placement === "a-inner")
       return {
         index: "beacon", layer: -1, beacon: true, edge: "beacon", crossing: "down",
         r0: profile.bands[0].lo.fixed,
         rotation: profile.beacon.rotation,
-        boundary: { harmonics: profile.beacon.harmonics, amplitudes: profile.beacon.amplitudes, phases_deg: profile.beacon.phases_deg }
+        boundary: { harmonics: b.harmonics, amplitudes: b.amplitudes, phases_deg: b.phases_deg }
       };
     return {
       index: "beacon", layer: -1, beacon: true, edge: "beacon", crossing: "up",
       r0: profile.plate.breaker.r_out,
       rotation: profile.beacon.rotation,
-      boundary: { harmonics: profile.beacon.harmonics, amplitudes: profile.beacon.amplitudes, phases_deg: profile.beacon.phases_deg }
+      boundary: { harmonics: b.harmonics, amplitudes: b.amplitudes, phases_deg: b.phases_deg }
     };
   }
 
@@ -2987,11 +3131,23 @@
      sightings are confirmed the moment assembly succeeds. Same-index chunks
      that disagree mark the slot conflicted (first-seen kept — assembly then
      fails the seal unless the first was right; the counters surface it). */
+  /* MAJORITY ASSEMBLY (the continuous receiver, phase B): the scan used to
+     keep the FIRST bytes seen per index, so one chance-passed junk chunk
+     (12-bit check; a long scan tries thousands of positions) poisoned that
+     index for the whole scan — a window's loss at most, but over a per-
+     emitter STREAM spanning a minute it blocked the seal indefinitely (the
+     first phase-B twin: tile 0's idx-5 held a junk chunk with tile byte 67
+     for 49 s of otherwise honest stream). Now every distinct payload per
+     index is counted, assembly tries the majority first and then the
+     CRC16-verified alternates (≤3 candidates per index, bounded combos);
+     the seal is the 16-bit check as ever — only the CHOICE of candidate
+     changed. chunkBytesHex reports the majority per index (what the bank
+     banks). `conflicts` still counts disagreeing same-index payloads. */
   function beaconChunkScan(decoded, lag, M) {
     var F = (typeof module !== "undefined" && module.exports) ? require("./fountain.js") : global.OC.fountain;
     var bytes = beaconBytes(decoded, lag, M);
     var nBytes = bytes.length;
-    var data = {}, counts = [0, 0, 0, 0, 0, 0], conflicts = 0, tags = {};
+    var seen = {}, counts = [0, 0, 0, 0, 0, 0], conflicts = 0, tags = {};
     for (var at = 0; at < nBytes; at++) {
       var h = bytes[at];
       if (h === null || h < 0xC0 || h > 0xDF) continue;
@@ -3015,29 +3171,45 @@
         for (var uq = 0; uq < 4; uq++) du[1 + uq] ^= mk[uq];
         if (F.crc8(du, 5) !== du[5]) continue;
         var key = "" + idx;
-        if (data[key]) {
-          var samePayload = true;
-          for (var q = 1; q <= 4; q++) if (data[key][q] !== du[q]) { samePayload = false; break; }
-          if (!samePayload) conflicts++;
-        } else data[key] = du;
+        var hx0 = "";
+        for (var hq = 1; hq <= 4; hq++) hx0 += (du[hq] < 16 ? "0" : "") + du[hq].toString(16);
+        var slotS = seen[key] || (seen[key] = {});
+        if (!slotS[hx0]) {
+          if (Object.keys(slotS).length) conflicts++;
+          slotS[hx0] = { bytes: du, n: 0, hex: hx0 };
+        }
+        slotS[hx0].n++;
         counts[idx]++;
       }
     }
+    // candidates per index, majority first (ties by first appearance)
+    var cands = {};
+    for (var ck0 in seen) {
+      var list = [];
+      for (var hk in seen[ck0]) list.push(seen[ck0][hk]);
+      list.sort(function (a, b) { return b.n - a.n; });
+      cands[ck0] = list.slice(0, 3);
+    }
     var envelope = null, tag = null;
-    if (data["1"] && data["2"] && data["3"] && data["4"] && data["5"]) {
-      var env = new Uint8Array(20);
-      for (var c = 1; c <= 5; c++) for (var j = 0; j < 4; j++) env[4 * (c - 1) + j] = data["" + c][1 + j];
-      var crc = F.crc16(env.subarray(0, 18));
-      if (((env[18] << 8) | env[19]) === crc) { envelope = env; tag = crc; }
+    if (cands["1"] && cands["2"] && cands["3"] && cands["4"] && cands["5"]) {
+      var pick = [0, 0, 0, 0, 0], total = 1;
+      for (var c0 = 1; c0 <= 5; c0++) total *= cands["" + c0].length;
+      for (var combo = 0; combo < total && !envelope; combo++) {
+        var rem = combo;
+        for (var c1 = 5; c1 >= 1; c1--) { var L = cands["" + c1].length; pick[c1 - 1] = rem % L; rem = Math.floor(rem / L); }
+        var env = new Uint8Array(20);
+        for (var c = 1; c <= 5; c++) {
+          var cb0 = cands["" + c][pick[c - 1]].bytes;
+          for (var j = 0; j < 4; j++) env[4 * (c - 1) + j] = cb0[1 + j];
+        }
+        var crc = F.crc16(env.subarray(0, 18));
+        if (((env[18] << 8) | env[19]) === crc) { envelope = env; tag = crc; }
+      }
     }
     var bestTag = null, bestTagN = 0;
     for (var tv in tags) if (tags[tv] > bestTagN) { bestTagN = tags[tv]; bestTag = +tv; }
     var chunkBytesHex = {};
-    for (var ck in data) {
-      var hx = "";
-      for (var cb = 1; cb <= 4; cb++) hx += (data[ck][cb] < 16 ? "0" : "") + data[ck][cb].toString(16);
-      chunkBytesHex[ck] = hx;
-    }
+    for (var ck in cands) chunkBytesHex[ck] = cands[ck][0].hex;
     return { envelope: envelope, tag: tag, sealed: envelope !== null,
              tagSeen: bestTag, tagSightings: bestTagN,
              tagMatchesSeal: envelope !== null && bestTag !== null && bestTag === tag,
@@ -3259,10 +3431,63 @@
              chunks: chunks, tagSeen: best.scan.tagSeen, tagSightings: best.scan.tagSightings };
   }
 
+  /* THE FULL BEACON READ over any phase track (the continuous receiver,
+     phase B): align (framed or chunked, with optional tag confirmation),
+     decode at the winning offset, parse the first sealed envelope, fall back
+     to the chunk sweep when nothing sealed — the pipeline's beacon branch as
+     one call, so a per-emitter STREAM accumulated across windows reads
+     through exactly the machinery a single window does. Returns the beacon
+     row's vocabulary (envelope/envelopeFields/tag/tagConfirmed/chunkSweep …)
+     with alignMethod "stream". */
+  function beaconRead(track, annulus, profile, opts) {
+    opts = opts || {};
+    var demap = (typeof module !== "undefined" && module.exports) ? require("./demap.js") : global.OC.demap;
+    var M = annulus.rotation.M;
+    var hexOf = function (u8) {
+      var s = "";
+      for (var i = 0; i < u8.length; i++) s += (u8[i] < 16 ? "0" : "") + u8[i].toString(16);
+      return s;
+    };
+    var align = beaconAlign(track, annulus, profile, undefined, { expectTag: opts.expectTag });
+    var out = { sealed: false };
+    if (align) {
+      out.alignMethod = "stream"; out.framing = align.framing || "frame";
+      out.alignOffset = align.offset; out.alignLag = align.lag;
+      var decoded = demap.decode(track, annulus, profile, align.offset);
+      var frames = beaconFramesFor(decoded, align, M);
+      var env = null, fields = null;
+      for (var i = 0; i < frames.length && !fields; i++) {
+        var pf = parseEnvelope(frames[i].envelope);
+        if (pf) { env = frames[i]; fields = pf; }
+      }
+      if (!env && frames.length) env = frames[0];
+      out.envelope = env ? hexOf(env.envelope) : null;
+      out.envelopeFields = fields || undefined;
+      out.envelopeFrames = frames.length;
+      out.tag = env && env.envelope.length === 20
+        ? hexOf(env.envelope.subarray ? env.envelope.subarray(18, 20) : env.envelope.slice(18, 20))
+        : (align.tag || undefined);
+      out.tagConfirmed = align.tagConfirmed || undefined;
+      out.tagSightings = align.tagSightings;
+      out.folded = align.folded || undefined;
+      out.sealed = !!fields;
+    }
+    if (!out.envelopeFields && !out.tagConfirmed) {
+      var sweep = beaconChunkSweep(track, annulus, profile);
+      if (sweep && sweep.passes) {
+        out.chunkSweep = sweep.chunks; out.chunkSweepPasses = sweep.passes;
+        out.tagSeen = sweep.tagSeen != null ? ("0000" + (sweep.tagSeen >>> 0).toString(16)).slice(-4) : undefined;
+        if (out.tagSightings === undefined) out.tagSightings = sweep.tagSightings;
+      }
+    }
+    return out;
+  }
+
   var API = { findBullseye: findBullseye, plateSolve: plateSolve, fitCircleEdge: fitCircleEdge,
               beaconAnnulus: beaconAnnulus, beaconDecode: beaconDecode, beaconFrames: beaconFrames,
               beaconBytes: beaconBytes, beaconChunkScan: beaconChunkScan, beaconChunkSweep: beaconChunkSweep,
-              beaconFramesFor: beaconFramesFor, beaconAlign: beaconAlign, parseEnvelope: parseEnvelope };
+              beaconFramesFor: beaconFramesFor, beaconAlign: beaconAlign, parseEnvelope: parseEnvelope,
+              beaconRead: beaconRead };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   global.OC = global.OC || {}; global.OC.plate = API;
 })(typeof window !== "undefined" ? window : globalThis);
@@ -4357,6 +4582,12 @@
   "use strict";
 
   var TAU = Math.PI * 2;
+  // The k1-free anchor's trust gate: the coprime pair's internal disagreement
+  // must sit under this to steer the estimate. 0.30 rad ≈ 17° — the (2,3)
+  // pair's best NOISELESS wrong pairing lands π/3 ≈ 60° apart, and the true
+  // pairing's err is the two rungs' summed φ-noise (a few degrees at working
+  // SNR), so the band between is wide on both sides.
+  var PAIR_AGREE = 0.30;
 
   function wrap(x) { x = x % TAU; if (x > Math.PI) x -= TAU; if (x <= -Math.PI) x += TAU; return x; }
 
@@ -4372,12 +4603,17 @@
       if (iA < 0) iA = j;
       else if (iB < 0) { iB = j; break; }
     }
+    // Returns { phi, err }: err is the coprime pair's INTERNAL disagreement —
+    // the per-frame guide's trust gate reads it (a wrong branch pairing of
+    // (2,3) can land no closer than ~π/3 even noiseless, so a small err is
+    // the pair agreeing on the one φ per turn they jointly admit). Infinity
+    // when no pair exists to disagree.
     if (iA < 0) {
       var j1 = ks.indexOf(1);
-      return j1 >= 0 ? wrap(psis[j1] - spec.arg[1]) : 0;
+      return { phi: j1 >= 0 ? wrap(psis[j1] - spec.arg[1]) : 0, err: Infinity };
     }
     var kA = ks[iA], tA = psis[iA] - spec.arg[kA];
-    if (iB < 0) return wrap((tA) / kA);
+    if (iB < 0) return { phi: wrap((tA) / kA), err: Infinity };
     var kB = ks[iB], tB = psis[iB] - spec.arg[kB];
     var best = null;
     for (var m = 0; m < kA; m++) {
@@ -4387,7 +4623,7 @@
       var err = Math.abs(wrap(candB - cand));
       if (!best || err < best.err) best = { cand: cand, err: err };
     }
-    return wrap(best.cand);
+    return { phi: wrap(best.cand), err: best.err };
   }
 
   /* series: array of { f, spec } (spec from transform.dft; null for invalid frames)
@@ -4408,6 +4644,13 @@
     var magSum = {}, magN = 0;
     var prevF = -1, prevPhi = 0;
     var firstValid = -1;
+    // The k1-free anchor CHAIN (turn-count repair): the last self-agreeing
+    // anchor's absolute value and frame. Across a gap of ≤ 2 frames the
+    // deviation-bounded step window is narrower than a full turn, so the
+    // next agreeing anchor's turn count resolves UNIQUELY against the chain
+    // — independent of a prediction a vote-poisoned frame may have dragged
+    // past π (which is exactly when pred-nearest slips a turn).
+    var lastAgF = -99, lastAgAbs = null;
 
     for (var s = 0; s < series.length; s++) {
       var fr = series[s];
@@ -4416,14 +4659,14 @@
       if (firstValid < 0) firstValid = f;
       var pred;
       if (prevF < 0) {
-        pred = initialAnchor(spec, ks, psis);
+        pred = initialAnchor(spec, ks, psis).phi;
       } else if (f - prevF > 1) {
         gapAfter[prevF] = f - prevF;
         // Post-gap re-acquisition: nominal-only continuity carries up to 45°·gap of
         // deviation surprise — at gap 2 that is k=2's whole branch window. Re-anchor
         // absolutely (joint k≥2 vote), keeping only the turn count from continuity.
         var cont = prevPhi + omega * (f - prevF) / fps;
-        var anch = initialAnchor(spec, ks, psis);
+        var anch = initialAnchor(spec, ks, psis).phi;
         pred = anch + TAU * Math.round((cont - anch) / TAU);
       } else {
         pred = prevPhi + omega * (f - prevF) / fps;
@@ -4447,6 +4690,70 @@
         var tg = psis[jg] - spec.arg[1];
         var mg = Math.round((pred - tg) / TAU);
         est = (pred + (tg + TAU * mg)) / 2;
+      } else if (jg < 0) {
+        // k1-FREE ladder (a42k/a42c; the v5 outer-edge split is the same
+        // shape): the "45°" surprise budget above is constellation-specific —
+        // at M=4/F=2 a symbol-2 step sweeps 180°/symbol = 90°/frame, past
+        // k2's ±90° branch window once nominal rides on top, and without a
+        // guide the track under-runs (T22kc's first lap measured carrier
+        // 0.432×). The k1 guide was LOAD-BEARING, not belt-and-suspenders.
+        // Its replacement: re-anchor absolutely on the k2/k3 coprime pair
+        // (initialAnchor — the same joint vote the post-gap path trusts),
+        // take the turn count from the prediction, and blend 50/50 exactly
+        // as the k1 guide did — the anchor inputs are EMITTED harmonics,
+        // not the centering-polluted k=1 the old guide steered by.
+        //
+        // THE GATE (2026-08-30, the first camera A/B's lesson): blended
+        // UNCONDITIONALLY, the anchor mis-branches in bursts at camera
+        // noise — carriers 0.60–1.03× with cold framing never landing
+        // while isolated tag chunks pass between glitches (three takes,
+        // both k-split codes). Trust the pair ONLY when it agrees with
+        // ITSELF: err ≤ PAIR_AGREE, safely under the (2,3) pair's ~π/3
+        // noiseless wrong-branch floor and safely over the summed
+        // per-rung φ-noise at working SNR. A non-agreeing frame COASTS
+        // on the prediction (the (k·mag)² votes below still correct).
+        //
+        // A self-agreeing anchor is then trusted at ONE of two strengths,
+        // split at the constellation's legitimate deviation cap (π/F for
+        // the largest symbol step + nominal-and-noise margin): inside it,
+        // the smooth 50/50 blend; BEYOND it, the prediction cannot
+        // legitimately be that wrong but a vote-poisoned track can — so
+        // re-center absolutely, keeping only the turn count (the post-gap
+        // re-acquisition philosophy, per frame). The first cut of this
+        // gate REJECTED far anchors instead, and T22kc(e)'s burst fixture
+        // rediscovered the field's 0.43× under-run in vitro: one garbaged
+        // rung's LADDER votes drag the estimate past the cap, and the
+        // rejection then locks out its own recovery — a ratchet. The pair's
+        // full-turn joint ambiguity is what licenses the re-center: no
+        // wrong pairing can agree with itself within PAIR_AGREE.
+        var anch2 = initialAnchor(spec, ks, psis);
+        if (anch2.err <= PAIR_AGREE) {
+          var F2 = annulus.rotation.frames_per_symbol;
+          // Turn count: prefer the ANCHOR CHAIN when the last self-agreeing
+          // anchor is ≤ 2 frames back — the per-frame step is bounded by
+          // [ω/fps − π(1−2/M)/F, ω/fps + π/F], and over ≤ 2 frames that
+          // window (+0.3 rad margin each side) spans less than 2π, so
+          // exactly one turn fits. T22kc(e)'s fixture caught pred-nearest
+          // slipping whole turns here: a poisoned frame drags the
+          // prediction past π and the very next (correct) anchor gets
+          // wrapped onto the wrong turn. Ambiguous or stale chain falls
+          // back to pred-nearest.
+          var guided2 = anch2.phi + TAU * Math.round((pred - anch2.phi) / TAU);
+          var dfA = f - lastAgF;
+          if (lastAgAbs !== null && dfA >= 1 && dfA <= 2) {
+            var stepLo = (omega / fps - Math.PI * (1 - 2 / annulus.rotation.M) / F2) * dfA - 0.3;
+            var stepHi = (omega / fps + Math.PI / F2) * dfA + 0.3;
+            var baseN = Math.round((pred - anch2.phi) / TAU), pickG = null, hits = 0;
+            for (var nn = baseN - 2; nn <= baseN + 2; nn++) {
+              var stp = anch2.phi + TAU * nn - lastAgAbs;
+              if (stp >= stepLo && stp <= stepHi) { hits++; pickG = anch2.phi + TAU * nn; }
+            }
+            if (hits === 1) guided2 = pickG;
+          }
+          lastAgF = f; lastAgAbs = guided2;
+          var devCap = Math.PI / F2 + 0.35;
+          est = Math.abs(guided2 - pred) <= devCap ? (pred + guided2) / 2 : guided2;
+        }
       }
       var estAcc = est * W;
       var usable = 0;
@@ -6045,8 +6352,18 @@
      header slot of every ring and tile (they depend only on K + payload), so
      one sighting holds them all — the planner prices every header slot as
      held from that moment. A droplet_bits mismatch refuses the absorb
-     rather than silently mixing framings. */
-  function absorb(ledger, res, profile) {
+     rather than silently mixing framings.
+
+     EPOCHS (the continuous receiver, phase A): `ep` — the caller's (burst,
+     hypothesis) id — is recorded per banked droplet in a SIDE TABLE
+     (ledger.eps[seed][c]), never in the ring itself, so every v2 store and
+     every epoch-blind reader stays byte-compatible: absent = one epoch,
+     trusted forever. Conflicts and cross-epoch duplicate sightings are
+     RETAINED as witnesses (ledger.alts[seed][c] = [{x, ep}]) — first-seen
+     still wins the ring, but exclusion can later re-project the slot from a
+     non-excluded witness: the first-seen-poison-blocks-forever disease dies
+     here. Exclusion is a VIEW (ringsFor), never a deletion. */
+  function absorb(ledger, res, profile, ep) {
     var g = F().geom(profile);
     if (ledger.droplet_bits !== g.dropletBits)
       return { added: 0, dup: 0, conflicts: 0, quarantined: 0, mismatch: true };
@@ -6117,10 +6434,27 @@
           if (ring[dr.c] !== undefined) {
             if (ring[dr.c] !== dr.hex) conflicts++; // same slot, different bytes — surfaced, never silent
             dup++;
+            // Witness retention: a conflicting read, or the SAME bytes seen
+            // under a DIFFERENT epoch, is evidence a later exclusion can
+            // re-project from. Capped — a slot at war is already surfaced
+            // through the conflict count, and four witnesses decide it.
+            var bankedEp = ledger.eps && ledger.eps[seed] && ledger.eps[seed][dr.c];
+            if (ring[dr.c] !== dr.hex || (ep != null && ep !== bankedEp)) {
+              var alts = ledger.alts || (ledger.alts = {});
+              var aSlot = (alts[seed] || (alts[seed] = {}))[dr.c] || (alts[seed][dr.c] = []);
+              var have = false;
+              for (var wq = 0; wq < aSlot.length; wq++)
+                if (aSlot[wq].x === dr.hex && aSlot[wq].ep === ep) { have = true; break; }
+              if (!have && aSlot.length < 4) aSlot.push(ep != null ? { x: dr.hex, ep: ep } : { x: dr.hex });
+            }
             continue;
           }
           ring[dr.c] = dr.hex;
           added++;
+          if (ep != null) {
+            var eps = ledger.eps || (ledger.eps = {});
+            (eps[seed] || (eps[seed] = {}))[dr.c] = ep;
+          }
           if (!ledger.header && F().isHeaderSlot(dr.c)) {
             var h = F().parseHeader(hexToBytes(dr.hex), g);
             if (h) ledger.header = { K: h.K, len: h.len, hex: dr.hex };
@@ -6135,13 +6469,31 @@
      droplet arrived this window, last window, from another clip's take, or
      from another TILE: every held tile-ring goes in (tile-distinct seeds make
      the pool collision-free, exactly as the pipeline's own multi-tile peel),
-     so a 6-up harvest peels across tiles the way a 6-up window does. */
-  function ringsFor(ledger, profile) {
+     so a 6-up harvest peels across tiles the way a 6-up window does.
+
+     opts.excluded (the coalition view): a slot whose banked epoch is excluded
+     re-projects from its first NON-excluded witness in the alts table —
+     droplets a convicted epoch banked first stop blocking honest bytes — and
+     drops entirely when no trusted witness exists. Un-attributed droplets
+     (no epoch recorded — every pre-epoch store) are trusted always. */
+  function ringsFor(ledger, profile, opts) {
+    var excluded = opts && opts.excluded;
     var out = [];
     for (var seedKey in ledger.rings) {
       var held = ledger.rings[seedKey];
+      var eps = excluded && ledger.eps && ledger.eps[seedKey];
+      var alts = excluded && ledger.alts && ledger.alts[seedKey];
       var droplets = [];
-      for (var c in held) droplets.push({ c: +c, bytes: hexToBytes(held[c]) });
+      for (var c in held) {
+        var hex = held[c];
+        if (excluded && eps && eps[c] != null && excluded[eps[c]]) {
+          hex = null;
+          var aSlot = alts && alts[c];
+          for (var w = 0; aSlot && w < aSlot.length; w++)
+            if (!(aSlot[w].ep != null && excluded[aSlot[w].ep])) { hex = aSlot[w].x; break; }
+        }
+        if (hex != null) droplets.push({ c: +c, bytes: hexToBytes(hex) });
+      }
       out.push({ seed: +seedKey, droplets: droplets });
     }
     // Stable order: the profile's base rings first (tile 0), then the rest
@@ -6268,10 +6620,37 @@
              tiling: store.tiling, session: null, header: null, rings: {}, clips: [] };
   }
 
+  /* THE ENVELOPE CYCLE in seconds — the beacon's own clock, config-aware:
+     one full envelope copy on the air. Chunked framing carries 5 × (4-byte
+     tag chunk + 6-byte data chunk) = 50 bytes per rotor block; the v0 frame
+     framing 23 bytes per frame. symbols = bytes·8/bitsPer(M), frames =
+     symbols·F, seconds = frames/fps — 13.3 s for the A-inner M=4/F=2 family
+     at 30 fps. null without a beacon (v2), and callers keep counting
+     windows. The lease's time-pricing UNIT (the mini-ruling, 2026-09-01):
+     beacon-priced rules count cycles, data-priced rules plain seconds. */
+  function envelopeCycleSeconds(profile) {
+    var b = profile && profile.beacon;
+    if (!b || !b.rotation || !b.rotation.M) return null;
+    var M = b.rotation.M, F = b.rotation.frames_per_symbol || 1;
+    var bitsPer = M === 8 ? 3 : (M === 4 ? 2 : 1);
+    var bytes = b.framing === "chunked" ? 50 : 23;
+    return Math.round(10 * (bytes * 8 / bitsPer) * F / (profile.frame_rate_hz || 30)) / 10;
+  }
+
   function leaseCreate(opts) {
     opts = opts || {};
     return {
       graceWindows: opts.graceWindows !== undefined ? opts.graceWindows : 2,
+      // TIME-PRICING (the lease mini-ruling, ruled as defaults 2026-09-01;
+      // phase C): with the envelope cycle known, grace runs 2 CYCLES and a
+      // coasting hold ends only when a zero-lock stretch reaches
+      // coastEndSeconds (8 s, data-priced) — the hold matrix's semantics are
+      // unchanged, only the units move from windows to time. Callers pass
+      // each window's span (opts.span, seconds) to leaseObserve; without a
+      // cycle (or a span) the window counting stands byte-for-byte.
+      cycleSeconds: opts.cycleSeconds || null,
+      graceSeconds: opts.cycleSeconds ? 2 * opts.cycleSeconds : null,
+      coastEndSeconds: opts.cycleSeconds ? (opts.coastEndSeconds || 8) : null,
       matchFidFrac: opts.matchFidFrac !== undefined ? opts.matchFidFrac : 0.75,
       // The degrade ladder's TOP rung: with no announced context live, the
       // operator's own declaration (the profile they selected) is the
@@ -6287,15 +6666,38 @@
     };
   }
 
-  /* First-seen-wins ring merge (conflicts surfaced, headers carried). */
+  /* First-seen-wins ring merge (conflicts surfaced, headers carried; epoch
+     attribution and retained witnesses ride along — an operator-merge or an
+     adoption must not launder a droplet's provenance). */
   function mergeLedger(dst, src) {
     var moved = 0, conflicts = 0;
+    var altPush = function (seed, c, x, ep) {
+      var alts = dst.alts || (dst.alts = {});
+      var slot = (alts[seed] || (alts[seed] = {}))[c] || (alts[seed][c] = []);
+      for (var i = 0; i < slot.length; i++) if (slot[i].x === x && slot[i].ep === ep) return;
+      if (slot.length < 4) slot.push(ep != null ? { x: x, ep: ep } : { x: x });
+    };
     for (var seed in src.rings) {
       var d = dst.rings[seed] || (dst.rings[seed] = {});
       for (var c in src.rings[seed]) {
-        if (d[c] === undefined) { d[c] = src.rings[seed][c]; moved++; }
-        else if (d[c] !== src.rings[seed][c]) conflicts++;
+        var sEp = src.eps && src.eps[seed] && src.eps[seed][c];
+        if (d[c] === undefined) {
+          d[c] = src.rings[seed][c]; moved++;
+          if (sEp != null) {
+            var eps = dst.eps || (dst.eps = {});
+            (eps[seed] || (eps[seed] = {}))[c] = sEp;
+          }
+        } else {
+          if (d[c] !== src.rings[seed][c]) conflicts++;
+          var dEp = dst.eps && dst.eps[seed] && dst.eps[seed][c];
+          if (d[c] !== src.rings[seed][c] || (sEp != null && sEp !== dEp))
+            altPush(seed, c, src.rings[seed][c], sEp);
+        }
       }
+      if (src.alts && src.alts[seed])
+        for (var c2 in src.alts[seed])
+          for (var a2 = 0; a2 < src.alts[seed][c2].length; a2++)
+            altPush(seed, c2, src.alts[seed][c2][a2].x, src.alts[seed][c2][a2].ep);
     }
     if (!dst.header && src.header) dst.header = src.header;
     return { moved: moved, conflicts: conflicts };
@@ -6323,10 +6725,20 @@
 
   /* One window's decode result → the store, through the lease. Returns the
      window's events (the receipt stream) and which content ledgers banked.
-     `w` = the window ordinal (grace accounting). Pure over (store, lease). */
-  function leaseObserve(store, lease, res, profile, w) {
+     `w` = the window ordinal (grace accounting). Pure over (store, lease).
+     opts (the continuous receiver, phase A): { eps, excluded } — eps[i] is
+     emitter i's (burst, hypothesis) epoch id, recorded on every droplet and
+     chunk sighting this window banks; excluded is the CURRENT conviction
+     view, consulted only where evidence is aggregated (the chunk-bank
+     majority) — banking itself never filters, because exclusion is a peel-
+     time view and a reversed conviction must find the droplets still there. */
+  function leaseObserve(store, lease, res, profile, w, opts) {
     var events = [], bankedKeys = {};
     var emitters = (!res || res.error || !res.emitters) ? [] : res.emitters;
+    // time-priced when the lease carries a cycle AND this window carries its span
+    var spanS = (opts && opts.span && opts.span.length === 2) ? Math.max(0, opts.span[1] - opts.span[0]) : null;
+    var timed = !!(lease.graceSeconds && spanS !== null);
+    var graceInit = timed ? lease.graceSeconds : lease.graceWindows;
 
     // ——— classify each emitter ———
     var obs = emitters.map(function (em, ei) {
@@ -6356,7 +6768,7 @@
         ctx = store.contexts[tag] = {
           tag: tag, session32: o.fields.session32, fields: o.fields,
           contentKey: contentKeyOf(o.fields, store.droplet_bits),
-          state: "bound", graceLeft: lease.graceWindows,
+          state: "bound", graceLeft: graceInit,
           plates: [], boundAt: w, lastSeen: w
         };
         if (!store.ledgers[ctx.contentKey]) {
@@ -6364,7 +6776,7 @@
           store.ledgers[ctx.contentKey].fields = o.fields;
           events.push({ ev: "ledger", key: ctx.contentKey });
         }
-        events.push({ ev: "bind", tag: tag, session: o.fields.session32, key: ctx.contentKey });
+        events.push({ ev: "bind", tag: tag, session: o.fields.session32, key: ctx.contentKey, index: o.index });
         // The operator ledger predates this seal: by declaration it is this
         // very emission, so its droplets adopt into the announced content
         // ledger (first-seen kept, conflicts surfaced — and the peel's own
@@ -6476,15 +6888,24 @@
     // assembles under the CRC16 seal that IS a seal — the context binds
     // exactly as if one window had read the whole envelope. Junk chunks from
     // a wrong-alignment sweep cost one sighting, never the seal.
-    var assembleBank = function (bank) {
+    var assembleBank = function (bank, bankEps) {
+      var excluded = opts && opts.excluded;
       var env = new Uint8Array(20);
       for (var ix = 1; ix <= 5; ix++) {
         var slot = bank["" + ix];
         if (!slot) return null;
+        var epsSlot = excluded && bankEps && bankEps["" + ix];
         var bestHex = null, bestN = 0, tie = false;
         for (var hx in slot) {
-          if (slot[hx] > bestN) { bestN = slot[hx]; bestHex = hx; tie = false; }
-          else if (slot[hx] === bestN) tie = true;
+          var n = slot[hx];
+          // sightings attributed to a convicted epoch drop out of the
+          // majority; un-attributed sightings stay trusted (absent = one
+          // honest epoch — the pre-epoch contract)
+          if (epsSlot && epsSlot[hx])
+            for (var xe in epsSlot[hx]) if (excluded[xe]) n -= epsSlot[hx][xe];
+          if (n <= 0) continue;
+          if (n > bestN) { bestN = n; bestHex = hx; tie = false; }
+          else if (n === bestN) tie = true;
         }
         if (!bestHex || tie) return null;
         for (var bj = 0; bj < 4; bj++) env[4 * (ix - 1) + bj] = parseInt(bestHex.substr(2 * bj, 2), 16);
@@ -6495,28 +6916,53 @@
     obs.forEach(function (o) {
       var sw = o.beacon && o.beacon.chunkSweep;
       if (!sw) return;
-      var bank = null;
-      if (o.ctx && o.plate) bank = o.plate.chunkBank || (o.plate.chunkBank = {});
-      else if (o.prov) bank = o.prov.chunkBank || (o.prov.chunkBank = {});
-      else if (o.operator) bank = lease.operatorBank || (lease.operatorBank = {});
+      var bank = null, bankEps = null, opKey = "operator";
+      var epO = opts && opts.eps ? opts.eps[o.index] : null;
+      if (o.ctx && o.plate) { bank = o.plate.chunkBank || (o.plate.chunkBank = {}); bankEps = o.plate.chunkBankEps || (o.plate.chunkBankEps = {}); }
+      else if (o.prov) { bank = o.prov.chunkBank || (o.prov.chunkBank = {}); bankEps = o.prov.chunkBankEps || (o.prov.chunkBankEps = {}); }
+      else if (o.operator) {
+        // PER-EMITTER operator banks (the continuous receiver, phase B): with
+        // the registration track naming each emitter (opts.emIds[i]), the
+        // pre-bind rung banks each emitter's chunks under its OWN key — a
+        // 2-up's two envelopes (differing at the tile byte) never pool into
+        // one majority again: the mixed-bank limitation and the window-floor
+        // doctrine it forced both dissolve here. Without emIds the single
+        // legacy bank stands, byte-for-byte.
+        if (opts && opts.emIds && opts.emIds[o.index] != null) {
+          opKey = "operator:" + opts.emIds[o.index];
+          var banks = lease.operatorBanks || (lease.operatorBanks = {});
+          var banksE = lease.operatorBanksEps || (lease.operatorBanksEps = {});
+          bank = banks[opKey] || (banks[opKey] = {});
+          bankEps = banksE[opKey] || (banksE[opKey] = {});
+        } else {
+          bank = lease.operatorBank || (lease.operatorBank = {});
+          bankEps = lease.operatorBankEps || (lease.operatorBankEps = {});
+        }
+      }
       else return;
       var newIdx = 0;
       for (var ix2 in sw) {
         var slot2 = bank[ix2] || (bank[ix2] = {});
         if (!slot2[sw[ix2]]) newIdx++;
         slot2[sw[ix2]] = (slot2[sw[ix2]] || 0) + 1;
+        if (epO != null) {
+          var eSlot = bankEps[ix2] || (bankEps[ix2] = {});
+          var eHex = eSlot[sw[ix2]] || (eSlot[sw[ix2]] = {});
+          eHex[epO] = (eHex[epO] || 0) + 1;
+        }
       }
+      var targetLabel = o.ctx ? o.ctx.tag : (o.provId || opKey);
       events.push({ ev: "chunk-bank", chunks: Object.keys(sw).length, fresh: newIdx,
-                    have: Object.keys(bank).length, target: o.ctx ? o.ctx.tag : (o.provId || "operator") });
+                    have: Object.keys(bank).length, target: targetLabel, index: o.index });
       if (o.fields) return;                       // a real seal already routed this window
-      var env2 = assembleBank(bank);
+      var env2 = assembleBank(bank, bankEps);
       if (env2) {
         var fields2 = PL().parseEnvelope(env2);
         if (fields2) {
           o.fields = fields2;
           o.sealedTag = ("0000" + (((env2[18] << 8) | env2[19]) >>> 0).toString(16)).slice(-4);
           routeSeal(o);                            // binds/rebinds; operator-merge + adoption ride along
-          events.push({ ev: "bank-seal", tag: o.sealedTag, session: fields2.session32 });
+          events.push({ ev: "bank-seal", tag: o.sealedTag, session: fields2.session32, target: targetLabel, index: o.index });
         }
       }
     });
@@ -6545,7 +6991,8 @@
       }
       if (!target) return;
       var emB = tileForBank === o.em.tile ? o.em : Object.assign({}, o.em, { tile: tileForBank });
-      var got = absorb(target, { emitters: [emB] }, profile);
+      var got = absorb(target, { emitters: [emB] }, profile,
+        opts && opts.eps ? opts.eps[o.index] : undefined);
       if (got.added || got.dup || got.conflicts || got.quarantined) {
         events.push({ ev: "bank", tag: o.ctx ? o.ctx.tag : null,
                       operator: o.operator || undefined, provisional: o.provId || null,
@@ -6567,15 +7014,23 @@
         if (o.dataLocked) sawData = true;
       });
       var was = ctx.state;
-      if (sawTag) { ctx.state = "bound"; ctx.graceLeft = lease.graceWindows; ctx.lastSeen = w; }
+      if (sawTag) { ctx.state = "bound"; ctx.graceLeft = graceInit; ctx.zeroLockS = 0; ctx.lastSeen = w; }
       else if (sawData) {
         if (ctx.state !== "grace") ctx.state = "coasting";   // grace needs the tag to resume — handled in routing
+        ctx.zeroLockS = 0;
         ctx.lastSeen = w;
       } else {
         if (ctx.state === "grace") {
-          if (--ctx.graceLeft <= 0) { ctx.state = "clipped"; events.push({ ev: "clip", tag: ctx.tag }); }
+          ctx.graceLeft -= timed ? spanS : 1;
+          if (ctx.graceLeft <= 0) { ctx.state = "clipped"; events.push({ ev: "clip", tag: ctx.tag }); }
+        } else if (timed && ctx.state === "coasting" &&
+                   (ctx.zeroLockS = (ctx.zeroLockS || 0) + spanS) < lease.coastEndSeconds) {
+          // time-priced coasting: a short zero-lock stretch does not end the
+          // hold — only a stretch reaching coastEndSeconds does (framing
+          // cannot see a content switch, so the binding still must not coast far)
+          events.push({ ev: "coast-hold", tag: ctx.tag, zero_lock_s: Math.round(ctx.zeroLockS * 10) / 10 });
         } else {
-          ctx.state = "grace"; ctx.graceLeft = lease.graceWindows;
+          ctx.state = "grace"; ctx.graceLeft = graceInit; ctx.zeroLockS = 0;
           events.push({ ev: was === "coasting" ? "hold-end" : "all-lost", tag: ctx.tag });
         }
       }
@@ -6590,8 +7045,59 @@
      validate-gated: a completed-but-invalid union retries bare, and if the
      bare peel is no worse the provisionals are marked rejected (the poison
      was theirs). Ranking mirrors the subsetFor fallback: validated >
-     honestly-incomplete > completed-but-invalid. */
-  function tryPeelStore(store, lease, contentKey, profile) {
+     honestly-incomplete > completed-but-invalid. `dry` skips the rejected-
+     marking side effect — coalition attempts probe without leaving verdicts;
+     only the winning view's pass is allowed to judge provisionals. */
+  function peelView(store, lease, contentKey, profile, aOpts, excluded, dry) {
+    var ledger = store.ledgers[contentKey];
+    var exView = excluded ? { excluded: excluded } : undefined;
+    var base = ringsFor(ledger, profile, exView);
+    var adoptedIds = [];
+    for (var pid in lease.provisionals) {
+      var pr = lease.provisionals[pid];
+      if (pr.adopted && !pr.rejected && store.contexts[pr.forTag] &&
+          store.contexts[pr.forTag].contentKey === contentKey) adoptedIds.push(pid);
+    }
+    // assembleEliminating (hardening layer 1): a completed-but-invalid peel
+    // runs the liar elimination before surrendering — leave-one-out with the
+    // validation ladder as the oracle, suspect-set pairs/triples behind it.
+    if (!adoptedIds.length) return F().assembleEliminating(base, profile, aOpts);
+    var bySeed = {};
+    base.forEach(function (r) { bySeed[r.seed] = { seed: r.seed, droplets: r.droplets.slice(), have: {} };
+      r.droplets.forEach(function (d) { bySeed[r.seed].have[d.c] = true; }); });
+    adoptedIds.forEach(function (pid) {
+      ringsFor(lease.provisionals[pid].ledger, profile, exView).forEach(function (r) {
+        var slot = bySeed[r.seed] || (bySeed[r.seed] = { seed: r.seed, droplets: [], have: {} });
+        r.droplets.forEach(function (d) { if (!slot.have[d.c]) { slot.have[d.c] = true; slot.droplets.push(d); } });
+      });
+    });
+    var union = [];
+    for (var s in bySeed) union.push({ seed: bySeed[s].seed, droplets: bySeed[s].droplets });
+    var withProv = F().assemble(union, profile, aOpts);
+    if (withProv.ok === true || withProv.recovered == null || withProv.recovered !== withProv.K) return withProv;
+    // completed but did not validate — the union is suspect; try bare
+    // (with the liar elimination behind it: a liar in the BASE ledger is a
+    // different disease than a bad provisional, and both walls should hold)
+    var bare = F().assembleEliminating(base, profile, aOpts);
+    if (bare.ok === true || (bare.recovered != null && bare.recovered !== bare.K)) {
+      if (!dry) {
+        adoptedIds.forEach(function (pid) { lease.provisionals[pid].rejected = true; });
+      }
+      bare.provisionalsRejected = adoptedIds.length;
+      return bare;
+    }
+    return withProv;
+  }
+
+  /* opts.coalitions (the continuous receiver, phase A): a RANKED list of
+     views [{ name, excluded }] from the registration track's conviction —
+     trusted first, everything second, each convicted challenger's alternate
+     last. The peel trusts the top coalition; a failed validation retries
+     down the ranking (retention: exclusion is reversible, so retrying costs
+     an assemble, never data). Attempts run DRY; the winner re-runs live so
+     provisional verdicts land under the winning view only. No coalitions →
+     the pre-track path, byte-identical. */
+  function tryPeelStore(store, lease, contentKey, profile, opts) {
     var ledger = store.ledgers[contentKey];
     if (!ledger) return { ok: false, reason: "no such ledger" };
     // A content key carries its own 16-bit fingerprint (bits:K:len:pcrc16 —
@@ -6607,40 +7113,30 @@
     // well, not just the 48-bit high byte.
     var kp = /^\d+:\d+:(\d+):([0-9a-f]+)$/.exec(contentKey);
     var aOpts = kp ? { expectLen: +kp[1], expectPcrc16: parseInt(kp[2], 16) } : undefined;
-    var base = ringsFor(ledger, profile);
-    var adoptedIds = [];
-    for (var pid in lease.provisionals) {
-      var pr = lease.provisionals[pid];
-      if (pr.adopted && !pr.rejected && store.contexts[pr.forTag] &&
-          store.contexts[pr.forTag].contentKey === contentKey) adoptedIds.push(pid);
+    var coalitions = opts && opts.coalitions;
+    if (!coalitions || !coalitions.length)
+      return peelView(store, lease, contentKey, profile, aOpts, null, false);
+    var rankOf = function (r) {
+      if (r.ok === true && r.validatedBy) return 3;
+      if (r.ok === true) return 2;
+      if (r.recovered != null && r.K && r.recovered < r.K) return 1;
+      return 0;
+    };
+    var best = null, bestRank = -1, bestC = null, tried = 0;
+    for (var i = 0; i < coalitions.length; i++) {
+      var c = coalitions[i];
+      var r = peelView(store, lease, contentKey, profile, aOpts, c.excluded, true);
+      tried++;
+      var rk = rankOf(r);
+      if (rk > bestRank) { bestRank = rk; best = r; bestC = c; }
+      if (rk === 3) break;   // validated — the ladder stops here
     }
-    // assembleEliminating (hardening layer 1): a completed-but-invalid peel
-    // runs the liar elimination before surrendering — leave-one-out with the
-    // validation ladder as the oracle, suspect-set pairs/triples behind it.
-    if (!adoptedIds.length) return F().assembleEliminating(base, profile, aOpts);
-    var bySeed = {};
-    base.forEach(function (r) { bySeed[r.seed] = { seed: r.seed, droplets: r.droplets.slice(), have: {} };
-      r.droplets.forEach(function (d) { bySeed[r.seed].have[d.c] = true; }); });
-    adoptedIds.forEach(function (pid) {
-      ringsFor(lease.provisionals[pid].ledger, profile).forEach(function (r) {
-        var slot = bySeed[r.seed] || (bySeed[r.seed] = { seed: r.seed, droplets: [], have: {} });
-        r.droplets.forEach(function (d) { if (!slot.have[d.c]) { slot.have[d.c] = true; slot.droplets.push(d); } });
-      });
-    });
-    var union = [];
-    for (var s in bySeed) union.push({ seed: bySeed[s].seed, droplets: bySeed[s].droplets });
-    var withProv = F().assemble(union, profile, aOpts);
-    if (withProv.ok === true || withProv.recovered == null || withProv.recovered !== withProv.K) return withProv;
-    // completed but did not validate — the union is suspect; try bare
-    // (with the liar elimination behind it: a liar in the BASE ledger is a
-    // different disease than a bad provisional, and both walls should hold)
-    var bare = F().assembleEliminating(base, profile, aOpts);
-    if (bare.ok === true || (bare.recovered != null && bare.recovered !== bare.K)) {
-      adoptedIds.forEach(function (pid) { lease.provisionals[pid].rejected = true; });
-      bare.provisionalsRejected = adoptedIds.length;
-      return bare;
-    }
-    return withProv;
+    var live = peelView(store, lease, contentKey, profile, aOpts, bestC && bestC.excluded, false);
+    live.coalition = bestC ? bestC.name : undefined;
+    var exKeys = bestC ? Object.keys(bestC.excluded || {}) : [];
+    if (exKeys.length) live.excludedEps = exKeys;
+    live.coalitionsTried = tried;
+    return live;
   }
 
   /* ---------- locks: the capture-time→carousel-slot mapping ---------- */
@@ -6861,6 +7357,7 @@
     counts: counts, absorb: absorb, ringsFor: ringsFor, tryPeel: tryPeel, seenTileSeeds: seenTileSeeds,
     contentKeyOf: contentKeyOf, createStore: createStore, serializeStore: serializeStore,
     parseStore: parseStore, storeCounts: storeCounts, leaseCreate: leaseCreate,
+    envelopeCycleSeconds: envelopeCycleSeconds,
     leaseNewClip: leaseNewClip, mergeLedger: mergeLedger,
     leaseObserve: leaseObserve, tryPeelStore: tryPeelStore,
     lockFrom: lockFrom, frameOfSymbol: frameOfSymbol, symbolAtFrame: symbolAtFrame,
@@ -6876,10 +7373,839 @@
 
 </script>
 <script>
+/* inlined: track.js */
+/* track.js — the continuous receiver's persistent registration/designation
+   state (phase A of the continuous-receiver design, drafted 2026-09-01 on the
+   range-take specimen). Window boundaries are load-bearing for I/O and
+   incidental-but-harmful for STATE: this module is the state that survives
+   them. One registration TRACK per emitter per clip — a new solve updates the
+   track only on agreement; a divergent solve is recorded as a HYPOTHESIS,
+   never silently adopted, never silently discarded. Designation accumulates
+   evidence clip-wide. Every banked droplet carries a (burst, hypothesis)
+   EPOCH id, and conviction excludes epochs from the trusted coalition —
+   exclusion, never deletion, so every verdict is reversible and the machinery
+   may act automatically.
+
+   The specimen this is built against (field-20260901003751): windows w2/w3
+   fell to a ⅓-scale registration (fid 40.6, ring-path fallback) amid a
+   fid-122 saddle consensus and banked 127 CRC8-passing droplets of poison;
+   recovery "completed" 115/115 invalid, and droplet-level elimination was
+   structurally hopeless against 127. Three signals convict that hypothesis —
+   scale discontinuity against the hardened consensus, method minority,
+   support minority — and all three are judged ADAPTIVELY from the clip's own
+   honest population, not from fixed magic numbers (floors exist only where
+   quantization would otherwise divide by zero).
+
+   Pure logic — no DOM, no video. The receive harness drives it per window;
+   the suite drives it against synthetic solve streams and the committed
+   specimen fixture. */
+(function (global) {
+  "use strict";
+
+  /* Hypothesis identity is a SCALE CLASS: solves within ±~20% relative
+     fiducial size continue one hypothesis (zoom drift and handheld range
+     creep are continuous facts); a jump beyond it is a different claim about
+     the pose and gets its own hypothesis. The specimen's jump is log(3.0). */
+  var HYP_LOG_TOL = 0.18;
+  /* Emitter identity is spatial: a solve belongs to a tracked emitter when
+     its center falls within this fraction of the larger fiducial width
+     (the lease's nearPlate tolerance, reused deliberately — one notion of
+     "the same plate" across the receiver). Solves without centers (older
+     logs replayed as fixtures) fall back to observation-index identity. */
+  var EM_MATCH_FRAC = 0.75;
+  /* A hypothesis HARDENS on multi-solve agreement — the continuity prior can
+     adopt a first false solve, so nothing is trusted at one sighting. */
+  var HARDEN_N = 2;
+  /* The adaptive scale-break bar: deviation beyond 4× the honest population's
+     own log-fid sigma. The floor keeps a pathologically tight population
+     (the specimen's honest sigma is ~0.002 — sub-quantization) from
+     convicting ordinary jitter: below ±16% is never a break. */
+  var BREAK_SIGMA_MULT = 4, BREAK_LOG_FLOOR = 0.15, SIGMA_FLOOR = 0.02;
+  /* Support minority: a challenger at or under half the dominant's support
+     convicts on a scale break alone; method minority (the solver fell back to
+     a different registration path) is independent suspicion that convicts a
+     scale break regardless of support. */
+  var SUPPORT_MINORITY = 0.5;
+  var MAX_SAMPLES = 32;
+
+  function trackCreate(opts) {
+    opts = opts || {};
+    return {
+      version: 1,
+      hardenN: opts.hardenN || HARDEN_N,
+      emitters: [],   // { id, center, fid, hyps: [hyp], votes: {} } — votes[tile] = { hyp: n, … }
+      nextHyp: 1,
+      epochs: [],     // { ep, w, hyp, em, fid, method, f0, f1 } — the registry (self-description)
+      convicted: {}   // hyp id → { em, reasons: [] } — recomputed by trackConvict
+    };
+  }
+
+  function logFid(fid) { return Math.log(Math.max(fid, 1e-6)); }
+
+  function matchEmitter(track, solve) {
+    if (solve.center) {
+      for (var i = 0; i < track.emitters.length; i++) {
+        var em = track.emitters[i];
+        if (!em.center) continue;
+        var tol = EM_MATCH_FRAC * Math.max(solve.fid || 0, em.fid || 0, 1);
+        var dx = solve.center[0] - em.center[0], dy = solve.center[1] - em.center[1];
+        if (dx * dx + dy * dy <= tol * tol) return em;
+      }
+      return null;
+    }
+    // index identity (fixture replay: logs carry e but no center)
+    for (var j = 0; j < track.emitters.length; j++)
+      if (track.emitters[j].byIndex === solve.e) return track.emitters[j];
+    return null;
+  }
+
+  function matchHyp(em, fid) {
+    var best = null, bd = Infinity;
+    for (var i = 0; i < em.hyps.length; i++) {
+      var d = Math.abs(logFid(fid) - logFid(em.hyps[i].fid));
+      if (d <= HYP_LOG_TOL && d < bd) { bd = d; best = em.hyps[i]; }
+    }
+    return best;
+  }
+
+  function topMethod(hyp) {
+    var best = null, bn = -1;
+    for (var m in hyp.methods) if (hyp.methods[m] > bn) { bn = hyp.methods[m]; best = m; }
+    return best;
+  }
+
+  /* The adopted hypothesis: the hardened one with the most support (ties go
+     to the earlier id — first past the harden bar keeps the seat). */
+  function adoptedHyp(em, hardenN) {
+    var best = null;
+    for (var i = 0; i < em.hyps.length; i++) {
+      var h = em.hyps[i];
+      if (h.count < hardenN) continue;
+      if (!best || h.count > best.count || (h.count === best.count && h.id < best.id)) best = h;
+    }
+    return best;
+  }
+
+  /* Designation majority under the CURRENT convictions: votes cast by a
+     convicted hypothesis's windows are discounted (the ⅓-scale solve also
+     "placed" its tiles, from sub-features at the wrong scale — solve trust
+     flows down the stack into designation trust). Majority needs ≥2 votes
+     and strictly more than the best rival — STICKY by design (the
+     designation-stickiness point-gate, subsumed here): one contradicting
+     window never topples an established majority, a tie is answered with NO
+     majority rather than a guess, and a genuine mid-clip re-arrangement can
+     still out-vote a stale majority eventually. */
+  function majorityOf(track, em) {
+    var tally = {}, tiles = [];
+    for (var tile in em.votes) {
+      var n = 0;
+      for (var hid in em.votes[tile]) if (!track.convicted[hid]) n += em.votes[tile][hid];
+      if (n > 0) { tally[tile] = n; tiles.push(tile); }
+    }
+    var best = null, bn = 0, rival = 0;
+    for (var i = 0; i < tiles.length; i++) {
+      var t = tiles[i], v = tally[t];
+      if (v > bn) { rival = bn; bn = v; best = t; }
+      else if (v > rival) rival = v;
+    }
+    if (best !== null && bn >= 2 && bn > rival) return +best;
+    return null;
+  }
+
+  /* One window's registration evidence, solve by solve.
+     solves: [{ e, center, fid, method, tile, H }] — e is the observation
+     index (emitter order in the decode result), tile the pipeline's derived
+     designation (−1/undefined = unplaced), H the registration homography
+     when the caller has one. Returns per-solve routing:
+       { em, hyp, ep, isNew, divergent, tileOut, placed, unplaced }
+     tileOut is the designation JUDGMENT: the majority fills an unplaced read
+     (evidence accumulated clip-wide), a contradicting read is unplaced for
+     this span rather than re-keying the ledger. opts: { f0, f1 } (the
+     window's absolute frame span, recorded on the epoch registry). */
+  function trackObserve(track, w, solves, opts) {
+    opts = opts || {};
+    var out = [], events = [];
+    for (var i = 0; i < (solves || []).length; i++) {
+      var s = solves[i];
+      if (s == null || !(s.fid > 0)) { out.push(null); continue; }
+      var em = matchEmitter(track, s);
+      if (!em) {
+        em = { id: track.emitters.length + 1, byIndex: s.center ? undefined : s.e,
+               center: s.center || null, fid: s.fid, hyps: [], votes: {} };
+        track.emitters.push(em);
+      }
+      var hyp = matchHyp(em, s.fid), isNew = false;
+      if (!hyp) {
+        hyp = { id: track.nextHyp++, fid: s.fid, count: 0, firstW: w, lastW: w,
+                methods: {}, samples: [], droplets: 0 };
+        em.hyps.push(hyp);
+        isNew = true;
+      }
+      hyp.count++;
+      hyp.lastW = w;
+      hyp.fid = 0.7 * hyp.fid + 0.3 * s.fid;   // continuous drift rides the EMA; a jump forks
+      hyp.methods[s.method || "?"] = (hyp.methods[s.method || "?"] || 0) + 1;
+      hyp.samples.push({ w: w, fid: s.fid, method: s.method });
+      if (hyp.samples.length > MAX_SAMPLES) hyp.samples.shift();
+      if (s.H) hyp.lastH = s.H;
+      if (s.center) { em.center = s.center; em.fid = 0.7 * em.fid + 0.3 * s.fid; }
+      var adopted = adoptedHyp(em, track.hardenN);
+      var divergent = !!(adopted && adopted !== hyp);
+      if (isNew && adopted && divergent)
+        events.push({ ev: "hyp-new", w: w, em: em.id, hyp: hyp.id, fid: s.fid, method: s.method,
+                      against: adopted.id, againstFid: Math.round(adopted.fid * 10) / 10 });
+
+      // ——— designation: judge against the PRIOR majority, then vote ———
+      var maj = majorityOf(track, em);
+      var tileIn = (s.tile !== undefined && s.tile !== null && s.tile >= 0) ? s.tile : -1;
+      var tileOut = tileIn, placed = false, unplaced = false;
+      if (maj !== null && tileIn >= 0 && tileIn !== maj) {
+        tileOut = -1; unplaced = true;
+        events.push({ ev: "desig-unplace", w: w, em: em.id, read: tileIn, majority: maj });
+      } else if (maj !== null && tileIn < 0) {
+        tileOut = maj; placed = true;
+        events.push({ ev: "desig-place", w: w, em: em.id, majority: maj });
+      }
+      if (tileIn >= 0) {
+        var slot = em.votes[tileIn] || (em.votes[tileIn] = {});
+        slot[hyp.id] = (slot[hyp.id] || 0) + 1;
+      }
+
+      // ——— the epoch: this burst under this hypothesis ———
+      var ep = "w" + w + "h" + hyp.id;
+      var reg = null;
+      for (var r = track.epochs.length - 1; r >= 0; r--)
+        if (track.epochs[r].ep === ep) { reg = track.epochs[r]; break; }
+      if (!reg) {
+        reg = { ep: ep, w: w, hyp: hyp.id, em: em.id,
+                fid: Math.round(s.fid * 10) / 10, method: s.method };
+        if (opts.f0 !== undefined) { reg.f0 = opts.f0; reg.f1 = opts.f1; }
+        track.epochs.push(reg);
+      }
+      out.push({ em: em.id, hyp: hyp.id, ep: ep, isNew: isNew, divergent: divergent,
+                 tileOut: tileOut, placed: placed, unplaced: unplaced });
+    }
+    var conv = trackConvict(track);
+    for (var e2 = 0; e2 < conv.events.length; e2++) events.push(conv.events[e2]);
+    return { out: out, events: events };
+  }
+
+  /* Conviction, recomputed from the whole track (idempotent; events only on
+     change). A hypothesis is convicted when it BREAKS SCALE against the
+     hardened dominant — deviation beyond BREAK_SIGMA_MULT × the dominant's
+     own log-fid sigma, floored — AND carries independent suspicion: support
+     at or under half the dominant's, or a method minority (its solver path
+     differs from the consensus path). No hardened dominant → nothing is
+     trusted enough to convict anything. The dominant itself is never
+     convicted here; if it is the liar, the coalition ladder's alternates get
+     their turn when the trusted peel fails to validate. */
+  function trackConvict(track) {
+    var next = {}, events = [];
+    for (var i = 0; i < track.emitters.length; i++) {
+      var em = track.emitters[i];
+      var dom = adoptedHyp(em, track.hardenN);
+      if (!dom) continue;
+      var mean = 0, n = dom.samples.length;
+      for (var a = 0; a < n; a++) mean += logFid(dom.samples[a].fid);
+      mean /= Math.max(n, 1);
+      var varr = 0;
+      for (var b = 0; b < n; b++) { var d = logFid(dom.samples[b].fid) - mean; varr += d * d; }
+      var sigma = Math.max(Math.sqrt(varr / Math.max(n, 1)), SIGMA_FLOOR);
+      var bar = Math.max(BREAK_SIGMA_MULT * sigma, BREAK_LOG_FLOOR);
+      var domMethod = topMethod(dom);
+      for (var h = 0; h < em.hyps.length; h++) {
+        var hyp = em.hyps[h];
+        if (hyp === dom) continue;
+        var dev = Math.abs(logFid(hyp.fid) - logFid(dom.fid));
+        if (dev <= bar) continue;
+        var reasons = ["scale-break dev " + Math.round(dev * 100) / 100 + " > bar " + Math.round(bar * 100) / 100];
+        var minority = hyp.count <= SUPPORT_MINORITY * dom.count;
+        var methodOdd = topMethod(hyp) !== domMethod;
+        if (minority) reasons.push("support " + hyp.count + "/" + dom.count);
+        if (methodOdd) reasons.push("method " + topMethod(hyp) + " vs " + domMethod);
+        if (!minority && !methodOdd) continue;   // a scale break alone is a zoom cut, not a lie
+        next[hyp.id] = { em: em.id, reasons: reasons };
+      }
+    }
+    for (var id in next) if (!track.convicted[id])
+      events.push({ ev: "convict", hyp: +id, em: next[id].em, reasons: next[id].reasons });
+    for (var old in track.convicted) if (!next[old])
+      events.push({ ev: "unconvict", hyp: +old });
+    track.convicted = next;
+    return { convicted: next, events: events };
+  }
+
+  function epsForHyps(track, hypIds) {
+    var want = {}, out = {};
+    for (var i = 0; i < hypIds.length; i++) want[hypIds[i]] = true;
+    for (var e = 0; e < track.epochs.length; e++)
+      if (want[track.epochs[e].hyp]) out[track.epochs[e].ep] = true;
+    return out;
+  }
+
+  function excludedEps(track) {
+    var ids = [];
+    for (var id in track.convicted) ids.push(+id);
+    return epsForHyps(track, ids);
+  }
+
+  /* The ranked coalition ladder for the peel. null when nothing is convicted
+     — the caller then takes the untouched legacy path, byte-identical to the
+     pre-track receiver (trajectory parity on clean clips is a design
+     property, not a hope). With convictions: trust the honest coalition
+     first; the everything-view second (exclusion is reversible — a wrong
+     conviction costs one retry, not data); then each convicted challenger
+     gets its turn as the trusted one (if the dominant was the liar, its
+     exclusion is the cure — same machinery, roles swapped). */
+  function coalitionLadder(track) {
+    var convictedIds = [];
+    for (var id in track.convicted) convictedIds.push(+id);
+    if (!convictedIds.length) return null;
+    var ladder = [{ name: "trusted", excluded: excludedEps(track) }, { name: "all", excluded: {} }];
+    for (var i = 0; i < convictedIds.length; i++) {
+      var cid = convictedIds[i], emId = track.convicted[cid].em;
+      var others = [];
+      for (var e = 0; e < track.emitters.length; e++) {
+        var em = track.emitters[e];
+        if (em.id !== emId) continue;
+        for (var h = 0; h < em.hyps.length; h++)
+          if (em.hyps[h].id !== cid) others.push(em.hyps[h].id);
+      }
+      ladder.push({ name: "alt:h" + cid, excluded: epsForHyps(track, others) });
+    }
+    return ladder;
+  }
+
+  /* Pose priors for re-acquisition and the span re-decode (cure rung 3):
+     every adopted hypothesis's last homography. Tripod truth: the consensus
+     pose IS the registration; handheld: the per-frame solve chains from it
+     and re-earns locally (the a82 lesson — priors seed, they never freeze). */
+  function trackPoses(track) {
+    var out = [];
+    for (var i = 0; i < track.emitters.length; i++) {
+      var dom = adoptedHyp(track.emitters[i], track.hardenN);
+      if (dom && dom.lastH)
+        out.push({ H: dom.lastH, fid: dom.fid, method: "prior", em: track.emitters[i].id });
+    }
+    return out;
+  }
+
+  /* Convicted epochs' spans (absolute frames) — the re-decode worklist.
+     Only epochs that recorded a span qualify (fixture replays carry none). */
+  function convictedSpans(track) {
+    var ex = track.convicted, out = [];
+    for (var e = 0; e < track.epochs.length; e++) {
+      var r = track.epochs[e];
+      if (ex[r.hyp] && r.f0 !== undefined) out.push({ ep: r.ep, w: r.w, f0: r.f0, f1: r.f1 });
+    }
+    // one span per window (both emitters' epochs share the burst)
+    var seen = {}, uniq = [];
+    for (var i = 0; i < out.length; i++)
+      if (!seen[out[i].w]) { seen[out[i].w] = true; uniq.push(out[i]); }
+    return uniq;
+  }
+
+  function trackSummary(track) {
+    var ems = track.emitters.map(function (em) {
+      var maj = majorityOf(track, em);
+      return {
+        id: em.id, majority: maj,
+        hyps: em.hyps.map(function (h) {
+          return { id: h.id, fid: Math.round(h.fid * 10) / 10, count: h.count,
+                   method: topMethod(h), firstW: h.firstW, lastW: h.lastW,
+                   convicted: track.convicted[h.id] ? track.convicted[h.id].reasons : undefined };
+        })
+      };
+    });
+    return { emitters: ems, epochs: track.epochs.length,
+             convicted: Object.keys(track.convicted).map(Number) };
+  }
+
+  var API = {
+    trackCreate: trackCreate, trackObserve: trackObserve, trackConvict: trackConvict,
+    coalitionLadder: coalitionLadder, excludedEps: excludedEps, epsForHyps: epsForHyps,
+    trackPoses: trackPoses, convictedSpans: convictedSpans, trackSummary: trackSummary,
+    majorityOf: majorityOf, adoptedHyp: adoptedHyp
+  };
+  if (typeof module !== "undefined" && module.exports) module.exports = API;
+  global.OC = global.OC || {}; global.OC.track = API;
+})(typeof window !== "undefined" ? window : globalThis);
+
+</script>
+<script>
+/* inlined: stream.js */
+/* stream.js — per-emitter BEACON STREAM accumulators (the continuous
+   receiver, phase B). The beacon's alignment/framing state used to die at
+   every window edge: an envelope cycle (13.3 s at M=4/F=2) longer than the
+   window could never frame in one read, so the chunk BANK was invented to
+   carry pieces across windows — and a 2-up's pre-bind bank MIXED both tiles'
+   envelopes (they differ at the tile byte) and could never assemble a
+   majority; hence the window-floor doctrine. Here the window's per-frame
+   PHASE TRACK for the beacon ring is accumulated per EMITTER on the absolute
+   emission-frame axis, and the SAME aligners (plate.beaconAlign, the chunk
+   sweep) run over the accumulated track — an envelope frames wherever it
+   completes, across any number of window seams. Window fit stops being a
+   constraint; nothing mixes because the key is the emitter.
+
+   Seams. Every window's phi is unwrapped from its own first frame, so two
+   windows agree on the pattern angle only up to 2π·n at the frames they
+   share; demap reads SLOPES, so a 2π·n step inside one symbol would corrupt
+   exactly that symbol. Overlapping windows (the planner's back-pad) are
+   STITCHED: the median phase difference over the shared frames rounds to a
+   whole number of turns and the new window is shifted by it. A window that
+   overlaps nothing gets its first two valid frames blanked instead — the
+   straddling symbol reads as an honest erasure (gapIntersects' floor), never
+   as a lie. Held frames win at overlaps (keep-first: deterministic, and the
+   back-pad's frames are no better than the original's).
+
+   The bound. The a82 lesson governs (windowed re-alignment beat one long
+   alignment at M=8 — clock drift): the stream is a ROLLING span, long enough
+   for any envelope to complete across one seam, short enough that drift
+   cannot blur the aligner's single (offset, phase) hypothesis. Frames older
+   than the span fall off; nothing else is ever deleted.
+
+   Pure logic — no DOM, no video. The driver feeds it a beacon row's phi per
+   window; the suite feeds it synthetic phase streams chopped into windows. */
+(function (global) {
+  "use strict";
+
+  function PL() { return (typeof module !== "undefined" && module.exports) ? require("./plate.js") : global.OC.plate; }
+  var TAU = 2 * Math.PI;
+
+  function streamsCreate(opts) {
+    opts = opts || {};
+    return { version: 1, spanFrames: opts.spanFrames || 0, byEm: {} };
+  }
+
+  function countFinite(arr) {
+    var n = 0;
+    for (var i = 0; i < arr.length; i++) if (!isNaN(arr[i])) n++;
+    return n;
+  }
+
+  /* One window's beacon phase track (local index 0.. = frame fBase..) into
+     emitter emKey's stream. Returns the stitch receipt. */
+  function streamAbsorb(streams, emKey, fBase, phi, meta) {
+    meta = meta || {};
+    var st = streams.byEm[emKey];
+    if (!st) st = streams.byEm[emKey] = { f0: fBase, phi: [], meanMag: null, windows: 0, seams: 0, stitched: 0 };
+    // a span earlier than anything held (a cure re-decode) extends the axis leftward
+    if (fBase < st.f0) {
+      var padN = st.f0 - fBase, pad = new Array(padN);
+      for (var q = 0; q < padN; q++) pad[q] = NaN;
+      st.phi = pad.concat(st.phi);
+      st.f0 = fBase;
+    }
+    var rel0 = fBase - st.f0;
+    while (st.phi.length < rel0 + phi.length) st.phi.push(NaN);
+    // ——— stitch over the shared frames ———
+    var diffs = [];
+    for (var i = 0; i < phi.length; i++) {
+      var v = phi[i];
+      if (v === null || v === undefined || isNaN(v)) continue;
+      var h = st.phi[rel0 + i];
+      if (h === undefined || isNaN(h)) continue;
+      diffs.push(v - h);
+    }
+    var turns = 0, stitched = false, seam = false, resid = null;
+    if (diffs.length) {
+      diffs.sort(function (a, b) { return a - b; });
+      var med = diffs[diffs.length >> 1];
+      turns = Math.round(med / TAU);
+      resid = Math.round((med - turns * TAU) * 1000) / 1000;
+      stitched = true; st.stitched++;
+    } else if (st.windows > 0) {
+      seam = true; st.seams++;
+    }
+    var offset = turns * TAU, added = 0, kept = 0, blanked = 0;
+    for (var j = 0; j < phi.length; j++) {
+      var vv = phi[j];
+      if (vv === null || vv === undefined || isNaN(vv)) continue;
+      if (seam && blanked < 2) { blanked++; continue; }   // the unstitched seam's erasure marker
+      var idx = rel0 + j;
+      if (!isNaN(st.phi[idx])) { kept++; continue; }        // keep-first
+      st.phi[idx] = vv - offset;
+      added++;
+    }
+    if (meta.meanMag) st.meanMag = meta.meanMag;
+    st.windows++;
+    // ——— the rolling span ———
+    if (streams.spanFrames > 0 && st.phi.length > streams.spanFrames) {
+      var cut = st.phi.length - streams.spanFrames;
+      st.phi = st.phi.slice(cut);
+      st.f0 += cut;
+    }
+    return { emKey: emKey, fBase: fBase, added: added, kept: kept, blanked: blanked,
+             stitched: stitched, turns: turns, resid: resid, seam: seam,
+             held: countFinite(st.phi), span: [st.f0, st.f0 + st.phi.length - 1] };
+  }
+
+  /* The accumulated stream in trackPhase's shape (relative frame index; the
+     aligners only ever read slopes and gaps, so the axis origin is free). */
+  function streamTrack(streams, emKey) {
+    var st = streams.byEm[emKey];
+    if (!st) return null;
+    var n = st.phi.length;
+    var phi = new Float64Array(n);
+    var gapAfter = {}, firstValid = -1, lastValid = -1, frames = 0;
+    for (var f = 0; f < n; f++) {
+      var v = st.phi[f];
+      phi[f] = (v === undefined || v === null) ? NaN : v;
+      if (isNaN(phi[f])) continue;
+      if (firstValid < 0) firstValid = f;
+      if (lastValid >= 0 && f - lastValid > 1) gapAfter[lastValid] = f - lastValid;
+      lastValid = f; frames++;
+    }
+    return { phi: phi, gapAfter: gapAfter, meanMag: st.meanMag || {}, frames: frames,
+             maxF: n - 1, firstValid: firstValid < 0 ? 0 : firstValid, f0: st.f0 };
+  }
+
+  /* Read the stream: the full beacon read (seal / tag / chunks) over the
+     accumulated track. null until the stream holds enough frames to say
+     anything. opts.expectTag rides through to the aligner (tag confirmation
+     between seals — the lease's heartbeat). */
+  function streamRead(streams, emKey, annulus, profile, opts) {
+    var track = streamTrack(streams, emKey);
+    if (!track || track.frames < 8) return null;
+    var read = PL().beaconRead(track, annulus, profile, opts);
+    read.held = track.frames;
+    read.span = [track.f0, track.f0 + track.maxF];
+    read.windows = streams.byEm[emKey].windows;
+    read.seams = streams.byEm[emKey].seams;
+    return read;
+  }
+
+  function streamsSummary(streams) {
+    var out = {};
+    for (var k in streams.byEm) {
+      var st = streams.byEm[k];
+      out[k] = { held: countFinite(st.phi), windows: st.windows, stitched: st.stitched, seams: st.seams,
+                 span: [st.f0, st.f0 + st.phi.length - 1] };
+    }
+    return out;
+  }
+
+  var API = { streamsCreate: streamsCreate, streamAbsorb: streamAbsorb, streamTrack: streamTrack,
+              streamRead: streamRead, streamsSummary: streamsSummary };
+  if (typeof module !== "undefined" && module.exports) module.exports = API;
+  global.OC = global.OC || {}; global.OC.stream = API;
+})(typeof window !== "undefined" ? window : globalThis);
+
+</script>
+<script>
+/* inlined: schedule.js */
+/* schedule.js — the TEMPORAL SCHEDULER as its own stage (the continuous
+   receiver, phase C; the practitioner's pipeline staging: source → temporal
+   scheduler → spatial slicer → processing). Which spans to materialize, in
+   what order, and when to stop — the bookkeeping that used to live inline
+   in the harvest driver's window loop: the bootstrap, the ledger-steered
+   plan (the seek economy, kept whole — the planner itself stays in
+   harvest.planSpans and the driver hands it in as a callback), the
+   unvisited sweep, adaptive growth of a lock-less window, hold-for-bank
+   after the peel, the dead-clip guard, the cure worklist, and termination.
+   Pure logic — no DOM, no video, no seeks: it names spans, the driver
+   fetches them. Absolute emission frames throughout.
+
+   Designed for LIVE as well as recorded sources: `availF` is how many
+   frames exist so far (a recording's whole duration; a live ring buffer's
+   high-water mark). When the next span would run past what exists, the
+   scheduler answers WAIT with the frame count it needs rather than a span,
+   and a live source's dead-air guard ends the run on time.
+
+   Termination is un-quantized (the draft's §2): validated peel (early
+   exit), coverage exhausted, dead clip, live dead-air, or a stop. */
+(function (global) {
+  "use strict";
+
+  function HV() { return (typeof module !== "undefined" && module.exports) ? require("./harvest.js") : global.OC.harvest; }
+
+  function schedCreate(cfg) {
+    cfg = cfg || {};
+    return {
+      version: 1,
+      cfg: {
+        R: cfg.R || 30,
+        minWinF: cfg.minWinF || 1, maxWinF: cfg.maxWinF || 0, joinGapF: cfg.joinGapF || 0,
+        chunkF: cfg.chunkF || 300, overlapF: cfg.overlapF || 0, bootF: cfg.bootF || 300,
+        holdCapS: cfg.holdCapS || null, holdCapWindows: cfg.holdCapWindows || 4,
+        deadAirS: cfg.deadAirS || 30, cureCap: cfg.cureCap || 4, live: !!cfg.live
+      },
+      queue: cfg.carriedComplete ? [] : [{ f0: 0, f1: cfg.bootF || 300, kind: "boot" }],
+      visited: [], grown: {},
+      wrun: 0, everLocked: false, totalAdded: 0, lastLockF: -1,
+      heldS: 0, heldWindows: 0, cures: 0,
+      done: !!cfg.carriedComplete, exitReason: cfg.carriedComplete ? "carried" : null,
+      events: []
+    };
+  }
+
+  /* The next span to materialize. `plan(visited)` is the caller's
+     ledger-steered planner ([f0, f1] or null); `availF` the frames that
+     exist. Returns { f0, f1, kind } · { wait: true, needF } · null (nothing
+     left — the caller then calls schedExhausted). */
+  function schedNext(s, plan, availF) {
+    if (s.done) return null;
+    var c = s.cfg;
+    if (s.queue.length) {
+      var q = s.queue.shift();
+      if (c.live && q.f1 > availF) {
+        if (availF - q.f0 < c.minWinF) { s.queue.unshift(q); return { wait: true, needF: q.f0 + c.minWinF }; }
+        q = { f0: q.f0, f1: availF, kind: q.kind, ep: q.ep };
+      }
+      return q;
+    }
+    var span = plan ? plan(s.visited) : null;
+    var kind = "plan";
+    if (!span) {
+      span = HV().nextUnvisited(s.visited, 0, availF, c.chunkF, c.overlapF);
+      kind = "sweep";
+    }
+    if (!span) return null;
+    var f0 = span[0], f1 = Math.min(span[1], availF);
+    if (f1 - f0 < Math.round(2 * c.R) && f1 - f0 < c.minWinF) {
+      if (c.live) return { wait: true, needF: f0 + c.minWinF };
+      return null;
+    }
+    return { f0: f0, f1: f1, kind: kind };
+  }
+
+  /* The provisional next span AFTER `current` is marked visited — what the
+     driver may seek under the current decode (tier-1 overlap). Advisory:
+     a post-decode divergence (growth, a hold, a plan change) just cancels
+     the prefetch with its seeks counted honestly. */
+  function schedPeek(s, plan, availF, current) {
+    if (s.done || s.queue.length) return null;
+    var vis = s.visited.map(function (sp) { return sp.slice(); });
+    if (current) HV().markVisited(vis, current.f0, current.f1);
+    var span = plan ? plan(vis) : null;
+    if (!span) span = HV().nextUnvisited(vis, 0, availF, s.cfg.chunkF, s.cfg.overlapF);
+    if (!span) return null;
+    var f1 = Math.min(span[1], availF);
+    if (f1 - span[0] < Math.round(2 * s.cfg.R)) return null;
+    return { f0: span[0], f1: f1 };
+  }
+
+  /* What the window taught — decisions come back as flags.
+     obs: { lockedAny, added, peelDone, bankLive, availF }. */
+  function schedObserve(s, win, obs) {
+    var c = s.cfg, out = {};
+    s.wrun++;
+    var lenS = (win.f1 - win.f0) / c.R;
+    var availF = obs.availF !== undefined ? obs.availF : win.f1;
+    // Adaptive growth (run-1's lock-failure lesson): a window that locks
+    // NOTHING gets one doubled retry before its stretch is declared dead;
+    // the failed window is NOT marked visited (the grown one marks both).
+    // Cure windows are re-visits by construction and never grow.
+    if (!obs.lockedAny && !obs.peelDone && !s.grown[win.f0] && win.f1 < availF && win.kind !== "cure" && win.kind !== "grow") {
+      s.grown[win.f0] = 1;
+      var g1 = Math.min(win.f0 + 2 * (win.f1 - win.f0), availF);
+      s.queue.unshift({ f0: win.f0, f1: g1, kind: "grow" });
+      s.events.push({ ev: "grow", w: s.wrun, f0: win.f0, f1: g1 });
+      out.grew = true;
+    } else {
+      HV().markVisited(s.visited, win.f0, win.f1);
+    }
+    if (obs.lockedAny) { s.everLocked = true; s.lastLockF = win.f1; }
+    s.totalAdded += obs.added || 0;
+    if (win.kind === "cure") s.cures++;
+    // Early exit — UNLESS a bank is mid-assembly and progressing (hold-for-
+    // bank; identity is worth the extra windows), within the hold budget:
+    // cycle-priced seconds when the lease is time-priced, else windows.
+    if (obs.peelDone) {
+      var budgetLeft = c.holdCapS ? s.heldS < c.holdCapS : s.heldWindows < c.holdCapWindows;
+      if (obs.bankLive && budgetLeft) {
+        s.heldS += lenS; s.heldWindows++;
+        s.events.push({ ev: "hold", w: s.wrun, held_s: Math.round(s.heldS * 10) / 10 });
+        out.hold = true;
+      } else {
+        s.done = true; s.exitReason = "early-exit"; out.exit = true;
+      }
+      return out;
+    }
+    // Dead-clip guard: nothing ever locked, nothing banked, four windows in.
+    if (!s.everLocked && s.totalAdded === 0 && s.wrun >= 4) {
+      s.done = true; s.exitReason = "dead-clip"; out.exit = true;
+      return out;
+    }
+    // Live dead-air guard: locks stopped arriving for deadAirS.
+    if (c.live && s.everLocked && s.lastLockF >= 0 && (availF - s.lastLockF) / c.R > c.deadAirS) {
+      s.done = true; s.exitReason = "dead-air"; out.exit = true;
+    }
+    return out;
+  }
+
+  /* The cure worklist (rung 3): convicted epochs' spans, re-decoded under
+     the track. Capped; each is a re-visit (never grows, never re-plans). */
+  function schedCure(s, spans) {
+    var n = 0;
+    for (var i = 0; i < spans.length && s.cures + s.queue.length < s.cfg.cureCap; i++) {
+      s.queue.push({ f0: spans[i].f0, f1: spans[i].f1, kind: "cure", ep: spans[i].ep });
+      n++;
+    }
+    if (n) { s.done = false; s.exitReason = null; s.events.push({ ev: "cure-queued", spans: n }); }
+    return n;
+  }
+
+  function schedExhausted(s) {
+    if (!s.done) { s.done = true; s.exitReason = "exhausted"; }
+    return s.exitReason;
+  }
+
+  function schedStop(s, reason) { s.done = true; s.exitReason = reason || "stopped"; }
+
+  function schedSummary(s) {
+    var vis = 0;
+    for (var i = 0; i < s.visited.length; i++) vis += s.visited[i][1] - s.visited[i][0];
+    return { windows: s.wrun, visited_s: Math.round(vis / s.cfg.R * 10) / 10, exit: s.exitReason,
+             held_s: Math.round(s.heldS * 10) / 10, held_windows: s.heldWindows, cures: s.cures,
+             grown: Object.keys(s.grown).length, live: s.cfg.live };
+  }
+
+  var API = { schedCreate: schedCreate, schedNext: schedNext, schedPeek: schedPeek, schedObserve: schedObserve,
+              schedCure: schedCure, schedExhausted: schedExhausted, schedStop: schedStop, schedSummary: schedSummary };
+  if (typeof module !== "undefined" && module.exports) module.exports = API;
+  global.OC = global.OC || {}; global.OC.schedule = API;
+})(typeof window !== "undefined" ? window : globalThis);
+
+</script>
+<script>
+/* inlined: source.js */
+/* source.js — SOURCE UNIFICATION (the continuous receiver, phase C, part
+   ii): live capture or a recording behind ONE interface, the first stage of
+   the practitioner's pipeline (source → temporal scheduler → spatial slicer
+   → processing). A source answers two questions — how much exists so far
+   (`availS`), and give me the frames of a span (`window`) — and nothing
+   above it knows which kind it is. A recording seeks (the whole clip
+   exists at once); a synthetic recording renders lazily; a LIVE source is
+   a ring buffer the camera fills in real time, so `availS` advances with
+   the wall clock, `window` hands back what has arrived, and a span that
+   does not exist yet is WAITED for (`waitFor`) rather than fetched — the
+   scheduler answers WAIT with the frame count it needs, the driver waits
+   here. The synthetic source can run LIVE too (frames become available on
+   a wall clock at the emission rate): the same driver, the same scheduler,
+   the same wait — the live path certified without a camera.
+
+   Seeks remain the recording's receipt currency; a live window costs no
+   seeks (it reports grabs instead). Frames carry LOCAL emission indices
+   from the window's first emission frame (the pipeline sees each window
+   like a capture that started there); the caller keeps fBase.
+
+   No DOM here: the recording and live sources take the fetch/grab
+   closures the harness owns; the ring buffer is plain arrays. */
+(function (global) {
+  "use strict";
+
+  /* A recording: `fetchWindow(tA, tB, onStep)` is the harness's seek loop
+     (video element + crop geometry live in that closure); returns
+     { frames, seeks, fBase }. */
+  function sourceRecording(durationS, fetchWindow) {
+    return {
+      kind: "recording", live: false, ended: true,
+      duration: function () { return durationS; },
+      availS: function () { return durationS; },
+      window: function (tA, tB, onStep) { return fetchWindow(tA, tB, onStep); },
+      waitFor: function () { return Promise.resolve(true); },
+      end: function () {}
+    };
+  }
+
+  /* A synthetic recording, rendered lazily; `live` gates availability on
+     the wall clock at the emission rate (the live twin). `renderWindow(tA,
+     tB, onStep)` is the harness's synth window loop. */
+  function sourceSynth(durationS, renderWindow, opts) {
+    opts = opts || {};
+    var live = !!opts.live, t0 = null, ended = !live;
+    var now = function () { return (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now(); };
+    var availS = function () {
+      if (!live) return durationS;
+      if (t0 === null) t0 = now();
+      var a = (now() - t0) / 1000 - (opts.latencyS !== undefined ? opts.latencyS : 0.2);
+      if (a >= durationS) { ended = true; return durationS; }
+      return Math.max(0, a);
+    };
+    return {
+      kind: live ? "synth-live" : "synth", live: live,
+      get ended() { return ended; },
+      duration: function () { return durationS; },
+      availS: availS,
+      window: function (tA, tB, onStep) { return renderWindow(tA, Math.min(tB, availS()), onStep); },
+      waitFor: function (tS) {
+        if (!live) return Promise.resolve(true);
+        return new Promise(function (resolve) {
+          (function poll() {
+            if (availS() >= tS || ended) resolve(availS() >= tS);
+            else setTimeout(poll, opts.pollMs || 150);
+          })();
+        });
+      },
+      end: function () { ended = true; }
+    };
+  }
+
+  /* The LIVE source: a ring buffer of camera frames. The harness's grab
+     loop calls push({ t, img }) with t = the media time in seconds (the
+     capture's own clock); frames older than retentionS fall off. window
+     maps t → local emission index floor(t·emitFps) − fBase and keeps at most
+     `looks` looks per emission frame (the duplicate defense: the camera
+     runs faster than the emission). */
+  function sourceLive(emitFps, opts) {
+    opts = opts || {};
+    var retentionS = opts.retentionS || 90, looks = opts.looks || 2;
+    var buf = [], latest = 0, ended = false, grabs = 0;
+    var prune = function () {
+      var cut = latest - retentionS;
+      var i = 0;
+      while (i < buf.length && buf[i].t < cut) i++;
+      if (i > 0) buf.splice(0, i);
+    };
+    return {
+      kind: "live", live: true,
+      get ended() { return ended; },
+      duration: function () { return ended ? latest : Infinity; },
+      availS: function () { return latest; },
+      push: function (frame) {
+        if (ended) return;
+        buf.push(frame); grabs++;
+        if (frame.t > latest) latest = frame.t;
+        if (grabs % 60 === 0) prune();
+      },
+      buffered: function () { return buf.length; },
+      window: function (tA, tB) {
+        var fBase = Math.round(tA * emitFps), frames = [], perIdx = {};
+        for (var i = 0; i < buf.length; i++) {
+          var fr = buf[i];
+          if (fr.t < tA || fr.t >= tB) continue;
+          var idx = Math.floor(fr.t * emitFps) - fBase;
+          if ((perIdx[idx] || 0) >= looks) continue;
+          perIdx[idx] = (perIdx[idx] || 0) + 1;
+          frames.push({ f: idx, img: fr.img });
+        }
+        return { frames: frames, seeks: 0, grabs: frames.length, fBase: fBase };
+      },
+      waitFor: function (tS) {
+        return new Promise(function (resolve) {
+          (function poll() {
+            if (latest >= tS || ended) resolve(latest >= tS);
+            else setTimeout(poll, opts.pollMs || 150);
+          })();
+        });
+      },
+      end: function () { ended = true; }
+    };
+  }
+
+  var API = { sourceRecording: sourceRecording, sourceSynth: sourceSynth, sourceLive: sourceLive };
+  if (typeof module !== "undefined" && module.exports) module.exports = API;
+  global.OC = global.OC || {}; global.OC.source = API;
+})(typeof window !== "undefined" ? window : globalThis);
+
+</script>
+<script>
 /* inlined: ser.js */
-/* ser.js — stage-9 stand-in for Phase 0: score decoded symbols against the known
-   seeded reference. The harness measures SER/erasure-rate per layer; the fountain
-   layer proper is deferred (measurement needs no payload framing). */
+/* ser.js — stage-9 scoring for reference-mode streams: score decoded symbols
+   against the known seeded reference and report SER/erasure-rate per layer (the
+   Phase 0 measurement, still used by the v2 suite). Payload mode does not use
+   it: fountain.js carries the droplets and the peel. */
 (function (global) {
   "use strict";
 
@@ -7143,7 +8469,18 @@
     var regOpts = { profile: profile, maxEmitters: opts.maxEmitters };
     var reg = null, regFrame = 0;
     var tReg = T && tnow();
-    if (opts.registerOn) {
+    if (opts.regPrior && opts.regPrior.length) {
+      // THE POSE PRIOR (continuous receiver, phase A): the caller's
+      // registration track supplies the pose — re-acquisition after a
+      // window where fresh registration found nothing, and the span
+      // re-decode under the consensus track (cure rung 3; tripod truth).
+      // The prior only SEEDS: the per-frame solve below still re-earns
+      // geometry locally — a frozen prior would be the full-span aligner
+      // that already lost once to clock drift (the a82 lesson).
+      reg = { emitters: opts.regPrior.map(function (pr) {
+        return { H: pr.H, fiducialWidthPx: pr.fid || 100, method: pr.method || "prior" };
+      }) };
+    } else if (opts.registerOn) {
       reg = register.registerAll(opts.registerOn, regOpts);
     } else {
       // For a TILED profile the operator declared how many plates exist, so
@@ -7353,10 +8690,37 @@
         }
       }
     }
+    // THE MAJORITY-TILE FEED (continuous receiver, phase C): the caller's
+    // registration track knows each plate's tile from clip-wide evidence
+    // (opts.tileHints = [{ center, fid, tile }], capture pixels). A plate the
+    // fresh read could not place — or a frame where no designated tile was
+    // found at all — takes its hinted tile, so the beacon descriptor below
+    // reads the RIGHT variant's harmonics (a wrong guess yields a wrong-
+    // harmonic phase track for the whole window — the phase-B learning).
+    // Placed reads are never overridden here; the driver's majority
+    // judgment governs contradictions.
+    var tileHinted = null;
+    if (tileOf && opts.tileHints && opts.tileHints.length) {
+      var gH = dep("geom");
+      var centersH = emitters.map(function (em) { return gH.applyH(em.H, 0, 0); });
+      var fidsH = emitters.map(function (em) { return em.fiducialWidthPx; });
+      tileHinted = placeByHints(centersH, fidsH, tileOf, opts.tileHints);
+    }
     var ringsByEmitter = tilesN > 1 && opts.payload ? [] : null;
 
     var results = emitters.map(function (em, emIdx) {
-      var annuliPairs = channels.map(function (a) {
+      // THE ARRAY RIG (phase 1): with a variant map riding the profile, this
+      // emitter's beacon descriptor carries its own TILE's lists — tile
+      // identity is positional (tileOf, filled right after registration), so
+      // it is known before any ring is read. Geometry and rotation stay the
+      // shared profile's; an unplaced tile (-1) reads with the base code.
+      var chans = channels;
+      if (profile.beacon_variants && opts.beacon && profile.plate) {
+        var tvE = tileOf ? tileOf[emIdx] : -1;
+        var bvE = dep("profile").beaconVariantFor(profile, tvE);
+        chans = profile.annuli.concat([dep("plate").beaconAnnulus(profile, bvE)]);
+      }
+      var annuliPairs = chans.map(function (a) {
         var kmax = Math.max.apply(null, a.boundary.harmonics) + 4;
         // ARC-PITCH SAMPLING. The sampler used a fixed 256 rays per ring
         // regardless of circumference, so an inner edge was sampled ~2× denser
@@ -7572,6 +8936,14 @@
             return { annulus: a.index, layer: a.layer, beacon: a.beacon || undefined,
                      present: true, contrast: round3(meanContrast), validFrames: valid,
                      carrierRatio: carrierRatio, tear: tearBrief(tearX), snr_db: snrNL,
+                     // THE STREAM (continuous receiver, phase B): a beacon row
+                     // hands its per-frame phase track out, so the driver can
+                     // accumulate it per EMITTER across windows on the absolute
+                     // frame axis and align/frame the envelope wherever it
+                     // completes — window fit stops being a constraint.
+                     phi: a.beacon ? Array.from(track.phi) : undefined,
+                     phiFirstValid: a.beacon ? track.firstValid : undefined,
+                     phiMeanMag: a.beacon ? track.meanMag : undefined,
                      chunkSweep: sweep && sweep.passes ? sweep.chunks : undefined,
                      chunkSweepPasses: sweep ? sweep.passes : undefined,
                      tagSeen: sweep && sweep.tagSeen != null ? ("0000" + (sweep.tagSeen >>> 0).toString(16)).slice(-4) : undefined,
@@ -7631,6 +9003,8 @@
             return {
               annulus: a.index, layer: a.layer, present: true, beacon: true,
               contrast: round3(meanContrast), validFrames: valid, snr_db: snrBk,
+              // the stream's raw material (phase B) — see the no-lock row
+              phi: Array.from(track.phi), phiFirstValid: track.firstValid, phiMeanMag: track.meanMag,
               carrierRatio: carrierRatio, alignMethod: align.method || "preamble",
               alignOffset: align.offset, alignLag: align.lag,
               framing: align.framing || "frame",
@@ -7821,11 +9195,16 @@
       // Plate centre in capture pixels (H maps plate units → image): the
       // spatial identity of this emitter for anything keyed per plate.
       var cPx = em.H ? dep("geom").applyH(em.H, 0, 0) : null;
+      // The last frame's homography (post conic/solve) — the freshest pose,
+      // for a registration track to carry into the next burst as a prior.
+      var Hlast = tracksH[emIdx].Hs[groups.length - 1] || em.H;
       return { fiducialWidthPx: Math.round(em.fiducialWidthPx * 10) / 10, method: em.method || "finder",
+               H: Hlast,
                center: cPx ? [Math.round(cPx[0] * 10) / 10, Math.round(cPx[1] * 10) / 10] : undefined,
                conic: conicBriefs ? conicBriefs[emIdx] : undefined,
                plateSolve: solveBriefs ? solveBriefs[emIdx] : undefined,
                tile: tileOf ? tileOf[emIdx] : undefined,
+               tileHinted: tileHinted && tileHinted[emIdx] ? true : undefined,
                annuli: annuli, payload: payload };
     });
 
@@ -7892,6 +9271,26 @@
     return s;
   }
 
+  /* Place unplaced tiles from the track's hints by plate-center proximity
+     (the lease's nearPlate tolerance: 0.75 × the larger fiducial width).
+     Mutates tileOf in place for entries at −1; returns a per-emitter
+     hinted flag array. Pure — the suite drives it directly. */
+  function placeByHints(centers, fids, tileOf, hints) {
+    var hinted = new Array(tileOf.length);
+    for (var i = 0; i < tileOf.length; i++) {
+      hinted[i] = false;
+      if (tileOf[i] !== -1 || !centers[i]) continue;
+      for (var h = 0; h < hints.length; h++) {
+        var hint = hints[h];
+        if (!hint || !hint.center || hint.tile === null || hint.tile === undefined || hint.tile < 0) continue;
+        var tol = 0.75 * Math.max(fids[i] || 0, hint.fid || 0, 1);
+        var dx = centers[i][0] - hint.center[0], dy = centers[i][1] - hint.center[1];
+        if (dx * dx + dy * dy <= tol * tol) { tileOf[i] = hint.tile; hinted[i] = true; break; }
+      }
+    }
+    return hinted;
+  }
+
   function tearBrief(t) {
     if (!t) return undefined;
     return { applied: t.applied, scanned: t.scanned, torn: t.torn, repaired: t.repaired, warped: t.warped, warpRate: t.warpRate, invalidated: t.invalidated, slipSuspect: t.slipSuspect, reasons: t.reasons, cuts: t.cuts };
@@ -7910,7 +9309,7 @@
   function round3(x) { return Math.round(x * 1000) / 1000; }
   function round1(x) { return Math.round(x * 10) / 10; }
 
-  var API = { decodeSequence: decodeSequence, decodeV3Auto: decodeV3Auto };
+  var API = { decodeSequence: decodeSequence, decodeV3Auto: decodeV3Auto, placeByHints: placeByHints };
   if (typeof module !== "undefined" && module.exports) module.exports = API;
   global.OC = global.OC || {}; global.OC.pipeline = API;
 })(typeof window !== "undefined" ? window : globalThis);
@@ -7953,8 +9352,13 @@ function v31Opts(p) {
   if (window.ocTiling > 1) p.tiling = window.ocTiling;
   // D-ring ruling-2 trial: the FRAMING is auto-detected, but the beacon's
   // M/F must match the emitter for demodulation — the settings string's
-  // dring= key sets this select.
-  OC.profile.applyDring(p, $("m_dring") ? $("m_dring").value : "f24");
+  // dring= key sets this select. The array rig (phase 1): a comma list in
+  // dring= arms window.ocDringVariants — one code per tile; the decoder
+  // resolves each emitter's beacon descriptor by its tile.
+  if (window.ocDringVariants && window.ocDringVariants.length > 1)
+    OC.profile.applyDringVariants(p, window.ocDringVariants);
+  else
+    OC.profile.applyDring(p, $("m_dring") ? $("m_dring").value : "f24");
   return p;
 }
 function payloadMode() { const v = $("m_prof") && $("m_prof").value; return v === "v2p" || v3Mode(); }
@@ -8146,8 +9550,8 @@ $("camBtn").onclick = async () => {
       video: { facingMode: $("m_cam").value === "front" ? "user" : "environment", width: { ideal: 1280 }, frameRate: { ideal: 30 } }
     });
     const v = $("vid"); v.srcObject = stream; v.style.display = ""; await v.play();
-    $("capBtn").disabled = false;
-    setStatus("camera live — frame the emitter, prop the phone (or tick handheld), then Capture", "ok");
+    $("capBtn").disabled = false; $("liveBtn").disabled = false;
+    setStatus("camera live — frame the emitter, prop the phone (or tick handheld), then Capture — or Live harvest", "ok");
   } catch (e) { setStatus("camera failed: " + e.message + " (C1: HTTPS or localhost only — use the file path instead)", "bad"); }
 };
 
@@ -8188,6 +9592,42 @@ $("capBtn").onclick = () => {
   if ("requestVideoFrameCallback" in v) v.requestVideoFrameCallback(grab);
   else requestAnimationFrame(grab);
 };
+
+/* ---------- LIVE HARVEST (phase C ii) ----------
+   The camera feeds a ring buffer (OC.source.sourceLive) and the SAME harvest
+   driver — scheduler, track, streams, lease, peel — consumes it as it fills:
+   take-what-comes, telemetry until it comes back with data or doesn't. Frames
+   are full-frame 640-px luma (the recording path's pre-scan crop is a later
+   refinement for live); retention 30 s covers the scheduler's lag. Stop ends
+   the source: the driver drains what remains and exits. */
+let liveSrc = null, liveGrabbing = false;
+$("liveBtn").onclick = async () => {
+  const v = $("vid");
+  if (!v.srcObject) { setStatus("start the camera first", "warn"); return; }
+  if (!payloadMode()) { setStatus("live harvest needs a “+ payload” profile", "bad"); return; }
+  const R = currentProfile().frame_rate_hz;
+  const W = 640, H = Math.round(640 * v.videoHeight / v.videoWidth) || 360;
+  const c = document.createElement("canvas"); c.width = W; c.height = H;
+  const ctx = c.getContext("2d", { willReadFrequently: true });
+  liveSrc = OC.source.sourceLive(R, { retentionS: 30, looks: 2 });
+  liveGrabbing = true;
+  $("liveBtn").disabled = true; $("liveStopBtn").disabled = false;
+  const t0Wall = performance.now();
+  const grab = (now, meta) => {
+    if (!liveGrabbing) return;
+    const t = meta ? meta.mediaTime : (now - t0Wall) / 1000;
+    ctx.drawImage(v, 0, 0, W, H);
+    liveSrc.push({ t, img: toLumFromCanvas(ctx, W, H) });
+    if ("requestVideoFrameCallback" in v) v.requestVideoFrameCallback(grab); else requestAnimationFrame(grab);
+  };
+  if ("requestVideoFrameCallback" in v) v.requestVideoFrameCallback(grab); else requestAnimationFrame(grab);
+  window.ocSource = liveSrc;
+  setStatus("live harvest — the receiver follows the camera; Stop live to end", "ok");
+  try { await harvestDecode({ duration: Infinity }, null, { name: "camera-live" }); }
+  catch (e) { setStatus("live harvest failed: " + e.message, "bad"); console.error(e); }
+  finally { liveGrabbing = false; window.ocSource = null; $("liveBtn").disabled = false; $("liveStopBtn").disabled = true; }
+};
+$("liveStopBtn").onclick = () => { liveGrabbing = false; if (liveSrc) liveSrc.end(); };
 
 /* ---------- the harvest STORE (cross-clip: it outlives the clip) ----------
    v2, the lease build: CONTENT-addressed ledgers (droplets are session-
@@ -8236,6 +9676,13 @@ $("ledIn").onchange = async () => {
    place results on the clip's absolute axis. Returns the seek count: the
    harvest receipt's currency. */
 async function seekWindow(v, geo, tA, tB, capFps, emitFps, onStep) {
+  // SYNTHETIC HARVEST (2026-08-30): when a synthetic source is armed the
+  // "seek" is a lazy per-frame RENDER — the driver above this line runs
+  // unchanged, which is the point: the planner, bank, lease and exits are
+  // what a synthetic run certifies. One look per emission frame (no tears
+  // to defend against); container-timestamp handling stays the recorded
+  // path's own territory.
+  if (window.ocSynth) return synthWindow(window.ocSynth, tA, tB, emitFps, onStep);
   const seek = t => new Promise(r => { v.onseeked = () => r(); v.currentTime = t; });
   const fBase = Math.round(tA * emitFps);
   const frames = []; const perIdx = {}; let seeks = 0;
@@ -8311,11 +9758,64 @@ async function harvestDecode(v, geo, file) {
   // operator's declared profile is the top degrade rung, provisionals are
   // clip-scoped. Contexts are tag-addressed; ledgers are content-addressed.
   HV.leaseNewClip(st);
-  const lease = HV.leaseCreate({ operator: true });
+  // THE LEASE, TIME-PRICED (phase C, the mini-ruling as defaults): the
+  // envelope cycle is the beacon-priced unit — grace 2 cycles, stream
+  // staleness 1.5 cycles, hold cap 4 cycles; coasting ends on a zero-lock
+  // stretch of 8 s (data-priced). Profiles without a beacon keep the
+  // window counting.
+  const cycleS = HV.envelopeCycleSeconds(profile);
+  const lease = HV.leaseCreate({ operator: true, cycleSeconds: cycleS });
+  // THE REGISTRATION TRACK (continuous receiver, phase A): registration and
+  // designation state that SURVIVES window boundaries. Every window's solves
+  // feed it; every banked droplet carries its (burst, hypothesis) epoch; the
+  // peel trusts the track's ranked coalitions and retries down the ladder.
+  const track = OC.track.trackCreate();
+  // THE STREAMS (continuous receiver, phase B): each emitter's beacon phase
+  // track accumulates across windows on the absolute frame axis, and the
+  // full beacon read runs over the accumulated stream — an envelope frames
+  // wherever it completes, across seams. The stream OVERLAYS the window's
+  // own beacon row when it knows more (a seal, or a tag confirmation, the
+  // window alone could not frame). The window's own chunk sightings still
+  // feed the bank — now keyed PER EMITTER — so each physical chunk counts
+  // once and no two tiles ever pool. Rolling span: 60 s (drift-bounded; the
+  // a82 lesson), long enough for any envelope to complete across one seam.
+  const streams = OC.stream.streamsCreate({ spanFrames: Math.round(60 * R) });
+  const beaconAnnFor = (tile) => profile.beacon_variants
+    ? OC.plate.beaconAnnulus(profile, OC.profile.beaconVariantFor(profile, tile))
+    : OC.plate.beaconAnnulus(profile);
+  const streamStep = (resX, troX, fBaseX, liveTagsX) => {
+    const emIds = [];
+    resX.emitters.forEach((em, ei) => {
+      const o = troX.out[ei];
+      if (o) emIds[ei] = o.em;
+      const b = (em.annuli || []).find(a => a && a.beacon && a.phi);
+      if (!b || !o) return;
+      const rec = OC.stream.streamAbsorb(streams, o.em, fBaseX, b.phi, { meanMag: b.phiMeanMag });
+      delete b.phi; delete b.phiFirstValid; delete b.phiMeanMag;   // consumed — keep the row light
+      const read = OC.stream.streamRead(streams, o.em, beaconAnnFor(em.tile), profile,
+        { expectTag: liveTagsX.length === 1 ? liveTagsX[0] : undefined });
+      if (!read) return;
+      b.stream = { held: read.held, windows: read.windows, seams: read.seams, stitched: rec.stitched,
+                   turns: rec.turns, sealed: read.sealed, tagConfirmed: !!read.tagConfirmed };
+      if (read.sealed && !b.envelopeFields) {
+        Object.assign(b, { envelope: read.envelope, envelopeFields: read.envelopeFields,
+          envelopeFrames: read.envelopeFrames, tag: read.tag, tagSightings: read.tagSightings,
+          tagConfirmed: undefined, alignMethod: "stream", framing: read.framing, folded: read.folded,
+          viaStream: true });
+        delete b.error;
+      } else if (!b.envelopeFields && read.tagConfirmed && !b.tagConfirmed) {
+        Object.assign(b, { tagConfirmed: true, tag: read.tag, tagSightings: read.tagSightings,
+          alignMethod: "stream", viaStream: true });
+        delete b.error;
+      }
+    });
+    return emIds;
+  };
   const peelAll = () => {
+    const ladder = OC.track.coalitionLadder(track);
     const out = { list: [], allOk: true, any: false, best: null };
     for (const key in st.ledgers) {
-      const p = HV.tryPeelStore(st, lease, key, profile);
+      const p = HV.tryPeelStore(st, lease, key, profile, ladder ? { coalitions: ladder } : undefined);
       out.list.push({ key, p });
       if (p.ok === true) { out.any = true; if (!out.best) out.best = { key, p }; }
       else out.allOk = false;
@@ -8329,11 +9829,20 @@ async function harvestDecode(v, geo, file) {
       : p.K ? (p.recovered || 0) + "/" + p.K
       : "no header") +
     (p.excluded && p.excluded.length ? " <span class='warn'>(LIAR EXCLUDED " + p.excluded.join(", ") + ")</span>" : "") +
+    (p.coalition && p.coalition !== "all" ? " <span class='warn'>(coalition " + p.coalition + ": " + (p.excludedEps ? p.excludedEps.length : 0) + " epoch excluded)</span>" : "") +
     (p.ok === true && !p.validatedBy ? " <span class='warn'>UNVALIDATED (bare peel — no content check)</span>" : "") +
     (p.provisionalsRejected ? " <span class='warn'>(" + p.provisionalsRejected + " provisional rejected)</span>" : "")
   ).join(" · ") || "no ledgers yet";
-  const durS = v.duration, durF = Math.floor((durS - 0.06) * R);
-  const baseline = Math.ceil(durS * capFps);
+  // THE SOURCE (phase C, part ii): live capture or a recording behind one
+  // interface. The file path wraps its seek loop as a recording; the synth
+  // lane wraps its lazy renderer (live or not); the camera live harvest
+  // hands in a ring buffer. Above this line nothing knows which.
+  const source = window.ocSource || OC.source.sourceRecording(v.duration,
+    (tA, tB, onStep) => seekWindow(v, geo, tA, tB, capFps, R, onStep));
+  const durS = source.live ? null : source.duration();
+  let durF = source.live ? Math.round(source.availS() * R) : Math.floor((durS - 0.06) * R);
+  let horizonF = durF;   // the planner's horizon: the clip for a recording, what exists so far for live
+  const baseline = source.live ? null : Math.ceil(durS * capFps);
   // Window floor scales with the SLOWEST ring's droplet span. crcAlign needs
   // ≥2 CRC passes to lock, so a window has to offer the longest-droplet ring
   // several chances or one CRC miss costs it the whole window — measured: at
@@ -8353,14 +9862,19 @@ async function harvestDecode(v, geo, file) {
   const overlapF = HV.maxDropletFrames(profile);
   const bootF = Math.min(Math.max(minWinF, Math.round((+$("m_boot").value || 10) * R)), durF);
   const t0Wall = performance.now();
-  const visited = [], ctxLocks = {}, grown = {};
+  const ctxLocks = {};
   let seeks = 0, wrun = 0, pa = peelAll();
   const fieldLog = {
     kind: "harvest", started: new Date().toISOString(),
     clip: (file && file.name) || "camera",
-    duration_s: Math.round(durS * 10) / 10,
+    source: source.kind, live: source.live || undefined,
+    duration_s: durS !== null ? Math.round(durS * 10) / 10 : undefined,
     settings: ($("pasteStr") && $("pasteStr").value) || undefined,
-    dring: ($("m_dring") && $("m_dring").value) || undefined,
+    take: (window.ocTake && window.ocTake.id) || undefined,
+    physical: (window.ocTake && window.ocTake.physical) || undefined,
+    dring: (window.ocDringVariants && window.ocDringVariants.length > 1
+            ? window.ocDringVariants.join(",")
+            : ($("m_dring") && $("m_dring").value)) || undefined,
     harness: {
       handheld: !!($("m_hand") && $("m_hand").checked),
       solve: !!($("m_solve") && $("m_solve").checked),
@@ -8369,7 +9883,11 @@ async function harvestDecode(v, geo, file) {
     },
     tiling: window.ocTiling || 1, cap_fps: capFps, emit_fps: R,
     windows_cfg: { min_s: minWinF / R, max_s: maxWinF / R, boot_s: bootF / R },
-    windows: [], notes: [], final: null
+    // EVENT TELEMETRY (phase C): one clip-wide stream — windows with their
+    // kind and peel progress, the lease's receipts, the track's
+    // adjudications, the scheduler's decisions, the exit — beside the
+    // per-window rows the registry already reads.
+    windows: [], events: [], notes: [], final: null
   };
   // Windows worth seeking, planned per (context locks × its content ledger),
   // earliest first; contexts whose ledger already peels plan nothing.
@@ -8383,7 +9901,7 @@ async function harvestDecode(v, geo, file) {
       const ledKey = key === "operator" ? "operator" : (st.contexts[key] && st.contexts[key].contentKey);
       const led2 = ledKey && st.ledgers[ledKey];
       if (!led2 || okKeys[ledKey]) continue;
-      const pl = HV.planSpans(led2, lk, 0, durF,
+      const pl = HV.planSpans(led2, lk, 0, horizonF,
         { visited: visitedArr, minFrames: minWinF, joinGap: joinGapF, maxFrames: maxWinF, overlap: overlapF });
       if (pl.windows.length && (!bestW || pl.windows[0][0] < bestW[0])) bestW = pl.windows[0];
     }
@@ -8391,13 +9909,24 @@ async function harvestDecode(v, geo, file) {
   };
   const clipLog = { name: file.name, windows: [] };
   st.clips.push(clipLog);
-  $("harvest").innerHTML = "<b>harvest: " + file.name + "</b> — " + durS.toFixed(1) + " s, baseline " + baseline +
-    " seeks, overlap " + (overlapF / R).toFixed(1) + " s, window floor " + (minWinF / R).toFixed(1) + " s" +
+  $("harvest").innerHTML = "<b>harvest: " + file.name + "</b> — " + (source.live ? "LIVE (" + source.kind + ")" : durS.toFixed(1) + " s, baseline " + baseline + " seeks") +
+    ", overlap " + (overlapF / R).toFixed(1) + " s, window floor " + (minWinF / R).toFixed(1) + " s" +
     (minWinF > userMinF ? " <span class='warn'>(raised from " + (userMinF / R).toFixed(1) +
       " s — the slowest ring needs " + (dropletF / R).toFixed(1) + " s per droplet)</span>" : "") + "<br>";
-  // Already in hand? Then nothing is seeked at all — the carried store
-  // completes before the clip is touched (never pay twice for the same drop).
-  const queue = (pa.any && pa.allOk) ? [] : [[0, bootF]];
+  // THE SCHEDULER AS ITS OWN STAGE (phase C): which spans to materialize
+  // and when to stop — bootstrap, the ledger-steered plan (nextPlanned is
+  // handed in as the planner), the unvisited sweep, growth, hold-for-bank,
+  // the dead-clip guard, the cure worklist, termination — all live in
+  // OC.schedule now; this loop fetches, decodes, and reports. Already in
+  // hand? Then nothing is seeked at all — the carried store completes
+  // before the clip is touched (never pay twice for the same drop).
+  const sched = OC.schedule.schedCreate({
+    R, minWinF, maxWinF, joinGapF, chunkF, overlapF, bootF,
+    holdCapS: cycleS ? 4 * cycleS : null, holdCapWindows: 4,
+    live: !!source.live, deadAirS: 30,
+    carriedComplete: pa.any && pa.allOk
+  });
+  let grabs = 0, waits = 0;
   if (pa.any && pa.allOk) $("harvest").innerHTML += "<span class='ok'>carried store already peels — the clip is not needed</span><br>";
   // Tier-1 seek∥decode overlap (parallel-harvest design note): the video
   // element is idle while the worker decodes, so the PROVISIONAL next window
@@ -8405,18 +9934,64 @@ async function harvestDecode(v, geo, file) {
   // (droplets bank by identity, visited marks truthfully) — the plan is
   // advisory, so a post-absorb divergence just cancels the prefetch with its
   // seeks counted honestly.
-  let prefetch = null, prefetchCancel = false, everLocked = false, totalAdded = 0;
+  let prefetch = null, prefetchCancel = false;
   // Hold-for-bank (practitioner's ruling 2026-08-27): the payload winning the
   // race must not forfeit identity — the a82 real-photon take reached 4/5
   // chunk indices and the early exit abandoned the bank with half the clip
   // unread. While any beacon bank is mid-assembly and PROGRESSING (a fresh
-  // idx within the last HOLD_BANK_N windows), the harvest keeps taking
-  // windows after the payload peels, capped at HOLD_BANK_CAP held windows.
+  // idx within the staleness bound — 1.5 cycles when time-priced, else 2
+  // windows), the harvest keeps taking windows after the payload peels;
+  // the scheduler caps the hold (4 cycles / 4 windows). Patience scales
+  // with proximity: at 4/5 the bank gets the whole cap.
   const HOLD_BANK_N = 2, HOLD_BANK_CAP = 4;
-  const bankState = {};   // target → { have, freshW }
-  let heldForBank = 0;
-  while (queue.length) {
-    const [wf0, wf1] = queue.shift();
+  const HOLD_STALE_S = cycleS ? 1.5 * cycleS : null, HOLD_CAP_S = cycleS ? 4 * cycleS : null;
+  const bankState = {};   // target → { have, freshW, freshT }
+  const bankTargetsOfIndex = {};   // emitter index → every bank label it has used (phase B)
+  const bankLiveNow = (tNowS) => Object.keys(bankState).some(t => {
+    const bs = bankState[t];
+    if (!(bs.have > 0 && bs.have < 5)) return false;
+    if (HOLD_STALE_S) return (tNowS - bs.freshT) <= (bs.have >= 4 ? HOLD_CAP_S : HOLD_STALE_S);
+    return (wrun - bs.freshW) <= (bs.have >= 4 ? HOLD_BANK_CAP : HOLD_BANK_N);
+  });
+  let curePoses = null;
+  while (true) {
+    // what exists so far: the whole clip for a recording, the ring buffer's
+    // high-water mark for live (the planner's horizon follows it)
+    const availF = source.live ? Math.round(source.availS() * R) : durF;
+    horizonF = availF;
+    let win = OC.schedule.schedNext(sched, nextPlanned, availF);
+    if (win && win.wait) {
+      // LIVE: the next span does not exist yet — wait for the frames (the
+      // source resolves when they arrive, or when it ends)
+      if (source.ended) { OC.schedule.schedStop(sched, "ended"); break; }
+      waits++;
+      setStatus("live: waiting for frames to " + (win.needF / R).toFixed(1) + " s (have " + (availF / R).toFixed(1) + " s)…", "warn");
+      if (waits === 1 || waits % 10 === 0) fieldLog.notes.push({ w: wrun, note: "waiting for frames to " + (win.needF / R).toFixed(1) + " s" });
+      await source.waitFor(win.needF / R);
+      continue;
+    }
+    if (!win) {
+      // Coverage exhausted. CURE RUNG 3 (phase A): exclusion alone cannot
+      // refill a poisoned span (its windows are visited), so each convicted
+      // epoch's span is re-decoded under the track's adopted poses (tripod:
+      // the consensus pose IS the registration; handheld: the per-frame
+      // solve chains from the prior and re-earns). Honest bytes landing on
+      // poison-held slots arrive as conflicts, are RETAINED as witnesses,
+      // and the excluded view re-projects from them.
+      OC.schedule.schedExhausted(sched);
+      pa = peelAll();
+      if (!(pa.any && pa.allOk) && !sched.cures) {
+        const cureSpans = OC.track.convictedSpans(track);
+        curePoses = OC.track.trackPoses(track);
+        if (cureSpans.length && curePoses.length && OC.schedule.schedCure(sched, cureSpans)) {
+          $("harvest").innerHTML += "<span class='warn'>convicted epochs poisoned " + cureSpans.length +
+            " span(s) — re-decoding under the track's consensus pose</span><br>";
+          win = OC.schedule.schedNext(sched, nextPlanned, availF);
+        }
+      }
+      if (!win || win.wait) break;
+    }
+    const wf0 = win.f0, wf1 = win.f1;
     wrun++;
     let cap;
     if (prefetch && prefetch.wf0 === wf0 && prefetch.wf1 === wf1) {
@@ -8427,10 +10002,15 @@ async function harvestDecode(v, geo, file) {
         const cPre = await prefetch.p;
         seeks += cPre.seeks; prefetch = null; prefetchCancel = false;
       }
-      cap = await seekWindow(v, geo, wf0 / R, wf1 / R, capFps, R,
-        t => setStatus("harvest w" + wrun + ": seeking " + t.toFixed(1) + " s…", "warn"));
+      cap = await source.window(wf0 / R, wf1 / R,
+        t => setStatus((win.kind === "cure" ? "cure w" : "harvest w") + wrun + ": seeking " + t.toFixed(1) + " s…", "warn"));
     }
-    seeks += cap.seeks;
+    seeks += cap.seeks; grabs += cap.grabs || 0;
+    // The majority-tile feed (phase C): the track's clip-wide designation
+    // rides into the decode so an unplaced plate reads the RIGHT variant's
+    // beacon harmonics; placed reads are never overridden here.
+    const tileHints = track.emitters.map(em => ({ center: em.center, fid: em.fid, tile: OC.track.majorityOf(track, em) }))
+      .filter(h => h.center && h.tile !== null);
     clipLog.windows.push([Math.round(wf0 / R * 10) / 10, Math.round(wf1 / R * 10) / 10]);
     // Hints only when exactly ONE clock is live (the deferral): with several
     // independent contexts one hint map would be wrong for all but one, and a
@@ -8463,43 +10043,115 @@ async function harvestDecode(v, geo, file) {
       // the envelope had never been read from a field capture. With the
       // framing-based aligner it joins mid-loop like everything else.
       beacon: isV3h && $("m_beacon").checked,
-      beaconAlign: liveTags.length === 1 ? { expectTag: liveTags[0] } : undefined
+      beaconAlign: liveTags.length === 1 ? { expectTag: liveTags[0] } : undefined,
+      tileHints: tileHints.length ? tileHints : undefined,
+      // a cure window decodes under the track's consensus pose (rung 3)
+      regPrior: win.kind === "cure" && curePoses && curePoses.length ? curePoses : undefined
     });
-    // kick the provisional next window's seeks under the decode
-    if (!queue.length && !prefetch) {
-      const visProv = visited.map(s => s.slice());
-      HV.markVisited(visProv, wf0, wf1);
-      const nxt = nextPlanned(visProv) || HV.nextUnvisited(visProv, 0, durF, chunkF, overlapF);
-      if (nxt && nxt[1] - nxt[0] >= Math.round(2 * R)) {
+    // kick the provisional next window's seeks under the decode (a live
+    // window is a buffer read — nothing to overlap)
+    if (!prefetch && !source.live) {
+      const nxt = OC.schedule.schedPeek(sched, nextPlanned, availF, win);
+      if (nxt) {
         const pw = wrun;
         prefetch = {
-          wf0: nxt[0], wf1: nxt[1],
-          p: seekWindow(v, geo, nxt[0] / R, nxt[1] / R, capFps, R,
+          wf0: nxt.f0, wf1: nxt.f1,
+          p: source.window(nxt.f0 / R, nxt.f1 / R,
             t => prefetchCancel ? false
                : void setStatus("harvest w" + pw + ": decoding ∥ prefetching " + t.toFixed(1) + " s…", "warn"))
         };
       }
     }
-    const res = await decodeP;
-    let line = "w" + wrun + " [" + (wf0 / R).toFixed(1) + "–" + (wf1 / R).toFixed(1) + " s] " + cap.seeks + " seeks";
+    let res = await decodeP;
+    // THE ENGINEERED FALSE SOLVE (?poison=w0-w1): the synthetic cure fixture.
+    // Frames render clean; the injection corrupts the RESULT — a ⅓-scale
+    // solve signature (fid, ring-path method) plus wrong-byte droplets on the
+    // real slots — because the honest seam under test is "given a burst whose
+    // solve was false and whose droplets are poison, does the machinery
+    // convict, exclude, re-decode and validate?" Nature supplies this burst
+    // in the field (the 2026-09-01 specimen); the fixture supplies it on
+    // demand. Poisoned windows' spans are visited-subtracted like any other,
+    // so exclusion alone cannot refill them — the cure MUST walk rung 3.
+    if (window.ocPoison && !res.error && win.kind !== "cure" && wrun >= window.ocPoison.w0 && wrun <= window.ocPoison.w1) {
+      const scaleP = window.ocPoison.scale;
+      for (const em of res.emitters) {
+        em.fiducialWidthPx = Math.round(em.fiducialWidthPx * scaleP * 10) / 10;
+        em.method = "rings";
+        for (const a of (em.annuli || [])) {
+          if (!a || a.beacon || !a.droplets) continue;
+          a.droplets = a.droplets.map(d => ({ c: d.c,
+            hex: d.hex.replace(/../g, b => ((parseInt(b, 16) ^ 0x5a) | 0).toString(16).padStart(2, "0")) }));
+        }
+      }
+      window.ocPoison.hit = (window.ocPoison.hit || 0) + 1;
+    }
+    // RE-ACQUISITION (phase A): a window where fresh registration found
+    // nothing retries once under the track's adopted poses — the prior
+    // seeds, the per-frame solve re-earns. An occlusion or blur stretch
+    // stops costing the whole window.
+    if (res.error && OC.track.trackPoses(track).length) {
+      const poses = OC.track.trackPoses(track);
+      setStatus("harvest w" + wrun + ": no registration — retrying under the track's pose…", "warn");
+      const res2 = await decodeAsync(cap.frames, profile, {
+        aligned: false, handheld: $("m_hand").checked,
+        loopSeconds: +$("m_loop").value || 60, mirror: { receive: false },
+        maxEmitters: isV3h ? 6 : 4, payload: true,
+        plateSolve: isV3h && $("m_solve").checked, beacon: isV3h && $("m_beacon").checked,
+        regPrior: poses
+      });
+      if (!res2.error) { res = res2; res.reacquired = true; }
+    }
+    let line = (win.kind === "cure" ? "cure w" : "w") + wrun + " [" + (wf0 / R).toFixed(1) + "–" + (wf1 / R).toFixed(1) + " s] " + cap.seeks + " seeks";
+    if (res.reacquired) line += " — <span class='warn'>re-acquired under the track's pose</span>";
     let lockedAny = false;
     const wRec = { w: wrun, t0: +(wf0 / R).toFixed(1), t1: +(wf1 / R).toFixed(1), seeks: cap.seeks };
+    if (win.kind !== "plan" && win.kind !== "boot") wRec.kind = win.kind;
+    if (win.kind === "cure") wRec.redecode = win.ep;
+    if (res.reacquired) wRec.reacquired = true;
     if (res.error) { line += " — <span class='bad'>" + res.error + "</span>"; wRec.error = stripHtml(res.error); }
     else {
-      const got = HV.leaseObserve(st, lease, res, profile, wrun);
+      // ——— the registration track: observe, judge designation, tag epochs ———
+      const solves = res.emitters.map((em, ei) => ({
+        e: ei, center: em.center, fid: em.fiducialWidthPx, method: em.method,
+        tile: em.tile, H: em.H }));
+      const tro = OC.track.trackObserve(track, wrun, solves, { f0: wf0, f1: wf1 });
+      const eps = [];
+      res.emitters.forEach((em, ei) => {
+        const o = tro.out[ei];
+        if (!o) return;
+        eps[ei] = o.ep;
+        // Designation judgment: the majority fills an unplaced tile
+        // (evidence accumulated clip-wide); a contradicting read is
+        // unplaced for this span rather than re-keying the ledger.
+        if (em.tile !== undefined && o.tileOut !== em.tile) em.tile = o.tileOut;
+      });
+      if (tro.events.length) wRec.track = tro.events;
+      const emIds = streamStep(res, tro, cap.fBase, liveTags);
+      const got = HV.leaseObserve(st, lease, res, profile, wrun,
+        { eps, excluded: OC.track.excludedEps(track), emIds, span: [wf0 / R, wf1 / R] });
       let added = 0, dup = 0, quarantined = 0, conflicts = 0;
       got.events.forEach(e => {
         if (e.ev === "bank") { added += e.added || 0; dup += e.dup || 0; quarantined += e.quarantined || 0; conflicts += e.conflicts || 0; }
         if (e.ev === "chunk-bank") {
-          const bs = bankState[e.target] || (bankState[e.target] = { have: 0, freshW: -1 });
+          const bs = bankState[e.target] || (bankState[e.target] = { have: 0, freshW: -1, freshT: -1e9 });
           bs.have = e.have || 0;
-          if (e.fresh > 0) bs.freshW = wrun;
+          if (e.fresh > 0) { bs.freshW = wrun; bs.freshT = wf1 / R; }
+          if (e.index !== undefined) (bankTargetsOfIndex[e.index] || (bankTargetsOfIndex[e.index] = {}))[e.target] = true;
         }
         if (e.ev === "bank-seal" || e.ev === "bind" || e.ev === "rebind") {
-          for (const t in bankState) bankState[t].have = 5;  // assembled — nothing left to hold for
+          // Only THIS emitter's banks are done (phase B: banks are per
+          // emitter; a 2-up's second tile keeps its own hold) — every label
+          // the emitter ever banked under (its pre-bind operator bank, its
+          // plate bank) retires together. Legacy events without an index
+          // reset everything, as before.
+          if (e.index !== undefined) {
+            const labels = Object.assign({}, bankTargetsOfIndex[e.index] || {});
+            if (e.target) labels[e.target] = true;
+            for (const t in labels) if (bankState[t]) bankState[t].have = 5;
+          } else for (const t2 in bankState) bankState[t2].have = 5;
         }
       });
-      totalAdded += added;
+      wRec.added = added;
       // Locks per context/operator clock (the routing already knows whose
       // emitter each row belongs to); the lag-consensus quarantine still
       // gates each lock, per emitter, in FRAMES.
@@ -8516,7 +10168,6 @@ async function harvestDecode(v, geo, file) {
           if (lk) (ctxLocks[key] || (ctxLocks[key] = {}))[a.annulus] = lk;
         }
       });
-      if (lockedAny) everLocked = true;
       pa = peelAll();
       // The beacon's envelope, read off the air: the emitter's own statement of
       // preset / session / K / tiling / loop — the settings string, from the wire.
@@ -8563,8 +10214,11 @@ async function harvestDecode(v, geo, file) {
       wRec.locked = lockedAny;
       wRec.rows = res.emitters.map((em, ei) => ({
         e: ei, tile: em.tile, fid: em.fiducialWidthPx, reg: em.method,
+        c: em.center, hyp: tro.out[ei] ? tro.out[ei].hyp : undefined,
+        ep: tro.out[ei] ? tro.out[ei].ep : undefined,
         annuli: (em.annuli || []).map(a => a && ({
           ann: a.annulus, beacon: a.beacon || undefined, method: a.alignMethod,
+          stream: a.stream || undefined, viaStream: a.viaStream || undefined,
           lag: a.alignLag, carrier: a.carrierRatio, snr: a.snr_db,
           droplets: a.dropletsPassed, framing: a.framing, tag: a.tag,
           tagN: a.tagSightings, folded: a.folded || undefined,
@@ -8575,64 +10229,52 @@ async function harvestDecode(v, geo, file) {
       wRec.events = got.events.filter(e => e.ev !== "ledger" && e.ev !== "state");
       wRec.peel = stripHtml(peelBrief(pa));
     }
-    // Adaptive growth (run-1's lock-failure lesson): a window that locks
-    // NOTHING gets one doubled retry before its stretch is declared dead —
-    // short windows can't accumulate CRC evidence on marginal footage where
-    // a long segment locks fine. The failed window is NOT marked visited
-    // (the grown window re-covers it and marks for both).
-    if (!lockedAny && !(pa.any && pa.allOk) && !grown[wf0] && wf1 < durF) {
-      grown[wf0] = 1;
-      const gw1 = Math.min(wf0 + 2 * (wf1 - wf0), durF);
-      queue.unshift([wf0, gw1]);
-      line += " — <span class='warn'>no lock, growing ×2 → " + (gw1 / R).toFixed(1) + " s</span>";
-    } else {
-      HV.markVisited(visited, wf0, wf1);
-    }
+    // The window's verdict goes to the scheduler: growth (a lock-less window
+    // gets one doubled retry, not marked visited), hold-for-bank (identity
+    // worth the extra windows, budgeted), early exit, the dead-clip guard.
+    const verdict = OC.schedule.schedObserve(sched, win, {
+      lockedAny, added: wRec.added || 0, peelDone: pa.any && pa.allOk,
+      bankLive: (pa.any && pa.allOk) ? bankLiveNow(wf1 / R) : false,
+      availF: source.live ? Math.round(source.availS() * R) : durF
+    });
+    // the event stream: this window, then the receipts it produced
+    fieldLog.events.push({ ev: "window", w: wrun, t0: +(wf0 / R).toFixed(1), t1: +(wf1 / R).toFixed(1), kind: win.kind,
+      added: wRec.added || 0, locked: lockedAny, error: wRec.error || undefined,
+      peel: pa.best ? { recovered: pa.best.p.recovered, K: pa.best.p.K, ok: pa.best.p.ok === true } : undefined });
+    (wRec.events || []).forEach(e => fieldLog.events.push(Object.assign({ w: wrun, t: +(wf0 / R).toFixed(1) }, e)));
+    (wRec.track || []).forEach(e => fieldLog.events.push(Object.assign({ t: +(wf0 / R).toFixed(1) }, e)));
+    if (verdict.grew) fieldLog.events.push({ ev: "grow", w: wrun, t: +(wf0 / R).toFixed(1) });
+    if (verdict.hold) fieldLog.events.push({ ev: "hold", w: wrun, t: +(wf1 / R).toFixed(1), held_s: +sched.heldS.toFixed(1) });
+    if (verdict.grew) line += " — <span class='warn'>no lock, growing ×2 → " + (sched.queue[0].f1 / R).toFixed(1) + " s</span>";
     wRec.text = stripHtml(line);
     fieldLog.windows.push(wRec);
     $("harvest").innerHTML += line + "<br>";
     ledgerInfo();
-    // Early exit: every content ledger any live context (or the operator)
-    // feeds has peeled and validated — UNLESS a beacon bank is mid-assembly
-    // and progressing (hold-for-bank; identity is worth the extra windows).
-    if (pa.any && pa.allOk) {
-      const bankLive = Object.keys(bankState).some(t => {
-        const bs = bankState[t];
-        // Patience scales with proximity: at 4/5 every window holds ~1–2
-        // occurrences of exactly the missing index, so a bank one index from
-        // BIND gets the whole cap; farther banks get the short staleness bound.
-        const staleBound = bs.have >= 4 ? HOLD_BANK_CAP : HOLD_BANK_N;
-        return bs.have > 0 && bs.have < 5 && (wrun - bs.freshW) <= staleBound;
-      });
-      if (!bankLive || heldForBank >= HOLD_BANK_CAP) break;
-      heldForBank++;
+    if (verdict.hold) {
       const bh = Object.keys(bankState).map(t => bankState[t].have + "/5").join(", ");
-      fieldLog.notes.push({ w: wrun, note: "holding for the chunk bank (" + bh + " idx; held " + heldForBank + "/" + HOLD_BANK_CAP + ")" });
-      $("harvest").innerHTML += "<span class='warn'>payload complete — holding for the chunk bank (" + bh +
-        " idx; held " + heldForBank + "/" + HOLD_BANK_CAP + ")</span><br>";
+      const heldTxt = HOLD_CAP_S ? (sched.heldS.toFixed(1) + "/" + HOLD_CAP_S.toFixed(1) + " s") : (sched.heldWindows + "/" + HOLD_BANK_CAP);
+      fieldLog.notes.push({ w: wrun, note: "holding for the chunk bank (" + bh + " idx; held " + heldTxt + ")" });
+      $("harvest").innerHTML += "<span class='warn'>payload complete — holding for the chunk bank (" + bh + " idx; held " + heldTxt + ")</span><br>";
     }
-    // Dead-clip guard: bootstrap + its growth + a second stretch all silent
-    // on an empty take = stop burning seeks (the 29-minute exhaustion of a
-    // clip where nothing ever locked). Anything carried in stays banked.
-    if (!everLocked && totalAdded === 0 && wrun >= 4) {
+    if (verdict.exit && sched.exitReason === "dead-clip") {
       fieldLog.notes.push({ w: wrun, note: "dead-clip guard: nothing locks anywhere — stopped early" });
       $("harvest").innerHTML += "<span class='bad'>nothing locks anywhere after " + wrun +
         " windows — stopping early. Check the EMIT side first (HUD skip receipt, mode summary green, payload K=… line), then range/zoom.</span><br>";
-      break;
     }
-    if (!queue.length) {
-      const nxt2 = nextPlanned(visited) || HV.nextUnvisited(visited, 0, durF, chunkF, overlapF);
-      if (nxt2 && (nxt2[1] - nxt2[0] >= Math.round(2 * R) || nxt2[1] - nxt2[0] >= minWinF)) queue.push(nxt2);
-    }
+    if (verdict.exit) break;
   }
   if (prefetch) { // in-flight prefetch at exit — cancel, count its seeks honestly
     prefetchCancel = true;
     const cPre = await prefetch.p;
     seeks += cPre.seeks; prefetch = null;
   }
+  const redecodes = sched.cures;
   const wall = ((performance.now() - t0Wall) / 1000).toFixed(1);
-  const saved = Math.max(0, Math.round(100 * (1 - seeks / baseline)));
-  const visitedS = visited.reduce((s, sp) => s + (sp[1] - sp[0]), 0) / R;
+  const saved = baseline ? Math.max(0, Math.round(100 * (1 - seeks / baseline))) : null;
+  const visitedS = sched.visited.reduce((s, sp) => s + (sp[1] - sp[0]), 0) / R;
+  const durShown = durS !== null ? durS : source.availS();
+  fieldLog.events.push({ ev: "exit", reason: sched.exitReason, t: +visitedS.toFixed(1), windows: wrun, waits: waits || undefined });
+  if (source.live) fieldLog.duration_s = Math.round(source.availS() * 10) / 10;
   pa = peelAll();
   const done = pa.any && pa.allOk;
   const payloads = pa.list.filter(({ p }) => p.ok === true).map(({ key, p }) =>
@@ -8640,27 +10282,231 @@ async function harvestDecode(v, geo, file) {
     ":</b> “" + p.text + "”</span> (" + p.recovered + "/" + p.K + " blocks, " + p.droplets + " droplets" +
     (p.validatedBy ? ", validated: " + p.validatedBy : ", <span class='warn'>UNVALIDATED — bare peel</span>") +
     (p.excluded && p.excluded.length ? ", <span class='warn'>liar excluded: " + p.excluded.join(", ") + "</span>" : "") + ")").join("<br>");
+  const seekTxt = source.live ? grabs + " frames grabbed live (" + (waits || 0) + " waits)"
+                              : seeks + " seeks of " + baseline + " baseline (" + saved + "% skipped)";
   const receipt = done
-    ? "<b class='ok'>EARLY EXIT — every live ledger in hand after " + visitedS.toFixed(1) + " s of " + durS.toFixed(1) + " s</b>" +
-      " — " + seeks + " seeks of " + baseline + " baseline (" + saved + "% skipped), wall " + wall + " s<br>" + payloads
-    : "<b class='warn'>clip exhausted — incomplete</b> (" + peelBrief(pa) +
-      ") — " + seeks + " seeks of " + baseline + " (" + saved + "% skipped), wall " + wall + " s — export the store and film another take: the next harvest mines only what this one lacked" +
+    ? "<b class='ok'>EARLY EXIT — every live ledger in hand after " + visitedS.toFixed(1) + " s of " + durShown.toFixed(1) + " s</b>" +
+      " — " + seekTxt + ", wall " + wall + " s<br>" + payloads
+    : "<b class='warn'>" + (source.live ? "live source ended (" + sched.exitReason + ") — incomplete" : "clip exhausted — incomplete") + "</b> (" + peelBrief(pa) +
+      ") — " + seekTxt + ", wall " + wall + " s — export the store and film another take: the next harvest mines only what this one lacked" +
       (payloads ? "<br>" + payloads : "");
   $("harvest").innerHTML += receipt + "<br>";
   fieldLog.final = {
     done, wall_s: +wall, seeks, baseline, skipped_pct: saved,
+    grabs: source.live ? grabs : undefined, waits: source.live ? waits : undefined,
     visited_s: +visitedS.toFixed(1), windows: wrun,
     peels: pa.list.map(({ key, p }) => ({
       key, ok: p.ok === true, K: p.K, recovered: p.recovered, droplets: p.droplets,
       validatedBy: p.validatedBy, excluded: p.excluded,
+      coalition: p.coalition, excludedEps: p.excludedEps, coalitionsTried: p.coalitionsTried,
       headerOutvoted: p.headerOutvoted, eliminationTried: p.eliminationTried,
       text: p.ok === true ? p.text : undefined, reason: p.ok === true ? undefined : p.reason
     })),
+    redecodes: redecodes || undefined,
+    track: OC.track.trackSummary(track),
+    streams: OC.stream.streamsSummary(streams),
+    scheduler: OC.schedule.schedSummary(sched),
+    lease_pricing: cycleS ? { cycle_s: cycleS, grace_s: 2 * cycleS, stale_s: 1.5 * cycleS, hold_cap_s: 4 * cycleS, coast_end_s: 8 } : "windows",
     receipt: stripHtml(receipt)
   };
+  // The ending STORE persists beside the log (2026-08-30, the registry's
+  // re-run lane): a later re-ingest can carry it and mine only what this
+  // harvest lacked — the 92/93 case's missing block costs one more take of
+  // exactly one block. The log records the name so the registry can offer it.
+  try {
+    const stStamp = String(fieldLog.started || "").replace(/[^0-9]/g, "").slice(0, 14);
+    fieldLog.store_name = "store-" + stStamp + ".json";
+    st.epochs = track.epochs;   // the epoch registry rides the store — it names its own epochs
+    fetch("/harness-result?page=store-" + stStamp, { method: "POST", body: HV.serializeStore(st) }).catch(() => {});
+  } catch (e) {}
   postFieldLog(fieldLog);
   setStatus(done ? "harvest complete — early exit" : "harvest exhausted — the store holds the progress", done ? "ok" : "warn");
+  return fieldLog;
 }
+
+/* ---------- SYNTHETIC HARVEST (2026-08-30, the practitioner's proposal) ----------
+   "Test with content and see what the harvest does before tossing real
+   photons around." The runner navigates here with ?synth=<dring>: the page
+   configures itself through the SAME intake path a real take uses (the
+   selects → currentProfile), builds emission schedules ONCE for the whole
+   loop, renders frames lazily as the planner visits them, and runs the REAL
+   windowed driver end to end — seek planner, chunk bank, lease,
+   hold-for-bank, early exit. The fieldLog posts as usual; a pass/fail
+   verdict posts to results/synth-harvest.json for the runner's reporter.
+   Params: synth=<dring code> · loop=<s> · msg=<payload text> · prof
+   (default v3) · quad=0 to drop quadrant corners · return=runner. */
+async function synthWindow(S, tA, tB, emitFps, onStep) {
+  const fBase = Math.round(tA * emitFps);
+  const f1 = Math.min(Math.round(tB * emitFps), Math.floor((S.duration - 0.05) * emitFps));
+  const frames = []; let seeks = 0;
+  for (let f = fBase; f < f1; f++) {
+    frames.push({ f: f - fBase, img: S.frame(f) });
+    seeks++;
+    if (seeks % 30 === 0) {
+      if (onStep && onStep(f / emitFps) === false) break;
+      await new Promise(r => setTimeout(r, 0));
+    }
+  }
+  return { frames, seeks, fBase };
+}
+function synthSource(msg, loopS) {
+  const p = currentProfile();
+  // Suite-standard raster (the optical cases' scale) — the emit page's 1024
+  // canvas would cost 5× per render for nothing a synthetic run measures.
+  p.render = Object.assign({}, p.render, { size_px: 448, scale_px_per_unit: 70 });
+  // The envelope must tell the truth about the loop it rides (freeze 0 is
+  // also what the quadrant3-family validator demands).
+  p.countdown = { freeze_s: 0, loop_s: loopS };
+  const R = p.frame_rate_hz, n = Math.round(loopS * R);
+  const payloadBytes = OC.fountain.textToBytes(msg);
+  const enc = OC.fountain.encodeCarousels(p, payloadBytes);
+  const wire = OC.fountain.selfFrame(payloadBytes, 1);
+  const pInfo = { K: enc.K, len: wire.length, pcrc: OC.fountain.crc16(wire), capability: 1 };
+  const envB = OC.emission.envelopeBytes(p, pInfo);
+  // The array rig (phase 1): a tiled twin mirrors renderSequence's tiled
+  // setup — per-tile carousels and per-tile envelopes, built once, rendered
+  // lazily; per-tile beacon VARIANTS resolve inside the renderer from
+  // p.beacon_variants (set by the intake's dring list via v31Opts).
+  const layout = OC.emission.tileLayout(p);
+  if (layout.n > 1) {
+    const schedulesT = [], beaconSchedulesT = [];
+    for (let t = 0; t < layout.n; t++) {
+      schedulesT.push(OC.emission.buildSchedules(p, n, OC.fountain.encodeCarousels(p, payloadBytes, { tile: t }).carousels));
+      beaconSchedulesT.push(OC.emission.buildBeaconSchedule(p, n, OC.emission.envelopeBytes(p, pInfo, t)));
+    }
+    return {
+      duration: loopS, K: enc.K, profile: p,
+      frame: f => OC.emission.renderFrameV3Tiled(p, f, { schedulesT: schedulesT, beaconSchedulesT: beaconSchedulesT, envBytes: envB })
+    };
+  }
+  const schedules = OC.emission.buildSchedules(p, n, enc.carousels);
+  const beaconSchedule = OC.emission.buildBeaconSchedule(p, n, envB);
+  return {
+    duration: loopS, K: enc.K, profile: p,
+    frame: f => OC.emission.renderFrameV3(p, f, { schedules: schedules, beaconSchedule: beaconSchedule, envBytes: envB })
+  };
+}
+(function () {
+  const q = new URLSearchParams(location.search);
+  const code = q.get("synth");
+  if (!code) return;
+  window.addEventListener("load", async () => {
+    // The take-card intake may be carrying a prior store (async fetch) —
+    // wait for it, or this run races past the carry and opens fresh.
+    try { await window.ocIntakeReady; } catch (e) {}
+    const loopS = Math.max(30, +q.get("loop") || 180);
+    const msg = q.get("msg") || "When IBM discovered that it was not in the business of making office equipment or business machines, but that it was in the business of processing information, then it began to navigate with clear vision.";
+    let verdict;
+    try {
+      // The array rig (phase 1): ?synth= may be a comma list — one code per
+      // tile; tiling defaults to the list length.
+      const codesS = code.split(",").filter(Boolean);
+      const tilingS = +q.get("tiling") || (codesS.length > 1 ? codesS.length : 1);
+      if ($("m_prof")) $("m_prof").value = q.get("prof") || "v3";
+      if ($("m_quad")) $("m_quad").checked = q.get("quad") !== "0";
+      if ($("m_hand")) $("m_hand").checked = false;
+      if ($("m_dring")) $("m_dring").value = codesS[0];
+      window.ocDringVariants = codesS.length > 1 ? codesS : null;
+      if ($("m_loop")) $("m_loop").value = String(loopS);
+      if ($("m_capfps")) $("m_capfps").value = "60";
+      // Window floor/ceiling (the array rig's close-range lesson: a 2-up's
+      // pre-bind chunk bank MIXES the tiles' envelopes, so per-tile identity
+      // needs IN-WINDOW seals — window ≥ the envelope cycle).
+      if ($("m_minwin") && q.get("minwin")) $("m_minwin").value = q.get("minwin");
+      if ($("m_maxwin") && q.get("maxwin")) $("m_maxwin").value = q.get("maxwin");
+      if ($("m_harvest")) $("m_harvest").checked = true;
+      // The cure fixture (?poison=w0-w1[&poisonscale=]): windows in range get
+      // the engineered false-solve treatment — see the injection block in the
+      // harvest loop. The clean lane never sets this.
+      if (q.get("poison")) {
+        const mP = /^(\d+)-(\d+)$/.exec(q.get("poison"));
+        if (mP) window.ocPoison = { w0: +mP[1], w1: +mP[2], scale: +q.get("poisonscale") || (1 / 3) };
+      }
+      // Self-description: the log's settings field carries the canonical
+      // string for a synthetic run too — the record reads like any take's.
+      if ($("pasteStr")) $("pasteStr").value = ["oc1", "prof=" + (($("m_prof") && $("m_prof").value) || "v3"),
+        "payload=1", "tiling=" + tilingS, "quad=" + ($("m_quad") && $("m_quad").checked ? 1 : 0), "qrp=0",
+        "dring=" + codesS.join(","), "loop=" + loopS, "freeze=0", "capfps=60"].join(" ");
+      window.ocTiling = tilingS;
+      window.ocSynth = synthSource(msg, loopS);
+      // THE SOURCE (phase C ii): the synth renderer behind the source
+      // interface — and with ?live=1 the LIVE TWIN: frames become available
+      // on the wall clock at the emission rate, the scheduler waits for
+      // them, and the live path certifies without a camera.
+      const liveS = q.get("live") === "1";
+      const Rs = window.ocSynth.profile.frame_rate_hz;
+      window.ocSource = OC.source.sourceSynth(loopS, (tA, tB, onStep) => synthWindow(window.ocSynth, tA, tB, Rs, onStep), { live: liveS });
+      const log = await harvestDecode({ duration: loopS }, null, { name: "synthetic:" + code + ":" + loopS + "s" + (liveS ? ":live" : "") });
+      window.ocSource = null;
+      const fin = (log && log.final) || {};
+      const peels = fin.peels || [];
+      const okPeel = peels.find(pp => pp.ok && pp.validatedBy);
+      const bound = (log.windows || []).some(w => (w.events || []).some(e => e.ev === "bind" || e.ev === "rebind"));
+      let sealW = null;
+      (log.windows || []).forEach(w => (w.events || []).forEach(e => {
+        if (sealW === null && (e.ev === "bank-seal" || e.ev === "bind")) sealW = w.w;
+      }));
+      const asserts = [
+        { name: "driver finished (early exit or clean exhaustion)", ok: fin.done === true },
+        { name: "a context bound (or a carried store completed without seeking)", ok: bound || fin.windows === 0 },
+        { name: "peel complete + content-validated", ok: !!okPeel },
+        { name: "decoded text matches the emitted message byte-for-byte", ok: !!okPeel && okPeel.text === msg }
+      ];
+      // The cure fixture's own bar: conviction fired, a trusted coalition
+      // excluded the poisoned epochs AND validated, and rung 3 re-decoded
+      // the span the poison had marked visited. The clean lane never adds
+      // these — its bar is byte-exact trajectory parity with the baselines.
+      if (window.ocPoison) {
+        const fTrack = fin.track || {};
+        asserts.push(
+          { name: "the false hypothesis was convicted", ok: (fTrack.convicted || []).length >= 1 },
+          { name: "a coalition excluded the poisoned epochs and validated",
+            ok: !!(okPeel && okPeel.coalition && okPeel.coalition !== "all" && (okPeel.excludedEps || []).length >= 1) },
+          { name: "the cure re-decoded the poisoned span under the track", ok: (fin.redecodes || 0) >= 1 }
+        );
+      }
+      // The live twin's own bar: the source was live, the scheduler ran in
+      // live mode, the driver waited for frames at least once, and no seeks
+      // were spent (live windows are buffer reads).
+      if (q.get("live") === "1") {
+        const fs = fin.scheduler || {};
+        asserts.push(
+          { name: "the source was live and the scheduler ran live", ok: log.live === true && fs.live === true },
+          { name: "the driver waited for frames (take-what-comes)", ok: (fin.waits || 0) >= 1 },
+          { name: "the run ended by early exit, not dead-air", ok: fs.exit === "early-exit" }
+        );
+      }
+      const fails = asserts.filter(a => !a.ok).length;
+      verdict = {
+        synth: true, dring: code, loop_s: loopS, K: window.ocSynth.K,
+        live: q.get("live") === "1" || undefined, waits: fin.waits,
+        poison: q.get("poison") || undefined,
+        poison_windows_hit: window.ocPoison ? window.ocPoison.hit : undefined,
+        passes: asserts.length - fails, fails: fails, asserts: asserts,
+        seal_w: sealW, windows: fin.windows, visited_s: fin.visited_s,
+        skipped_pct: fin.skipped_pct, wall_s: fin.wall_s, receipt: fin.receipt
+      };
+    } catch (e) {
+      verdict = { synth: true, dring: code, passes: 0, fails: 1, error: String(e.stack || e).slice(0, 1200) };
+    }
+    const vBody = JSON.stringify(verdict, null, 1);
+    try { await fetch("/harness-result?page=synth-harvest", { method: "POST", body: vBody }); } catch (e) {}
+    // Per-code baseline (the cert-path ruling, 2026-08-30): the fixed name is
+    // last-write-wins for the runner's reporter; this one PERSISTS per config
+    // so a later camera take has "what good looks like" to be held against —
+    // pipeline faults get caught here, before the encoding-vs-capture
+    // question can even be asked. Error verdicts overwrite too: a stale
+    // green baseline is worse than an honest red one. A POISONED run never
+    // writes the baseline — the cure fixture must not masquerade as clean.
+    if (q.get("live") === "1")
+      try { await fetch("/harness-result?page=synth-live-" + encodeURIComponent(code), { method: "POST", body: vBody }); } catch (e) {}
+    else if (!window.ocPoison)
+      try { await fetch("/harness-result?page=synth-harvest-" + encodeURIComponent(code), { method: "POST", body: vBody }); } catch (e) {}
+    else
+      try { await fetch("/harness-result?page=synth-cure-" + encodeURIComponent(code), { method: "POST", body: vBody }); } catch (e) {}
+    if (q.get("return") === "runner") setTimeout(() => { location.href = "runner.html"; }, 1200);
+  });
+})();
 
 /* ---------- recorded input (§9.1 — first-class, works without camera/secure ctx) ----------
    Seek-stepped, crop-at-native-resolution. Browser-agnostic by construction: no
@@ -8973,19 +10819,29 @@ function ocApplySettings(str) {
   if (kv.loop) $("m_loop").value = kv.loop;
   if ($("m_quad")) $("m_quad").checked = kv.quad === "1";
   if ($("m_qrp")) $("m_qrp").checked = kv.qrp === "1";
-  if ($("m_dring")) $("m_dring").value = ["c42", "c82", "a42", "a42r", "a42x", "a42g", "a42q", "a44q", "a42v", "a42u", "a82"].indexOf(kv.dring) >= 0 ? kv.dring : "f24";
+  // The array rig (phase 1): dring= may be a comma list (one code per tile).
+  // The allow-list is profile.js's own registry — no drift.
+  const dringAllow = OC.profile.DRING_CHUNKED.concat(["f24"]);
+  const dringList = (kv.dring || "").split(",").filter(Boolean);
+  const dringOk = dringList.length > 0 && dringList.every(c => dringAllow.indexOf(c) >= 0);
+  window.ocDringVariants = dringOk && dringList.length > 1 ? dringList : null;
+  if ($("m_dring")) $("m_dring").value = dringOk ? dringList[0] : "f24";
   window.ocTiling = Math.max(1, +kv.tiling || 1);   // the declared lattice, applied in v31Opts
   const bits = [target, "capture " + (kv.capfps || "?") + " fps", (kv.tiling || "1") + "-up emitter"];
   if (kv.quad === "1") bits.push("quadrant corners");
   if (kv.qrp === "1") bits.push("persistent QR");
-  if (["c42", "c82", "a42", "a42r", "a42x", "a42g", "a42q", "a44q", "a42v", "a42u", "a82"].indexOf(kv.dring) >= 0)
+  if (window.ocDringVariants && window.ocDringVariants.length > 1)
+    bits.push("D-ring VARIANTS per tile: " + window.ocDringVariants.join(" | ") + " (the array rig — shared geometry and clock)");
+  else if (dringOk && kv.dring !== "f24")
     bits.push("D-ring " + (kv.dring[0] === "a" ? "A-INNER " : "") + "chunked " + (kv.dring[1] === "8" ? "M=8/F=2" : kv.dring === "a44q" ? "M=4/F=4" : "M=4/F=2") +
       (kv.dring === "a42r" ? " · AMP RE-SPLIT" : kv.dring === "a42x" ? " · AMP k5 LADDER" :
        kv.dring === "a42g" ? " · GEOMETRY TRIAL floor 1.00 class 0.075" :
        kv.dring === "a42q" ? " · CENTER REVISION quadrant3 + variant" :
        kv.dring === "a44q" ? " · CENTER REVISION @ F=4 (rate lever)" :
        kv.dring === "a42v" ? " · v4 DIVIDEND floor 0.95 class 0.090 (family 4)" :
-       kv.dring === "a42u" ? " · UNDER-CEILING PROBE v4 plate class 0.075 (family 4)" : ""));
+       kv.dring === "a42u" ? " · UNDER-CEILING PROBE v4 plate class 0.075 (family 4)" :
+       kv.dring === "a42k" ? " · k-SPLIT RESCUE [2,3,5] no-k1 class 0.075" :
+       kv.dring === "a42c" ? " · k-SPLIT RESCUE circular end Σ 0.050" : ""));
   const v3fam = kv.prof === "v3" || kv.prof === "v3hr" || kv.prof === "v3i" || kv.prof === "v3c" ||
                 kv.prof === "v3p" || kv.prof === "v3hrp" || kv.prof === "v3f";
   const warn = v3fam && !pay;
@@ -9004,6 +10860,59 @@ $("applyStrBtn").addEventListener("click", () => {
   el.style.fontWeight = r.err || r.warn ? "bold" : "normal";
 });
 $("pasteStr").addEventListener("keydown", e => { if (e.key === "Enter") $("applyStrBtn").click(); });
+
+/* TAKE-CARD INTAKE (2026-08-30, the console): take.html opens this page with
+   ?settings=<the canonical oc1 string>&take=<id>&phys=<json> — the SAME
+   string the emitter was armed with, so both sides of a take are configured
+   from ONE card and the paste step (the fat-finger surface) disappears. The
+   take id and the shot's physical conditions ride into the fieldLog itself:
+   the log becomes the complete record and the registry inherits the
+   annotations with no re-typing. The twin lane (?synth=) passes take WITHOUT
+   phys — camera physicals on a synthetic run would be a lie. */
+// The ready promise: the synthetic lane awaits it before starting its
+// harvest — the store fetch below is async, and a headless run otherwise
+// races past it and opens a fresh store (caught by the store-lane e2e:
+// run 2 took 2 windows where a carried store completes in zero).
+window.ocIntakeReady = (async function () {
+  const q = new URLSearchParams(location.search);
+  const s = q.get("settings");
+  if (s) {
+    $("pasteStr").value = s;
+    $("applyStrBtn").click();
+    if ($("m_harvest")) $("m_harvest").checked = true;
+  }
+  // The registry's re-run lane: &store=<results name> carries a prior
+  // harvest's exported store (posted beside its fieldLog) so this run mines
+  // only what that one lacked; &clip=<name> names the expected file — the
+  // browser cannot pick it itself, but the operator shouldn't have to
+  // remember which PXL it was.
+  let carried = null;
+  if (q.get("store")) {
+    try {
+      const rs = await fetch("results/" + q.get("store").replace(/[^A-Za-z0-9_.-]/g, ""), { cache: "no-store" });
+      if (rs.ok) { store = OC.harvest.parseStore(await rs.text()); ledgerInfo(); carried = OC.harvest.storeCounts(store); }
+    } catch (e) {}
+  }
+  // The take card may carry the window floor/ceiling (array A/Bs need
+  // window ≥ the envelope cycle for per-tile in-window seals).
+  if ($("m_minwin") && q.get("minwin")) $("m_minwin").value = q.get("minwin");
+  if ($("m_maxwin") && q.get("maxwin")) $("m_maxwin").value = q.get("maxwin");
+  if (q.get("take")) {
+    let phys = null;
+    try { phys = JSON.parse(q.get("phys") || "null"); } catch (e) {}
+    // The card's mount drives the handheld toggle (the tripod-ingest fix:
+    // the checkbox default rode checked onto tripod takes).
+    if (phys && phys.mount && $("m_hand")) $("m_hand").checked = /hand/i.test(String(phys.mount));
+    window.ocTake = { id: q.get("take"), physical: phys };
+    const el = document.createElement("div");
+    el.style.cssText = "margin:.4rem 0;padding:.4rem .7rem;border:1px solid #7ce38b;color:#7ce38b;font-weight:600";
+    el.textContent = "TAKE " + q.get("take") + (s ? " — receiver armed from the card; pick the clip file to ingest" : "") +
+      (q.get("clip") ? " — expecting clip " + q.get("clip") : "") +
+      (phys ? " (physicals attached: " + Object.keys(phys).filter(k => phys[k] != null).join(", ") + ")" : "") +
+      (carried ? " — STORE CARRIED: " + carried.droplets + " droplets, the harvest mines only what it lacks" : "");
+    document.body.insertBefore(el, document.body.firstChild.nextSibling);
+  }
+})();
 </script>
 </body>
 </html>

@@ -1,6 +1,7 @@
 /* suite-lib.js — shared scaffolding for the split suite pages
    (test.html = v2 core + TH, test-v3.html = T21/T22 core + T23 tiling,
-   test-v3-dring.html = the D-ring/beacon/lease family, test-saddle.html = T24).
+   test-saddle.html = T24, test-v3-dring.html = the D-ring/beacon/lease family,
+   test-track.html = TR, the continuous receiver; docs/testing.md is the map).
    The tab TITLE carries live progress — readable from tab context without
    touching the page — and the final verdict POSTs to serve.py ->
    harness/results/<page>.json so results are file-readable.

@@ -3,35 +3,54 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>optical-carriage — Phase 0 harness</title>
+<title>phryctoros — harness</title>
 <style>
-  body { font: 15px/1.5 system-ui, sans-serif; margin: 2rem auto; max-width: 44rem; background: #14161a; color: #d8dce2; padding: 0 1rem; }
-  a { color: #9ecbff; } h1 { font-size: 1.25rem; }
-  li { margin: .4rem 0; }
-  .warn { border: 1px solid #b58f2f; background: #2a2410; padding: .7rem 1rem; }
+  body { font: 15px/1.5 system-ui, sans-serif; margin: 2rem auto; max-width: 46rem; background: #14161a; color: #d8dce2; padding: 0 1rem; }
+  a { color: #9ecbff; } h1 { font-size: 1.25rem; } h2 { font-size: 1.02rem; margin: 1.4rem 0 .3rem; color: #9aa3ad; }
+  li { margin: .35rem 0; }
+  .warn { border: 1px solid #b58f2f; background: #2a2410; padding: .7rem 1rem; margin-top: 1.4rem; }
+  .dim { color: #9aa3ad; }
 </style>
 </head>
 <body>
-<h1>optical-carriage — Phase 0 acuity harness</h1>
-<p>Software for the optical carriage lane's measurement phase. Spec:
-<code>technical/optical-carriage-software-spec.md</code>; first-read review:
-<code>technical/optical-carriage-spec-first-read.md</code> (both on Pharos's branch,
-thread <code>out-of-band-carriage</code>).</p>
+<h1>phryctoros — the optical carriage harness</h1>
+<p>A screen shows rotating rings; a camera films them; these pages emit, receive, test, and record.
+The repository's <code>README.md</code> is the overview, and <code>docs/</code> holds the architecture,
+the testing guide, and the field workflow.</p>
+
+<h2>Field work — from ticket to record (<code>docs/field-workflow.md</code>)</h2>
 <ul>
-  <li><a href="emit.html">emit.html</a> — the over-provisioned test emission (explicit start; flicker report first)</li>
-  <li><a href="receive.html">receive.html</a> — camera + video-file receiver, session metadata, CSV, acuity plot. <b>This file is the sneakernet artifact</b> — it must keep working from <code>file://</code> with the <code>src/</code> folder beside it (§9.1)</li>
-  <li><a href="orders.html">orders.html</a> — the order window: the committed capture queue vs the evidence on disk; the top card is the next required capture, handed to the take console with one click, advancing itself as logs post</li>
-  <li><a href="take.html">take.html</a> — the take console: one card arms the synthetic twin, the emitter, and the receiver with the SAME canonical settings; take id + physicals ride into the harvest log, and the registry inherits them</li>
-  <li><a href="registry.html">registry.html</a> — capture registry: proposed standards vs the evidence — harvest logs ingested + physical conditions annotated (distance/angle/zoom/lighting), per-ring lock duty, rates, exit ratios, falloff fits</li>
-  <li><a href="test.html">test.html</a> — software round-trip + degradation suite (run after any change)</li>
-  <li><a href="test-track.html">test-track.html</a> — the registration track (continuous receiver, phase A): hypotheses, designation majority, adaptive conviction, coalition peel, the committed range-take specimen</li>
-  <li><a href="selfchar.html">selfchar.html</a> — §6.1 self-characterisation, v0 (latency + beat)</li>
-  <li><a href="golden.html">golden.html</a> — golden-vector manifest scaffolding (F8 conformance model)</li>
+  <li><a href="orders.html">orders.html</a> — the order window: the capture queue against the posted evidence; the top card is the next capture, handed to the take console with one click</li>
+  <li><a href="take.html">take.html</a> — the take console: one card arms the synthetic twin, the emitter, and the receiver with the same settings; the take id and the shot's conditions ride into the harvest log</li>
+  <li><a href="emit.html">emit.html</a> — the emitter: validate, read the flicker report, Start, Fullscreen; exports the loop as a WebM video</li>
+  <li><a href="receive.html">receive.html</a> — the receiver: video-file harvest, live camera harvest, synthetic twins (<code>?synth=</code>). It also runs from <code>file://</code> for recorded clips, and <code>dist/receive-standalone.html</code> is the same receiver in one file</li>
+  <li><a href="registry.html">registry.html</a> — the capture registry: harvest logs plus physical conditions, extracted metrics, standards, range-falloff fits, and the re-run lane</li>
 </ul>
+
+<h2>Testing (<code>docs/testing.md</code>)</h2>
+<ul>
+  <li><a href="test.html">test.html</a> — suite 1: the v2 core and the harvest family</li>
+  <li><a href="test-v3.html">test-v3.html</a> — suite 2: conic correction, the v3 emitter and decoder core, tiling</li>
+  <li><a href="test-saddle.html">test-saddle.html</a> — suite 3: saddle registration and the tilt referees</li>
+  <li><a href="test-v3-dring.html">test-v3-dring.html</a> — suite 4: the beacon, chunked framing, the lease, arrays</li>
+  <li><a href="test-track.html">test-track.html</a> — suite 5: the continuous receiver</li>
+  <li><a href="runner.html">runner.html</a> — the job channel: runs suites and scripts from <code>jobs/next.json</code></li>
+</ul>
+<p class="dim">Keep a running suite's tab in front: browsers throttle background tabs.</p>
+
+<h2>Diagnostics</h2>
+<ul>
+  <li><a href="diag.html">diag.html</a> — stage-by-stage autopsy of one field clip</li>
+  <li><a href="batch-diag.html">batch-diag.html</a> — batch autopsy: one row per capture</li>
+  <li><a href="elim.html">elim.html</a> — liar elimination over an exported store</li>
+  <li><a href="pool36.html">pool36.html</a> — the field36 pooled peel (a historical specimen)</li>
+  <li><a href="selfchar.html">selfchar.html</a> — self-characterisation v0: latency and refresh/capture beat (untested on hardware)</li>
+  <li><a href="golden.html">golden.html</a> — golden-vector manifest scaffolding</li>
+</ul>
+
 <div class="warn"><b>Photosensitivity:</b> the emission is a rotating concentric pattern;
-local flicker is k·f<sub>rot</sub> per harmonic (review F1). The emitter page computes the
-flicker table before it will start, defaults to low contrast, and never autoplays.
+local flicker near a ring edge is k·f<sub>rot</sub> per harmonic. The emitter page computes the
+flicker report before it will start and never autoplays.
 Nobody needs to watch the screen for the link to work.</div>
-<p>Field protocol: <code>docs/phase0-protocol.md</code> in the repo.</p>
 </body>
 </html>

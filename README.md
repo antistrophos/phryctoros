@@ -5,94 +5,160 @@ signed artifacts between devices as rotating light — any commodity screen is t
 fire, any phone camera is the watcher. The contingency tier of the Stasima
 carriage tree; sibling of [stasima](https://github.com/antistrophos/stasima).
 
-Spec: `technical/optical-carriage-software-spec.md` on Pharos's branch (Rehearsal,
-thread `out-of-band-carriage`); first-read review beside it. This repo currently
-implements **Phase 0** — the measurement harness the spec says to build first —
-plus the shared emission/decode core it sits on. Layer 0 already decodes end to
-end from real phone footage: 25/25 symbols, zero errors, both sync paths proven,
-Firefox/Chrome parity confirmed by the practitioner's own runs.
+## How it works
 
-## No build, no dependencies, no Node
+The emitter shows a **plate**: concentric rings drawn on a screen. Each ring's
+edge is a shape made of a few harmonics, and the shape rotates. The rotation is
+not steady: small, continuous deviations from its nominal rate carry the
+symbols. A camera films the plate. The receiver finds the plate in each frame,
+measures each ring's rotation phase, turns the phase steps back into symbols,
+and reads the symbols as CRC-checked **droplets** of a fountain code. Any large
+enough set of droplets, from any part of the loop, rebuilds the payload.
 
-Everything is plain classic-script JavaScript (C8 discipline: the decode path is
-plain JS, no WASM, no libraries). Serve the repo root over HTTP for the live-camera
-path (C1 needs a secure context):
+The link is one-way broadcast: no pairing, no network, no return path. A
+receiver may start filming at any point in the loop.
+
+One ring, the **beacon** (the D-ring), carries a 20-byte **envelope** that names
+the emission: a session id, the payload's size and fingerprint, the tile layout,
+and the loop length. A screen can show several plates at once (an **array**);
+each plate is an emitter, and the receiver pools what it reads from all of them.
+
+[docs/architecture.md](docs/architecture.md) describes the wire and the
+receiver in full.
+
+## Status (September 2026)
+
+Built and covered by the suites:
+
+- **The v3.1 profile** — four data rings with per-ring symbol pacing; 30 fps
+  emission for 60 fps capture; a resilient preset (24-bit droplets) and a
+  high-rate preset (48-bit); payloads self-framed with a CRC16 and validated
+  against the envelope's fingerprint.
+- **Registration** — quadrant swap-target corners read by saddle registration
+  (suite referees at 30° and 45° tilt), a per-frame pose tracker, and fallbacks
+  to finder patterns and ring fits. A three-section center target marks the
+  designated tile of an array by its shape.
+- **The beacon** — chunked framing with a whitening rotor, a fast identity tag,
+  and a lease that binds, holds, and releases an emitter's identity.
+- **Arrays** — 2-up and 6-up tilings, with per-tile beacon variants so that one
+  capture can compare two configurations under identical conditions.
+- **The continuous receiver** — registration state that survives window
+  boundaries and convicts false solves; per-emitter beacon streams that frame an
+  envelope across window seams; a scheduler that decides what to decode next;
+  one source interface for recorded clips and live camera capture.
+
+Field record, a phone camera filming a laptop screen: the payload and the
+beacon's envelope both decoded at 13 ft (4 m), the longest range tested so far;
+two beacon configurations compared inside one 2-up capture at 5 ft. Not yet
+field-tested: the live camera harvest (certified on a synthetic live twin) and
+handheld captures at range.
+
+## Quick start
+
+No build step and no dependencies: the code is plain JavaScript loaded as
+classic scripts, and Python 3 runs the helper scripts.
+
+1. Start the dev server from the repository root:
+
+   ```
+   python serve.py 8126
+   ```
+
+   The port is optional (default 8123). The server sends
+   `Cache-Control: no-store`, so edited scripts always reload, and it accepts
+   `POST /harness-result?page=<name>`, which writes
+   `harness/results/<name>.json`. The pages post suite verdicts, harvest logs,
+   and stores through it.
+2. Open `http://localhost:8126/harness/` for the page index.
+3. Confirm the install: run a suite page, or a synthetic twin such as
+   `http://localhost:8126/harness/receive.html?synth=a42q&loop=60`.
+
+**Without a server.** `harness/receive.html` also decodes a video file when
+opened from disk. `dist/receive-standalone.html` is the same receiver with every
+script inlined into one file, for copying to a phone. Rebuild it after any
+change to `src/`:
 
 ```
-python -m http.server 8123
+python build_standalone.py
 ```
 
-…or open `harness/receive.html` **directly from disk** for the recorded-input path
-(§9.1): file-input decode needs no camera, no network, no secure context. The
-`harness/` page plus the `src/` folder on a USB stick is the sneakernet deliverable —
-or better, one file: `python build_standalone.py` inlines everything into
-`dist/receive-standalone.html` (self-test verified). That single file is what goes
-onto a phone. Re-run the script after any `src/` change.
+**Live camera** capture needs a secure context: `localhost` or HTTPS.
+
+> **Photosensitivity.** The emission is a rotating concentric pattern. Local
+> flicker near a ring edge is k·f_rot for harmonic k. The emitter computes a
+> flicker report before it will start and never autoplays. Nobody needs to
+> watch the screen for the link to work.
 
 ## Pages
 
-| page | what it is |
+Field work — how a capture goes from plan to record
+([docs/field-workflow.md](docs/field-workflow.md)):
+
+| page | purpose |
 |---|---|
-| `harness/emit.html` | over-provisioned test emission; flicker table (review F1) gates an explicit Start; loops with a marked capture window |
-| `harness/receive.html` | live camera or video-file decode; session metadata; per-layer SER/SNR; CSV export; acuity plot |
-| `harness/test.html` | the software round-trip + degradation suite — run after any change |
-| `harness/selfchar.html` | §6.1 self-characterisation v0 (latency + refresh/capture beat) — untested on real hardware |
-| `harness/golden.html` | golden-vector manifest scaffolding (F8 conformance model: decode-exact, encode-by-decode) |
+| `harness/orders.html` | the order window: the capture queue (`harness/capture-queue.json`) against the posted evidence; the top card is the next capture to take |
+| `harness/take.html` | the take console: one card arms the synthetic twin, the emitter, and the receiver with the same settings string |
+| `harness/emit.html` | the emitter: validate, read the flicker report, Start, Fullscreen; can export the loop as a WebM video |
+| `harness/receive.html` | the receiver: video-file harvest, live camera harvest, synthetic twins; posts a structured log per harvest |
+| `harness/registry.html` | the capture registry: harvest logs plus physical conditions, extracted metrics, standards, range-falloff fits, and a re-run lane |
 
-## Architecture
+Testing ([docs/testing.md](docs/testing.md)):
 
-`src/` is dual-environment (browser globals under `OC.*`; CommonJS-guarded for a
-future Node runtime). Pipeline stages follow spec §9:
+| page | purpose |
+|---|---|
+| `harness/test.html` | suite 1: the v2 core and the harvest family |
+| `harness/test-v3.html` | suite 2: conic correction, the v3 emitter and decoder core, tiling |
+| `harness/test-saddle.html` | suite 3: saddle registration and the tilt referees |
+| `harness/test-v3-dring.html` | suite 4: the beacon, chunked framing, the lease, arrays |
+| `harness/test-track.html` | suite 5: the continuous receiver |
+| `harness/runner.html` | the job channel: runs suites and scripts from `harness/jobs/next.json` |
+
+Diagnostics:
+
+| page | purpose |
+|---|---|
+| `harness/diag.html` | stage-by-stage autopsy of one field clip |
+| `harness/batch-diag.html` | batch autopsy: one row per capture |
+| `harness/elim.html` | liar elimination over an exported store |
+| `harness/pool36.html` | the field36 pooled peel (a historical specimen) |
+| `harness/selfchar.html` | self-characterisation v0: latency and refresh/capture beat (untested on hardware) |
+| `harness/golden.html` | golden-vector manifest scaffolding |
+
+## Repository layout
 
 ```
-emission.js    profile → schedules → analytic per-pixel frames (dtrig.js = deterministic golden path)
-register.js    stage 2 — EVERY fiducial in frame (1:1:3:1:1 scan), one homography per emitter (§5.1)
-sample.js      stages 4–5 — radial profiles, self-normalized 0.5-crossing boundary; row timestamps carried (F2)
-transform.js   stage 6 — DFT at harmonics of interest + noise bins
-separate.js    stage 7 — phase ladder: k=1 anchors (down-weighted, F5b), high k carry precision
-rowtime.js     stage 6b — F2 row-time TEAR repair: step-model seam scan, clean-side refit
-demap.js       stage 8 — differential demap; (offset, lag) preamble alignment; low-confidence → erasure
-fountain.js    Phase 1 — LT droplet carousels per ring; CRC8-bound identity; CRC-pass alignment; pooled peel
-ser.js         stage 9 stand-in — SER/erasures vs the seeded reference stream
-pipeline.js    orchestration incl. mirror parity (C9, applied once), handheld re-registration
-profile.js     the contract + validator (units: fiducial widths — F4; slip, collision, odd-pilot rules — F5)
-flicker.js     k·f_rot photosensitivity report (F1) — consulted by the validator and the emitter page
-degrade.js     §10.2 transforms (blur, noise, drops, flip, rotate, exposure, resample, composites)
+src/                  the emitter and decoder core (browser globals under OC.*)
+harness/              the pages, the suite pages, the decode and render workers
+harness/fixtures/     committed specimens (the 2026-09-01 range take's log and store)
+harness/capture-queue.json   the order window's tickets (committed)
+harness/results/      posted verdicts, harvest logs, stores (not committed,
+                      except registry.json when it is worth keeping)
+harness/jobs/         the runner's job channel (not committed)
+clips/                field footage — stays local, never committed
+dist/                 the single-file receiver
+docs/                 architecture, testing, field workflow, the Phase 0 protocol
+serve.py              the dev server
+build_standalone.py   inlines every script into dist/receive-standalone.html
+peel36.py             a bit-exact Python port of the fountain peel (forensics)
 ```
 
-## Suite status
+## Design records
 
-All assertions green at last run — `harness/test.html` is the source of truth.
-Coverage: clean round trip SER 0 on all three annuli; exposure/WB ramp zero-effect
-(C2); mirror parity (C9); drops → erasures not errors (C4); preamble (offset, lag)
-lock; mid-loop stream-correlation lock; blank-prefix (countdown) captures;
-torn-duplicate selection (the 15 fps tear defense); 25° frame rotation; two-emitter
-frames (§5.1); range-proxy degradation shapes; deterministic golden rendering.
+The design is recorded as entries on the Pharos seat of the Stasima Rehearsal
+deployment, thread `phryctoros` (earlier entries: `out-of-band-carriage`). The
+entries that govern the current code:
 
-**Two findings the suite produced** (details in the corpus entry):
-1. Harmonic survival is **noise-limited, not resolution-limited** — subpixel edge
-   integration reads a 0.45 px wiggle perfectly in noiseless frames. The field
-   acuity curve will be set by sensor noise + codec loss (§9.1's "compression is
-   the real cost", confirmed from the other side).
-2. **Registration is the first casualty at extreme range** — the fiducial's modules
-   die before layer 0's annulus does. Fallback coarse registration (outer-annulus
-   circle fit) is the v0.2 item that extends range past finder death.
+- `technical/phryctoros-v4-contract.md` — the v4 contract: the three-section
+  center target, the family-4 geometry, freeze 0 as the standing posture, and
+  the rotor
+- `technical/phryctoros-the-lease.md` — identity binding and the hold matrix
+- `technical/phryctoros-continuous-receiver-draft-rev2.md` — the continuous
+  receiver's design, with the phase A/B/C build entries beside it
+- `technical/phryctoros-emitter-contexts-rev2.md` — emitter contexts and the
+  beacon as the acquisition gate
 
-## v0 scope cuts (deliberate, documented)
-
-- Boundary channel runs **static pilots** (per-harmonic SNR is measured, which is
-  what the acuity triple needs); magnitude modulation is v1.
-- Fiducial is finders-only (registration is what Phase 0 exercises); the enrollment
-  QR payload needs a QR encoder and is future work — C8 binds the decoder, not the emitter.
-- Homography is affine-from-3-finders + parallelogram completion; fine for
-  near-frontal Phase 0 geometry, refine for steep off-axis later.
-- Symbol clock assumes capture ≈ emitter fps (true-30 both sides); clock recovery is v1.
-- Fountain layer deferred; erasures are counted and reported (F7 posture).
-
-## Field protocol
-
-`docs/phase0-protocol.md` — the hallway walk, per-camera sweeps, recorded-mode
-phone flow, and the §9.1 file:// checks to run on real phones.
+These entries are not in this repository. The module header comments in `src/`
+carry the implementation detail.
 
 ## License
 
