@@ -4,7 +4,7 @@
    boundary is unobserved, when a long gap undermines the bridge, or when the
    decision is low-confidence (>0.35 step residual) — erasures feed the fountain
    layer's accounting (spec C4; review F7 posture). Alignment: correlate against
-   the known preamble (spec §7.3.1's fixed-rate-header move). */
+   the known preamble (the fixed-rate-header pattern). */
 (function (global) {
   "use strict";
 

@@ -1,5 +1,5 @@
-/* pipeline.js — the decoder pipeline (spec §9), stages 1–8 + scoring, per emitter.
-   Multi-emitter is structural (spec §5.1): registration returns a LIST and the
+/* pipeline.js — the decoder pipeline, stages 1–8 + scoring, per emitter.
+   Multi-emitter is structural: registration returns a LIST and the
    pipeline decodes each. Mirror parity is applied ONCE, to the frame, before
    registration (C9 — config flag, never auto-detected). */
 (function (global) {
@@ -155,7 +155,7 @@
       });
     }
 
-    // Per-frame plate solve (v3 §9, the ladder's second rung): re-fit H from
+    // Per-frame plate solve (the v3 pose ladder's second rung): re-fit H from
     // the measured bullseye constellation on every frame — the center-shift
     // field IS the perspective k=1, so the DLT absorbs per-frame what the
     // static conic could only average. Runs AFTER the conic composition:
@@ -166,7 +166,7 @@
       var plateM = dep("plate");
       // v3.1 quadrant corners: the per-frame solve IS the saddle tracker —
       // project last H, cross-selective refine, re-DLT (solve-as-tracker,
-      // §9's shape). Bullseye corners keep the circle-fit plateSolve.
+      // the pose ladder's shape). Bullseye corners keep the circle-fit plateSolve.
       var saddleM = profile.plate.corner_style === "quadrant" ? dep("saddle") : null;
       solveBriefs = emitters.map(function (_, pe) {
         var HsP = tracksH[pe].Hs, solved = 0, residSum = 0, usedMin = 9;
@@ -199,14 +199,14 @@
       });
     }
 
-    // The beacon rides as one more channel (§5): the breaker ring's outer
+    // The beacon rides as one more channel: the breaker ring's outer
     // edge through the identical sample→track→align→demap chain; only the
     // byte framing downstream is beacon-specific. layer −1 = out of every
     // layer lookup; excluded from the payload pool.
     var channels = profile.annuli;
     if (opts.beacon && profile.plate) channels = channels.concat([dep("plate").beaconAnnulus(profile)]);
 
-    // Multi-tile identity (§5): exactly one tile carries the breaker pair —
+    // Multi-tile identity: exactly one tile carries the breaker pair —
     // find it, then read every other tile's grid offset in the designated
     // tile's own frame (tile 0 renders top-left, so offsets are non-negative
     // in emission coords; mirror stays config, never auto-detected). Tiles
@@ -214,7 +214,7 @@
     // tile index matters exactly twice: the assemble seed, and the pool.
     var tileOf = null, designatedIdx = -1;
     var tilesN = profile.plate ? (profile.tiling || 1) : 1;
-    // clause 2′ (center_style quadrant3): the designated tile is read from its
+    // v4 clause 2′ (center_style quadrant3): the designated tile is read from its
     // center target's VARIANT — identity by shape, per plate, no breaker. The
     // middle section's polarity flips on the designated tile: sample the four
     // quadrant mid-angles at two radii inside [R/3, 2R/3]; plain reads
@@ -590,7 +590,7 @@
               folded: align.folded || undefined,
               foldAgree: align.folded ? align.foldAgree : undefined,
               foldCompared: align.folded ? align.foldCompared : undefined,
-              // The fast tag = the envelope's CRC16 seal (ruling 2) — derivable
+              // The fast tag = the envelope's CRC16 seal (D-ring ruling 2) — derivable
               // under either framing once the envelope is in hand; chunked
               // alignments also report how often the tag chunk itself was
               // seen, and a tagConfirmed row re-verified a KNOWN tag without
@@ -803,7 +803,7 @@
              timings: T || undefined };
   }
 
-  /* v3 preset auto-detect (§2, as ruled: binary, dual-geometry, ≥2 agreeing
+  /* v3 preset auto-detect (as ruled: binary, dual-geometry, ≥2 agreeing
      CRC passes). The presets share every optical stage — only M and droplet
      geometry differ — so the mechanism is decode-under-both and let the CRC
      passes vote: the wrong geometry's chance rate is 1/256 per droplet.

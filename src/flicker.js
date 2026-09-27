@@ -4,7 +4,7 @@
    modulation deviation adds k·(dφ/dt)_dev on top during symbol sweeps. This
    report computes the worst local flicker per annulus/harmonic and flags the
    3–60 Hz photosensitive band (peak sensitivity ~15–25 Hz). Numbers cited
-   secondhand — spec §7.7 says check current WCAG / ITU-R BT.1702 text. */
+   secondhand — check the current WCAG and ITU-R BT.1702 texts. */
 (function (global) {
   "use strict";
 
@@ -63,7 +63,7 @@
     if (peak) out.push("Harmonic content reaches the 15–25 Hz peak-sensitivity band. Mitigated here by low contrast (" + contrast + ") and thin-band area; for projector/wall deployment REDUCE contrast further or lower nominal_hz — the area argument does not hold there.");
     else if (band) out.push("Harmonic content lands in the 3–60 Hz band (outside the 15–25 Hz peak). Keep contrast low; log this configuration's flicker row in every capture session.");
     else out.push("No harmonic reaches the 3–60 Hz band at these parameters.");
-    out.push("Require explicit start; show the first-run warning; nobody needs to watch the emission for the link to work (spec §7.7).");
+    out.push("Require explicit start; show the first-run warning; nobody needs to watch the emission for the link to work.");
     return out;
   }
 

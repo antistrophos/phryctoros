@@ -158,7 +158,9 @@ entries that govern the current code:
   beacon as the acquisition gate
 
 These entries are not in this repository. The module header comments in `src/`
-carry the implementation detail.
+carry the implementation detail, and the short IDs those comments use (C1,
+F5b, D-ring ruling 1b, …) are defined in
+[docs/architecture.md](docs/architecture.md#reference-ids).
 
 ## License
 

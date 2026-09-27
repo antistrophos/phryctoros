@@ -65,7 +65,7 @@
   // D = symbols per droplet. Ceil: droplet_bits divisible by 12 covers the
   // 2/3/4-bit constellations exactly; M=32 (5 bits, the v3 high-rate preset)
   // pads the tail symbol with zero bits — the block universe stays global
-  // (ruling 1), only the wire pads.
+  // (v3 ruling 1), only the wire pads.
   function ringD(annulus, g) { return Math.ceil(g.dropletBits / log2M(annulus.rotation.M)); }
   // A capture window is short; the header must RECUR or mid-loop assembly
   // would wait a whole carousel (~minutes on the base ring). Every 8th
@@ -232,7 +232,7 @@
     return syms;
   }
 
-  /* v3 §3 payload self-framing: block 0 opens with len16 + type8 + reserved8,
+  /* The v3 payload self-framing: block 0 opens with len16 + type8 + reserved8,
      paid once per payload — the true length (and a type lane) ride the wire
      itself, so delivery NEVER depends on envelope sighting. The 24-mode header
      is just [magic, K]; this is where its length lives. */
@@ -500,7 +500,7 @@
      paying a second assemble for: while the peel is merely INCOMPLETE we are
      short of droplets, not on the wrong rule, so accumulation costs nothing
      extra. This is what lets a profile default to v2 while every clip already
-     filmed under v1 — including the ::b carriage and the loopback specimens —
+     filmed under v1 — including the first complete field carriage and the loopback specimens —
      keeps decoding with no setting to remember. */
   function assemble(perRing, profile, opts) {
     var declared = geom(profile).subsetVersion;

@@ -54,7 +54,7 @@ async function main() {
   if (caseOn("T22e0")) {
   await tick("T22e0: freeze 0 — the v4-preview trial (no countdown, no QR, rotation from frame 0)…");
   {
-    // Rulings 1+4 pulled forward (2026-08-27): freeze_s === 0 is legal — the
+    // v4 clauses 1+4 pulled forward (2026-08-27): freeze_s === 0 is legal — the
     // countdown face never exists, the QR is never rendered, and the whole
     // loop is emission airtime. Values in (0,1) stay illegal: a freeze too
     // short to settle is worse than none. b[13]=0 self-describes the trial
@@ -178,7 +178,7 @@ async function main() {
   }
 
   if (caseOn("T22s")) {
-  await tick("T22s: chunked D-ring framing (ruling 2) — tag chunks, assembly, M=8, framing auto-detect…");
+  await tick("T22s: chunked D-ring framing (D-ring ruling 2) — tag chunks, assembly, M=8, framing auto-detect…");
   {
     // The one long control frame becomes droplet-shaped chunks: tag chunks
     // [0xC0][crc16][crc8] (4 B — THE TAG IS THE ENVELOPE'S SEAL) interleaved
@@ -222,7 +222,7 @@ async function main() {
     const fC = C.row && C.row.envelopeFields;
     const okC = !!(C.row && !C.row.error && C.row.alignMethod === "framed" && C.row.framing === "frame" &&
                    fC && fC.session32 === 0x5EED7A61);
-    record("T22s chunked D-ring (ruling 2): a mid-loop capture assembles the envelope from tag+data chunks sealed by its CRC16, the tag chunk (= the seal bytes) is sighted repeatedly at 1.07 s a pass, the M=8/F=2 A/B config packs 3-bit symbols and validates, and a v0-framed emission at the same M/F still reads — the receiver scans both framings, so framing is an emitter-side choice only",
+    record("T22s chunked D-ring (D-ring ruling 2): a mid-loop capture assembles the envelope from tag+data chunks sealed by its CRC16, the tag chunk (= the seal bytes) is sighted repeatedly at 1.07 s a pass, the M=8/F=2 A/B config packs 3-bit symbols and validates, and a v0-framed emission at the same M/F still reads — the receiver scans both framings, so framing is an emitter-side choice only",
       okA && okB && okC,
       "(a) " + (A.row ? A.row.alignMethod + "/" + A.row.framing + " tag " + A.row.tag + " ×" + A.row.tagSightings +
                         " sess " + (fA && fA.session32.toString(16)) + (A.row.error ? " ERR " + A.row.error : "")
@@ -237,7 +237,7 @@ async function main() {
   }
 
   if (caseOn("T22t")) {
-  await tick("T22t: the D-ring at A-inner (ruling 1b) — relocation, per-tile identity, static breaker…");
+  await tick("T22t: the D-ring at A-inner (D-ring ruling 1b) — relocation, per-tile identity, static breaker…");
   {
     // Ruling 1b: the control betas move from the breaker pair (designated
     // tile only) to band A's inner boundary on EVERY tile — identity is
@@ -289,7 +289,7 @@ async function main() {
     pC.beacon.amplitudes = [0.011, 0.008, 0.007];
     const vC = OC.profile.validate(pC);
     const okC = !!(vC.ok === false && vC.errors.some(e => /geometry-priced class/.test(e)));
-    record("T22t D-ring at A-inner (ruling 1b): the control contour rides band A's floor on every tile with the breaker static, a 1-up mid-loop capture carries payload AND the chunked envelope together, a 2-up's tiles each ANNOUNCE their own index (b[16]) agreeing with breaker-derived identity while the pooled peel completes, the amended budget validates at exactly 0.125 quiet, and 0.001 over the 0.025 control class refuses",
+    record("T22t D-ring at A-inner (D-ring ruling 1b): the control contour rides band A's floor on every tile with the breaker static, a 1-up mid-loop capture carries payload AND the chunked envelope together, a 2-up's tiles each ANNOUNCE their own index (b[16]) agreeing with breaker-derived identity while the pooled peel completes, the amended budget validates at exactly 0.125 quiet, and 0.001 over the 0.025 control class refuses",
       okA && okB && okC,
       "(a) validate " + vA.ok + " payload " + JSON.stringify(emA && emA.payload && emA.payload.text) +
       " beacon " + (bA ? bA.alignMethod + "/" + bA.framing + " tile " + (fA && fA.tile) + " sess " + (fA && fA.session32.toString(16)) + (bA.error ? " ERR " + bA.error : "") : "none") +

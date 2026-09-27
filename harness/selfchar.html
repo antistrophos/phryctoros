@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>optical-carriage — self-characterisation (§6.1)</title>
+<title>optical-carriage — self-characterisation</title>
 <style>
   body { font: 14px/1.45 system-ui, sans-serif; margin: 1rem; background: #14161a; color: #d8dce2; }
   h1 { font-size: 1.1rem; }
@@ -15,8 +15,8 @@
 </style>
 </head>
 <body>
-<h1>Self-characterisation — §6.1 (v0: latency + refresh/capture beat)</h1>
-<p class="warn">v0, UNTESTED ON REAL HARDWARE — built to the spec's §6.1 shape; run it with a
+<h1>Self-characterisation (v0: latency + refresh/capture beat)</h1>
+<p class="warn">v0, UNTESTED ON REAL HARDWARE — built to the original spec's self-characterisation shape; run it with a
 mirror and file findings. Point this device's camera at its own screen in a mirror
 (<code>mirror.receive</code> is handled — the measurements below don't depend on parity).
 Measures: display→capture latency, and the beat between display refresh and capture rate.
@@ -104,7 +104,7 @@ $("runBtn").onclick = () => {
     };
     $("out").textContent = JSON.stringify(result, null, 2);
     $("dlBtn").disabled = false;
-    $("status").textContent = "done — cache this JSON; re-run after OS/camera updates (§6.1)";
+    $("status").textContent = "done — cache this JSON; re-run after OS/camera updates";
     $("status").className = "ok";
   }
 };

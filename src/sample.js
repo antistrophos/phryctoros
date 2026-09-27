@@ -1,5 +1,5 @@
 /* sample.js — stages 4–5: per-annulus radial profiles → boundary contour r(θ).
-   No edge detection, no contour tracing (spec §9): sample radially through the
+   No edge detection, no contour tracing: sample radially through the
    homography, SELF-NORMALIZE the profile (review F9: an absolute threshold would
    quietly reintroduce intensity dependence), and locate the 0.5 crossing subpixel.
    Each angle also records its source ROW — the rolling-shutter timestamp hook
@@ -75,7 +75,7 @@
       // Light 3-tap smooth, then normalized crossing with the strongest slope.
       // v2 annuli and outward-facing v3 edges cross UPWARD (fill→bg walking out);
       // v3 inner-facing edges (crossing: "down") cross bg→fill — the flipped
-      // mode the contract's §10 sampler item names. Same subpixel math, sense
+      // mode the v3 contract's sampler item names. Same subpixel math, sense
       // inverted; everything downstream reads the contour identically.
       var down = annulus.crossing === "down";
       var bestIdx = -1, bestSlope = 0;

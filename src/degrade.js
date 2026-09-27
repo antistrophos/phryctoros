@@ -1,4 +1,4 @@
-/* degrade.js — the degradation suite's transforms (spec §10.2), applied to clean
+/* degrade.js — the degradation suite's transforms, applied to clean
    frames: blur, noise, flip, rotation, exposure/white-balance ramps, resampling,
    composites for multi-emitter frames. All pure functions on {w,h,data}. */
 (function (global) {

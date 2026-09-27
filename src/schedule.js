@@ -16,7 +16,7 @@
    scheduler answers WAIT with the frame count it needs rather than a span,
    and a live source's dead-air guard ends the run on time.
 
-   Termination is un-quantized (the draft's §2): validated peel (early
+   Termination is un-quantized (the continuous-receiver design): validated peel (early
    exit), coverage exhausted, dead clip, live dead-air, or a stop. */
 (function (global) {
   "use strict";

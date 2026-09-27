@@ -27,7 +27,7 @@
 <h1>Emitter — validate, read the flicker report, then Start</h1>
 
 <div id="warning">
-  <b>Photosensitivity notice (spec §7.7 / review F1).</b> This emission is a rotating
+  <b>Photosensitivity notice.</b> This emission is a rotating
   concentric pattern. Effective local flicker is <b>k·f<sub>rot</sub></b> per harmonic —
   the table below shows which harmonics reach the 3–60&nbsp;Hz band at the current
   parameters, mitigated here by low contrast and thin bands. Nobody needs to watch the
@@ -70,12 +70,12 @@
     </select></label>
   </p>
   <p style="margin:.3rem 0">
-    <label><input id="quadChk" type="checkbox"> <b>v3.1: quadrant corner targets</b> (amendment 2 — saddle registration)</label>
+    <label><input id="quadChk" type="checkbox"> <b>v3.1: quadrant corner targets</b> (v3.1 amendment 2 — saddle registration)</label>
     <label style="margin-left:.8rem">D-ring <select id="dringSel">
       <option value="f24">f24 — v0 frame, M=2/F=4 @ breaker (envelope 24.5 s)</option>
-      <option value="c42">c42 — chunked M=4/F=2 @ breaker (ruling-2 trial: tag 1.07 s, envelope 13.3 s)</option>
+      <option value="c42">c42 — chunked M=4/F=2 @ breaker (D-ring ruling-2 trial: tag 1.07 s, envelope 13.3 s)</option>
       <option value="c82">c82 — chunked M=8/F=2 @ breaker (the A/B: tag 0.71 s — SNR-risky at 0.010 amp)</option>
-      <option value="a42">a42 — THE D-RING: chunked M=4/F=2 @ A-inner, per tile (ruling 1b — breaker goes static)</option>
+      <option value="a42">a42 — THE D-RING: chunked M=4/F=2 @ A-inner, per tile (D-ring ruling 1b — breaker goes static)</option>
       <option value="a42r">a42r — A-inner amp re-split, k≥2-heavy [.005 .005 .015], sum 0.025 (+4.8 dB estimate)</option>
       <option value="a42x">a42x — A-inner amp ladder-climb, k=[1,2,3,5] w/ k5 0.012, sum 0.025 (+7.5 dB estimate)</option>
       <option value="a42g">a42g — THE GEOMETRY TRIAL: floor 1.00, quiet 0.80, class 0.075 k3-heavy (+14.5 dB estimate)</option>
@@ -120,7 +120,7 @@ let profile = OC.profile.defaultProfile();
 $("profileTxt").value = JSON.stringify(profile, null, 2);
 $("rateSel").onchange = () => {
   const v = $("rateSel").value;
-  // Paced is the v3.1 standard (ruling 2026-08-23): v3/v3hr ARE paced now, and
+  // Paced is the v3.1 standard (D-ring ruling 3): v3/v3hr ARE paced now, and
   // the trial names v3p/v3hrp resolve to the same profiles ("paced" is a no-op
   // alias in profileV3). v3f = the explicit flat legacy opt-out.
   profile = (v === "v3" || v === "v3i" || v === "v3p") ? OC.profile.profileV3()   // v3i = legacy alias, same ladder
@@ -143,7 +143,7 @@ function ocApplyDring(p) {
 let running = false, schedules = null, loopFrames = 0, t0 = 0, lastF = -1, fidCanvas = null;
 let drawn = 0, fpsWindow = [], ticker = null;
 let beaconSchedule = null, qrCanvas = null, effLoopFrames = 0, schedulesT = null; // v3 state
-let beaconSchedulesT = null; // ruling 1b: per-tile beacon schedules at a-inner placement
+let beaconSchedulesT = null; // D-ring ruling 1b: per-tile beacon schedules at a-inner placement
 let skippedF = 0;   // whole emission frames never displayed (the per-take health receipt)
 let thTab = null;   // theta tables for the live contour math (built at Start)
 
@@ -298,7 +298,7 @@ function overlayCountdown(n) {
   ctx.fillText("hold — rings start at 0", size * 0.885, size * 0.145);
 }
 
-/* ————— V3 live path (contract §10 emitter) — isolated from the frozen v2
+/* ————— V3 live path (the v3 emitter) — isolated from the frozen v2
    machinery. Bands between two wiggling boundaries (evenodd), the 2:1:2
    bullseye at three deployments, the beacon ring pair sharing one δ(θ), the
    flat outer circle rendered as a TRUE arc (the units gauge), and the
@@ -350,7 +350,7 @@ function v3PlateBase(ctx, f, cx, cy, sched, bsched, bv) {
   // Contours run on the theta tables: per edge, each harmonic's phase folds
   // into two coefficients (r(θ) = r0 + Σ C·cos(kθ) + S·sin(kθ)) — no
   // per-point trig. N=256 keeps chord sag under 0.04 px at these radii.
-  // bsched (ruling 1b): with beacon.placement "a-inner", THIS tile's beacon
+  // bsched (D-ring ruling 1b): with beacon.placement "a-inner", THIS tile's beacon
   // schedule — band A's inner boundary then carries the control contour.
   // bv (the array rig, phase 1): THIS tile's variant beacon params — its own
   // code's harmonic spend on the shared geometry and clock.
@@ -405,7 +405,7 @@ function v3PlateBase(ctx, f, cx, cy, sched, bsched, bv) {
       path.addPath(p2);
     } else if (bi === 0 && dringHere) {
       const p2 = new Path2D();
-      tracePath(p2, dringR());        // ruling 1b: the D-ring rides band A's floor
+      tracePath(p2, dringR());        // D-ring ruling 1b: the D-ring rides band A's floor
       path.addPath(p2);
     } else path.arc(cx, cy, band.lo.fixed * scale, 0, 2 * Math.PI);
     ctx.fillStyle = gray(R.fill);
@@ -447,14 +447,14 @@ function drawFrameV3(f) {
     const { pl, shade } = v3PlateBase(ctx, f, c.cx, c.cy, sched, bsched, bvv);
     pl0 = pl; shade0 = shade;
     if (pl.center_style === "quadrant3") {
-      // clause 2′: the three-section center target — tile 0 = the VARIANT;
+      // v4 clause 2′: the three-section center target — tile 0 = the VARIANT;
       // no bullseye, no breaker
       quadrant3Live(ctx, c.cx, c.cy, pl.center.r_out * scale, shade, t === 0);
       return;
     }
     bullseyeLive(ctx, c.cx, c.cy, pl.center.r_out * scale, shade, R.background);
     if (t === 0 && dringAt) {
-      // ruling 1b: the control contour lives at band A's floor now (drawn in
+      // D-ring ruling 1b: the control contour lives at band A's floor now (drawn in
       // v3PlateBase); the breaker pair renders STATIC — the derived-identity
       // degrade rung, kept one generation.
       const bp = new Path2D();
@@ -492,7 +492,7 @@ function drawFrameV3(f) {
     }
   });
   if (layout.n > 1 && pl0) {
-    // interior gutter-vertex marks on the shared lattice (§5; unfolded)
+    // interior gutter-vertex marks on the shared lattice (unfolded)
     for (let vc = 1; vc < layout.cols; vc++)
       for (let vr = 1; vr < layout.rows; vr++)
         plateMarkLive(ctx, vc * layout.pitch * scale, vr * layout.pitch * scale,
@@ -500,7 +500,7 @@ function drawFrameV3(f) {
   }
 }
 
-/* clause 2′ live twin: three radial sections, quadrants alternating —
+/* v4 clause 2′ live twin: three radial sections, quadrants alternating —
    sections 0/2 inverted, section 1 normal (dark where dx·dy>0); the
    designated VARIANT flips every section. Mirrors emission.quadrant3Cov. */
 function quadrant3Live(ctx, cx, cy, Rpx, shade, variant) {
@@ -532,7 +532,7 @@ function drawCountdownV3(f, secsLeft) {
   const dringAtC = profile.beacon && profile.beacon.placement === "a-inner";
   centers.forEach((c, t) => {
     const sched = layout.n > 1 ? schedulesT[t] : schedules;
-    // ruling 1b: the D-ring is outside the donut the QR owns, so its (frozen)
+    // D-ring ruling 1b: the D-ring is outside the donut the QR owns, so its (frozen)
     // contour holds through the countdown face like every band edge.
     const bsched = dringAtC ? (layout.n > 1 && beaconSchedulesT ? beaconSchedulesT[t] : beaconSchedule) : null;
     const bvvC = profile.beacon_variants ? OC.profile.beaconVariantFor(profile, t) : null;
@@ -663,7 +663,7 @@ function loop(now) {
   requestAnimationFrame(loop);
 }
 
-/* V3 start: loop/countdown inputs map onto §6's freeze_s/loop_s (freeze is
+/* V3 start: loop/countdown inputs map onto the profile's freeze_s/loop_s (freeze is
    contract-mandatory for v3 — the checkbox is a v2 control), session32 is
    stamped fresh per emission, and the envelope QR carries payload identity
    when a payload rides. */
@@ -716,7 +716,7 @@ function prepareV3() {
   beaconSchedule = OC.emission.buildBeaconSchedule(profile, effLoopFrames, envBytes);
   beaconSchedulesT = null;
   if (profile.beacon.placement === "a-inner" && layout.n > 1) {
-    // ruling 1b: per-tile envelopes (b[16] = the carrying tile) → per-tile
+    // D-ring ruling 1b: per-tile envelopes (b[16] = the carrying tile) → per-tile
     // beacon schedules. The QR keeps tile 0's envelope.
     beaconSchedulesT = [];
     for (let bt = 0; bt < layout.n; bt++)
@@ -1057,7 +1057,7 @@ ocRefreshMode();
 /* TAKE-CARD INTAKE (2026-08-30, the console): take.html opens this page with
    ?settings=<the canonical oc1 string>&msg=<payload>&take=<id> — the SAME
    string the receiver will be armed with, so the emitter cannot disagree
-   with the ingest side. The explicit-start rule stands (F1/§7.7): nothing
+   with the ingest side. The explicit-start rule stands (F1): nothing
    autoplays; the banner says what the card armed and the operator presses
    Start, then Fullscreen. The selftest's strongest assert is the ROUND
    TRIP: ocSettingsString() must equal the string that armed the page. */

@@ -8,7 +8,7 @@
 > now run through the take console and the registry. For current captures,
 > follow [field-workflow.md](field-workflow.md).
 
-Spec §6: produce the acuity curve — per device pair, range, lighting: which layers
+The goal: produce the acuity curve — per device pair, range, lighting: which layers
 decode, at what rate. The harness logs everything; you provide legs and phones.
 "This is an afternoon in a long hallway or a car park, not an engineering project."
 
@@ -25,7 +25,7 @@ decode, at what rate. The harness logs everything; you provide legs and phones.
 2. **Receiver**: a phone. Two modes — run both when possible:
    - **Live** (needs HTTPS or localhost — usually easiest on a laptop receiver, or
      via a local HTTPS tunnel): open `harness/receive.html`, start camera, capture 8 s.
-   - **Recorded (§9.1, the default for phones)**: film the emitter ~15 s with the
+   - **Recorded (the default for phones)**: film the emitter ~15 s with the
      STOCK camera app at **normal 30 fps** (60 also works; highest quality, no
      zoom past optical), then feed the file to `receive.html` — or the single-file
      `dist/receive-standalone.html` — via the video-file input. The emission runs
@@ -59,15 +59,15 @@ decode, at what rate. The harness logs everything; you provide legs and phones.
   "no emitter found" appears vs where annulus 0 stops. If registration dies first
   in the field too, the fallback circle-fit registration moves up the queue.
 - **Recorded vs live at the same range**: recorded should be equal or better
-  (non-causal decode headroom) except where codec loss bites — §9.1 says
+  (non-causal decode headroom) except where codec loss bites — the original spec says
   compression is the real cost; the CSV pairs will show it.
-- **Sub-3 Hz decode parity** (§7.7 / F1): the default profile's rotations are
+- **Sub-3 Hz decode parity** (F1): the default profile's rotations are
   already ≤1.5 Hz. If SERs match the physics expectations at these rates, the safe
   rate costs nothing — log it and the question closes.
 - **Handheld vs propped**: tick the handheld box honestly; it switches per-frame
   re-registration on.
 
-## The §9.1 spike on real phones (single highest-value unknown)
+## The recorded-input spike on real phones (single highest-value unknown)
 
 On each phone, with the repo copied to local storage (USB/AirDrop/Files app):
 1. Open `harness/receive.html` from the local file manager in the default browser.
@@ -84,5 +84,5 @@ On each phone, with the repo copied to local storage (USB/AirDrop/Files app):
 - One CSV per sweep, named `acuity-<device>-<camera>-<lighting>.csv`.
 - The receive page's plot is the live sketch; the committed curve comes from the
   CSVs (layer index vs range, per camera, per lighting).
-- File findings to Pharos (thread `out-of-band-carriage`) — especially §9.1
+- File findings to Pharos (thread `out-of-band-carriage`) — especially the recorded-input
   results and any registration-death ranges.

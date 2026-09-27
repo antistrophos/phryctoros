@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- single-file build 2026-09-26 — regenerate with build_standalone.py -->
+<!-- single-file build 2026-09-27 — regenerate with build_standalone.py -->
 
 <html lang="en">
 <head>
@@ -31,7 +31,7 @@
   <div id="rxSummary" style="font-size:1.05rem;padding:.35rem .6rem;border-radius:4px;margin-top:.4rem"></div>
 </fieldset>
 
-<fieldset><legend>Session metadata (logged with every decode — spec §6)</legend>
+<fieldset><legend>Session metadata (logged with every decode)</legend>
   <label>range (m) <input id="m_range" type="number" step="0.5" style="width:4.5rem"></label>
   <label>lighting <select id="m_light"><option>indoor-dim</option><option>indoor-bright</option><option>dark</option><option>daylight-shade</option><option>daylight-direct</option></select></label>
   <label>tx type <input id="m_tx" value="laptop-screen" style="width:8rem"></label>
@@ -52,7 +52,7 @@
   <button id="capBtn" disabled>Capture <input id="capSecs" type="number" value="8" min="3" style="width:3rem"> s → decode</button>
   <button id="liveBtn" disabled title="the continuous receiver on the camera: take-what-comes, telemetry until it comes back with data or doesn't">Live harvest</button>
   <button id="liveStopBtn" disabled>Stop live</button>
-  <label style="border:1px dashed #555; padding:.4rem .6rem">video file (§9.1): <input id="fileIn" type="file" accept="video/*"></label>
+  <label style="border:1px dashed #555; padding:.4rem .6rem">video file: <input id="fileIn" type="file" accept="video/*"></label>
 </p>
 
 <fieldset><legend>Harvest (payload modes) — droplet-aware hop + early exit</legend>
@@ -323,7 +323,7 @@
    modulation deviation adds k·(dφ/dt)_dev on top during symbol sweeps. This
    report computes the worst local flicker per annulus/harmonic and flags the
    3–60 Hz photosensitive band (peak sensitivity ~15–25 Hz). Numbers cited
-   secondhand — spec §7.7 says check current WCAG / ITU-R BT.1702 text. */
+   secondhand — check the current WCAG and ITU-R BT.1702 texts. */
 (function (global) {
   "use strict";
 
@@ -382,7 +382,7 @@
     if (peak) out.push("Harmonic content reaches the 15–25 Hz peak-sensitivity band. Mitigated here by low contrast (" + contrast + ") and thin-band area; for projector/wall deployment REDUCE contrast further or lower nominal_hz — the area argument does not hold there.");
     else if (band) out.push("Harmonic content lands in the 3–60 Hz band (outside the 15–25 Hz peak). Keep contrast low; log this configuration's flicker row in every capture session.");
     else out.push("No harmonic reaches the 3–60 Hz band at these parameters.");
-    out.push("Require explicit start; show the first-run warning; nobody needs to watch the emission for the link to work (spec §7.7).");
+    out.push("Require explicit start; show the first-run warning; nobody needs to watch the emission for the link to work.");
     return out;
   }
 
@@ -396,7 +396,7 @@
 </script>
 <script>
 /* inlined: profile.js */
-/* profile.js — the emission profile: the contract (spec §8), plus the validator.
+/* profile.js — the emission profile: the contract, plus the validator.
    UNITS (review F4): every length is in units of FIDUCIAL WIDTH, measured from the
    emission centre. Registration measures the fiducial, so geometry is camera-
    invariant by construction. The validator embodies review findings F1 (flicker
@@ -406,8 +406,8 @@
 
   function defaultProfile(overrides) {
     var p = {
-      // v2: THE LAYER SWAP (first-walk finding 3). Spec §7.1's rule and §7.6's
-      // table put layer 0 OUTERMOST; the §7.1 diagram says the opposite and v1
+      // v2: THE LAYER SWAP (a first field-walk finding). The original spec's layer rule and
+      // layer table put layer 0 OUTERMOST; its geometry diagram says the opposite and v1
       // faithfully implemented the diagram. Field physics endorsed the rule:
       // phase noise scales as blur-px/radius-px, so the base layer belongs on
       // the biggest ring. The swap is an emission version, not a patch — the
@@ -424,7 +424,7 @@
         size_px: 1024,
         scale_px_per_unit: 166,   // fiducial width in pixels (validator needs r_max + margin ≤ size/2)
         background: 0.62,
-        fill: 0.32,               // low contrast by default — review F1/§7.7 dividend
+        fill: 0.32,               // low contrast by default — the F1 dividend
         edge_soft_px: 1.6         // linear soft edge; decoder's 0.5-crossing is the boundary
       },
       fiducial: {
@@ -515,7 +515,7 @@
         if (a.boundary.amplitudes[j] * p.render.scale_px_per_unit < 1.5)
           warnings.push(tag + "harmonic k=" + a.boundary.harmonics[j] + " amplitude under ~1.5 px at this scale — phase reads will be noisy");
 
-      // Geometry collisions (spec §7.4: enforce at validation, not render).
+      // Geometry collisions (enforce at validation, not render).
       if (a.r_inner + 0.03 > a.r0 - s - 0.08)
         errors.push(tag + "sampling window bottom (" + (a.r0 - s - 0.08).toFixed(3) + ") is inside r_inner + margin");
       if (i === 0 && p.fiducial.af_collar && p.fiducial.af_collar.r_out + 0.05 > a.r0 - s - 0.08)
@@ -532,7 +532,7 @@
       if (a.r0 + s + 0.04 > halfSizeUnits)
         errors.push(tag + "outer boundary max " + (a.r0 + s).toFixed(3) + " exceeds render half-size " + halfSizeUnits.toFixed(3));
 
-      // Cycle-slip bound (spec §7.3): nominal advance + worst deviation per frame.
+      // Cycle-slip bound: nominal advance + worst deviation per frame.
       var nomDeg = 360 * a.rotation.nominal_hz / fps;
       var devDeg = (180 / a.rotation.frames_per_symbol); // worst |Δ| = 180° spread over the symbol
       var per = nomDeg + devDeg;
@@ -577,16 +577,16 @@
      the render primitive; each references its lo/hi boundary as a fixed radius
      or an edge index. UNITS SELF-ANCHOR: the unmodulated outer circle ≡ 3.00
      units, measured every frame with nothing to average — no fiducial-width
-     anchor, QR-free steady state. Presets (§2): ONE toggle, session-atomic;
+     anchor, QR-free steady state. Presets: ONE toggle, session-atomic;
      the base edge never upgrades (must-decode tier + the M≤4 carrier gate). */
   /* preset: undefined | "high-rate" | "classic" | "paced" | "high-rate-paced"
      ("inverted" is kept as an alias for the default — it names what the
      default now IS, and older settings strings still carry it.)
 
      THE LADDER IS INVERTED BY DEFAULT as of 2026-08-21 (the practitioner's
-     ruling, amending the frozen contract's §1 M-ladder): base innermost,
+     ruling, amending the frozen v3 contract's M-ladder): base innermost,
      fine constellations outward. Field-decided — the first complete v3
-     carriage (::b) ran inverted, and the mechanism the field showed is
+     carriage ran inverted, and the mechanism the field showed is
      radial, not preset-specific: registration error is radius-leveraged, so
      the outermost edge takes the largest pixel displacement per unit of H
      error, while base's droplets are the longest CRC exposure on the plate.
@@ -629,16 +629,16 @@
       profile_version: hi ? "v3-hr" : (classic ? "v3-classic" : "v3"),
       units: "flat-circle-3.00",
       preset: hi ? "high-rate" : (classic ? "resilient-classic" : "resilient"),
-      frame_rate_hz: 30,            // §7: 30 fps emission @ 60 fps capture baseline
+      frame_rate_hz: 30,            // 30 fps emission @ 60 fps capture baseline
       render: {
         size_px: 1024,
-        scale_px_per_unit: 166,     // half-size 3.084 units; corners at 2.65+0.40=3.05 fit (§5 amended)
+        scale_px_per_unit: 166,     // half-size 3.084 units; corners at 2.65+0.40=3.05 fit (the amended plate)
         background: 0.62,
         fill: 0.32,                 // contrast 0.30 — the F1 dividend, carried from v2
         edge_soft_px: 1.6
       },
-      preamble_symbols: 8,          // §1: preamble as v2
-      // §2/§3. subset_version 2 = ring-dependent forced seeds + K-scaled max
+      preamble_symbols: 8,          // preamble as v2
+      // The carriage: subset_version 2 = ring-dependent forced seeds + K-scaled max
       // degree (see fountain.subsetFor); "classic" keeps v1 alongside the
       // original ladder, since a clip filmed then used both. Decoders fall
       // back automatically on a validated mismatch, so pre-flip captures need
@@ -648,26 +648,26 @@
       // of repeats. classic keeps 1 so pre-change scenes re-emit bit-identically.
       carriage: { droplet_bits: hi ? 48 : 24, self_framing: true, subset_version: classic ? 1 : 2,
                   carousel_version: classic ? 1 : 2 },
-      countdown: { freeze_s: 3, loop_s: 60 },  // §6: defaults 3/60, floor freeze ≥ 1
-      // §6 envelope QR (recurring, internal format, dark-on-gray). Width chosen so
+      countdown: { freeze_s: 3, loop_s: 60 },  // defaults 3/60, floor freeze ≥ 1
+      // The envelope QR (recurring, internal format, dark-on-gray). Width chosen so
       // the quiet-inclusive half-DIAGONAL stays inside the 0.90 donut budget.
       qr: { modules: 25, quiet_modules: 2, width_units: 1.08, dark: 0.05, seed: 909 },
       session32: 0,                 // emit page stamps the real session id
-      // §7 density knob: 1 / 2 / 6-up (grid beats hex on 16:9 to 2 rows).
-      // §5: gutter ≥ 1.2 between flat circles → tile pitch ≥ 7.2. Tile 0 is
+      // The density knob: 1 / 2 / 6-up (grid beats hex on 16:9 to 2 rows).
+      // Gutter ≥ 1.2 between flat circles → tile pitch ≥ 7.2. Tile 0 is
       // the DESIGNATED tile — the only one carrying the breaker ring pair and
-      // the beacon (§5's count asymmetry doing tile identity); gutter-vertex
+      // the beacon (the plate's count asymmetry doing tile identity); gutter-vertex
       // bullseyes (0.40) sit on the shared lattice. Tiles carry the same
       // blocks under tile-shifted seeds (fountain.tileSeed).
       tiling: 1,
       tile_pitch: 7.2,
-      // DIAGNOSTIC variant, off the frozen contract (ruling 2: steady state is
+      // DIAGNOSTIC variant, off the frozen contract (v3 ruling 2: steady state is
       // QR-free): render the envelope QR in the center donut on EVERY frame —
       // the v2-proven finder path then registers angled captures continuously.
       // The interim lock for angled-capture data collection until saddle-first
       // registration lands; suppresses the center bullseye + beacon.
       qr_persistent: false,
-      // §1 edge table. B's edges share nominal φ (same nominal_hz), distinct data
+      // The edge table. B's edges share nominal φ (same nominal_hz), distinct data
       // (distinct seeds) — the differential-pair demod is the decoder follow-on.
       annuli: [
         { index: 0, layer: 3, band: 0, edge: "A-outer", crossing: "up", r0: 1.42,
@@ -689,7 +689,7 @@
         { index: 2, name: "C", lo: { edge: 3 }, hi: { fixed: 3.00, flat: true } }
       ],
       flat_circle_r: 3.00,
-      // §5 plate, as amended: corners plain 0.40 at (±2.65, ±2.65); center 2:1:2
+      // The plate, as amended: corners plain 0.40 at (±2.65, ±2.65); center 2:1:2
       // to 0.60 plus the breaker ring pair to 0.80 (= the count asymmetry AND the
       // beacon carrier); donut budget 0.90 with 0.15 quiet to A-inner. The plate
       // renders at the FILL shade (contrast 0.30, same as the bands): a full-dark
@@ -711,7 +711,7 @@
         breaker: { r_in: 0.70, r_out: 0.80 },
         quiet_r: 0.90
       },
-      // §5 THE BEACON RING: boundary-CPM on the breaker pair, both edges carrying
+      // THE BEACON RING: boundary-CPM on the breaker pair, both edges carrying
       // the SAME offset (constant ring width → luminance-constant; temporal keying
       // would land in the F1 band — wiggle is forced). M=2 default / 4 negotiable;
       // 7.5–15 bit/s = the acoustic FSK rate class. Near-field tier by physics.
@@ -796,7 +796,7 @@
 
   /* The v3 validator. Geometry rules derive from the ACTUAL numbers (a probe
      variant with smaller amps passes on its own geometry); deviations from the
-     frozen contract numbers warn rather than error, so §1's "amendments = v3.1"
+     frozen contract numbers warn rather than error, so the contract's "amendments = v3.1"
      stays a human rule, not a code gate. */
   function validateV3(p) {
     var errors = [], warnings = [];
@@ -852,7 +852,7 @@
     if (p.flat_circle_r + softU * 2 + 0.01 > halfSizeUnits)
       errors.push("flat circle " + p.flat_circle_r + " + soft margin exceeds render half-size " + halfSizeUnits.toFixed(3));
 
-    // Plate containment (§5 as amended — the axis-containment repair is exactly
+    // Plate containment (the amended plate — the axis-containment repair is exactly
     // what this check exists to hold).
     var pl = p.plate;
     var beaconSum = 0;
@@ -906,17 +906,17 @@
       errors.push("donut budget " + pl.quiet_r + " leaves under " + quietFloor + " quiet to the innermost band edge" +
                   (dringAt ? " (a-inner D-ring: 1.05 − excursion " + innermostLo.sum.toFixed(3) + ")" : ""));
 
-    // Beacon (§5): M ∈ {2,4}; amplitude bound keeps the ring's quiet gaps.
+    // Beacon: M ∈ {2,4}; amplitude bound keeps the ring's quiet gaps.
     // At a-inner the bound is the CONTROL CLASS itself: 0.025 is what the
     // pinch + donut budgets price (a full data edge breaks both).
     if (p.beacon.rotation.M !== 2 && p.beacon.rotation.M !== 4 && p.beacon.rotation.M !== 8)
       errors.push("beacon M must be 2 (default), 4 (negotiable), or 8 (D-ring ruling-2 chunked trial)");
     if (p.beacon.placement !== undefined && p.beacon.placement !== "a-inner")
-      errors.push("beacon.placement must be absent (breaker — frozen §5) or \"a-inner\" (D-ring ruling 1b)");
+      errors.push("beacon.placement must be absent (breaker — the frozen v3 plate) or \"a-inner\" (D-ring ruling 1b)");
     if (p.beacon.harmonics.length !== p.beacon.amplitudes.length ||
         p.beacon.harmonics.length !== p.beacon.phases_deg.length)
       errors.push("beacon harmonics/amplitudes/phases_deg length mismatch");
-    // The class bound IS the geometry (2026-08-27, generalizing ruling 1b's
+    // The class bound IS the geometry (2026-08-27, generalizing D-ring ruling 1b's
     // 0.025): at a-inner the sum may spend exactly what sits between the
     // band floor and the quiet reference, minus the 0.125 quiet floor. The
     // frozen default (floor 1.05, quiet_r 0.90) prices 0.025 byte-for-byte;
@@ -934,7 +934,7 @@
     if (p.family !== undefined && p.family !== 4)
       errors.push("profile.family must be absent (v3, b[1]=3) or 4 (the v4 geometry dividend)");
     if (p.family === 4 && ctr !== "quadrant3")
-      errors.push("family 4 requires center_style quadrant3 — the v4 plate is the clause-2′ target plate");
+      errors.push("family 4 requires center_style quadrant3 — the v4 plate is the three-section target plate (v4 clause 2′)");
     if (dringAt && (p.bands[0].lo.fixed < 1.00 - 1e-9 || pl.quiet_r < 0.80 - 1e-9) && p.family !== 4)
       errors.push("geometry past the a42g bridge (floor " + p.bands[0].lo.fixed + " / quiet_r " + pl.quiet_r +
                   ") requires the family-4 version signal (v4 clause 3)");
@@ -987,18 +987,18 @@
     }
 
     if (p.qr_persistent)
-      warnings.push("qr_persistent is a DIAGNOSTIC variant — off the frozen contract (§ ruling 2: steady state is QR-free); for angled-capture data until saddle-first registration lands");
+      warnings.push("qr_persistent is a DIAGNOSTIC variant — off the frozen contract (v3 ruling 2: steady state is QR-free); for angled-capture data until saddle-first registration lands");
 
-    // Tiling (§7): the knob is 1/2/6; the pitch keeps §5's 1.2-unit gutter.
+    // Tiling: the knob is 1/2/6; the pitch keeps the plate's 1.2-unit gutter.
     var tn = p.tiling || 1;
     if (tn !== 1 && tn !== 2 && tn !== 6)
       errors.push("tiling " + tn + " is not a contract density (1 / 2 / 6-up)");
     if (tn > 1 && (p.tile_pitch || 0) < p.flat_circle_r * 2 + 1.2 - 1e-9)
-      errors.push("tile_pitch " + p.tile_pitch + " under " + (p.flat_circle_r * 2 + 1.2) + " — the 1.2-unit gutter is the §5 floor");
+      errors.push("tile_pitch " + p.tile_pitch + " under " + (p.flat_circle_r * 2 + 1.2) + " — the 1.2-unit gutter is the plate's floor");
 
-    // Countdown (§6): freeze ≥ 1 s is the optical-intrinsic floor (AF/AE settle
+    // Countdown: freeze ≥ 1 s is the optical-intrinsic floor (AF/AE settle
     // + motion-onset anchor); the envelope is the only movable function.
-    // EXACTLY 0 is the v4-preview trial (rulings 1+4 pulled forward
+    // EXACTLY 0 is the v4-preview trial (v4 clauses 1+4 pulled forward
     // 2026-08-27): no countdown, no QR ever rendered, rotation from frame 0,
     // the loop is pure emission airtime — b[13]=0 self-describes it on the
     // wire and mid-loop framing never needed the onset anchor. Values in
@@ -1014,7 +1014,7 @@
         warnings.push("freeze airtime " + Math.round(100 * cd.freeze_s / cd.loop_s) + "% over 10% — the envelope is an accelerant, not a tax");
     }
 
-    // Matched-mean (§5): countdown-center vs steady-center within 0.05 — the
+    // Matched-mean: countdown-center vs steady-center within 0.05 — the
     // QR↔bullseye swap must not kick AE. Exact when the emission module is
     // loadable (it owns the QR module map); T22 re-checks on rendered pixels.
     var em = (global.OC && global.OC.emission) ||
@@ -1038,7 +1038,7 @@
   }
 
   /* D-ring ruling-2 trial configs (2026-08-23). code: "f24" = v0 frame at
-     M=2/F=4 (the frozen §5 default), "c42" = chunked M=4/F=2 (the primary
+     M=2/F=4 (the frozen v3 default), "c42" = chunked M=4/F=2 (the primary
      trial: tag 1.07 s, envelope 13.3 s), "c82" = chunked M=8/F=2 (the A/B:
      tag 0.71 s, SNR-risky at the 0.010 amplitude — the filming session
      decides). Amplitude re-split trials (2026-08-24 — the a-inner ring
@@ -1079,7 +1079,7 @@
       p.beacon.rotation.M = (code === "c82" || code === "a82") ? 8 : 4;
       p.beacon.rotation.gray = true;
       p.beacon.rotation.frames_per_symbol = 2;
-      // a42/a82/a42r/a42x — ruling 1b: the control ring RELOCATES to band
+      // a42/a82/a42r/a42x — D-ring ruling 1b: the control ring RELOCATES to band
       // A's inner boundary on every tile (per-tile envelopes, announced
       // identity); the breaker renders static and stays the derived-identity
       // degrade rung.
@@ -1119,7 +1119,7 @@
       } else if (code === "a42v") {
         // Contract technical/phryctoros-v4-contract.md (the edition, folded
         // 2026-08-29; the draft chain is superseded).
-        // THE v4 GEOMETRY DIVIDEND (clause 3, ruled 2026-08-28): the full
+        // THE v4 GEOMETRY DIVIDEND (v4 clause 3, ruled 2026-08-28): the full
         // step past the a42g bridge — quiet_r 0.70 (the target rim + its
         // 0.10 moat exactly), floor 0.95, class 0.090 = a42q's k3-heavy
         // split scaled 1.2×. Both walls carry margin for the first time
@@ -1318,23 +1318,24 @@
      the unmodulated outer circle at exactly flat_circle_r (the units anchor
      and per-frame conic gauge), a 2:1:2 bullseye at three deployments, the
      breaker/beacon ring pair on the center bullseye, and a recurring
-     countdown QR whose center-mean matches the steady face (§5). */
+     countdown QR whose center-mean matches the steady face (the matched-mean rule). */
 
   function isV3(p) { return !!(p && p.bands && p.plate); }
 
   function FN() { return (typeof module !== "undefined" && module.exports) ? require("./fountain.js") : global.OC.fountain; }
 
-  /* §6 envelope, internal format v1, 20 bytes. info: { K, len, pcrc, capability }
+  /* The envelope, internal format v1, 20 bytes. info: { K, len, pcrc, capability }
      for an attached payload (null → zeros: identity-only envelope).
      tile: the index of the tile carrying THIS copy (D-ring ruling 4,
-     2026-08-23) — the beacon rides tile 0 today, so it defaults to 0; the
-     per-tile D-ring (ruling 1b) will stamp each tile's own. */
+     2026-08-23); it defaults to 0, the tile a breaker-placed beacon rides.
+     Under D-ring ruling 1b every tile carries its own copy, stamped with
+     its own index. */
   function envelopeBytes(profile, info, tile) {
     var F = FN();
     var b = new Uint8Array(20);
     b[0] = 1;                                        // envelope format version
-    b[1] = profile.family || 3;                      // profile family: 3 = v3; 4 = the v4 geometry dividend (clause 3)
-    b[2] = profile.preset === "high-rate" ? 1 : 0;   // §2: the ONE toggle rides the envelope
+    b[1] = profile.family || 3;                      // profile family: 3 = v3; 4 = the v4 geometry dividend (v4 clause 3)
+    b[2] = profile.preset === "high-rate" ? 1 : 0;   // the preset: the ONE toggle rides the envelope
     var s32 = (profile.session32 || 0) >>> 0;
     b[3] = s32 >>> 24; b[4] = (s32 >>> 16) & 255; b[5] = (s32 >>> 8) & 255; b[6] = s32 & 255;
     if (info) {
@@ -1417,7 +1418,7 @@
     return syms;
   }
 
-  /* §5 beacon control carousel v0: the envelope mirror — magic, length, envelope
+  /* The beacon's control carousel v0: the envelope mirror — magic, length, envelope
      bytes, CRC8 — cycled by the schedule. One 23-byte frame under one CRC. */
   function beaconSymbols(envBytes, M) {
     var F = FN();
@@ -1483,7 +1484,7 @@
                          profile.preamble_symbols, syms);
   }
 
-  /* §6 recurring countdown: wall-clock frame → { freeze, eff }. The emission
+  /* The recurring countdown: wall-clock frame → { freeze, eff }. The emission
      clock PAUSES during freeze (v2's frozen-frame-0 scheme, recurring): eff is
      the schedule position, so a mid-loop joiner sees motion resume exactly
      where the plate froze. */
@@ -1743,7 +1744,7 @@
               if (qrm[my * qrN + mx]) v = qrDark;
             }
           } else if (centerQ3) {
-            // clause 2′: the three-section center target replaces bullseye AND
+            // v4 clause 2′: the three-section center target replaces bullseye AND
             // breaker; the 1-up plate is tile 0 = the designated VARIANT
             var covQ = quadrant3Cov(x, y, r, centerRout, scale, soft, true);
             if (covQ > 0) v = bg + (shade - bg) * covQ;
@@ -1794,9 +1795,9 @@
     return img;
   }
 
-  /* §7 tiling layout: 1 / 2 / 6-up as a grid (2×1, 3×2 — grid beats hex on
+  /* The tiling layout: 1 / 2 / 6-up as a grid (2×1, 3×2 — grid beats hex on
      16:9 to two rows). Tile 0 = top-left = the DESIGNATED tile: the only one
-     carrying the breaker pair + beacon (§5's count asymmetry is the decoder's
+     carrying the breaker pair + beacon (the plate's count asymmetry is the decoder's
      tile identity). Gutter-vertex bullseyes sit on INTERIOR lattice vertices
      (border vertices would clip half a bullseye off the canvas; 2-up has no
      interior vertex and leans on its ten plate bullseyes). */
@@ -1961,7 +1962,7 @@
                 if (qrm[my * qrN + mx]) v = profile.qr.dark;
               }
             } else if (pl.center_style === "quadrant3") {
-              // clause 2′: identity by shape — tile 0 carries the VARIANT,
+              // v4 clause 2′: identity by shape — tile 0 carries the VARIANT,
               // every other tile the plain target; no breaker anywhere
               var covQ3 = quadrant3Cov(x, y, r, pl.center.r_out, scale, soft, t === 0);
               if (covQ3 > 0) v = bg + (shade - bg) * covQ3;
@@ -2006,7 +2007,7 @@
     return img;
   }
 
-  /* Matched-mean arithmetic (§5): exact areas for the steady face, the actual
+  /* Matched-mean arithmetic: exact areas for the steady face, the actual
      module map for the countdown face. The validator errors past 0.05; T22
      re-checks the same bound on rendered pixels. */
   function centerMeans(profile) {
@@ -2206,7 +2207,7 @@
 </script>
 <script>
 /* inlined: register.js */
-/* register.js — stage 2: find EVERY fiducial in the frame (spec §5.1: never write a
+/* register.js — stage 2: find EVERY fiducial in the frame (never write a
    decoder that finds *a* fiducial). Finder-pattern detection is the classic
    1:1:3:1:1 run-length scan (plain JS, no QR library — C8). Output: one candidate
    emitter per finder triple, each with its own canonical→image homography.
@@ -2440,7 +2441,7 @@
     // Dark-band spans + the outer radius + the refine target. v2: annuli ARE
     // bands (r_inner→r0), outer ring's modulated boundary refines. v3: annuli
     // are EDGES — bands come from profile.bands at nominal radii, and the
-    // refine target is THE FLAT CIRCLE at 3.00 (the units anchor, §4: measured
+    // refine target is THE FLAT CIRCLE at 3.00 (the units anchor: measured
     // every frame with no modulation to average — sampleBoundary with an empty
     // harmonic set and sum 0 is exactly that gauge).
     var isV3 = !!(profile.bands && profile.plate);
@@ -2681,7 +2682,7 @@
      geometric triples by timing+structure; the BEST is accepted on structure
      alone (blur-tolerant — a real fiducial outranks ring/collar decoys whenever
      its timing resolves, and still verifies structurally when blur erases the
-     timing). ADDITIONAL emitters (multi-emitter/§5.1, decoy-exposed) must pass
+     timing). ADDITIONAL emitters (multi-emitter, decoy-exposed) must pass
      the strict timing signature too. When the finder path comes up EMPTY and
      the caller supplied the emission profile, fall back to ring registration
      (the fiducial dies before the rings — walks 4–5). */
@@ -2783,7 +2784,7 @@
 </script>
 <script>
 /* inlined: plate.js */
-/* plate.js — v3 decoder rung 2 (contract §5/§9): the bullseye constellation as
+/* plate.js — v3 decoder rung 2: the bullseye constellation as
    a per-frame registration instrument, and the beacon ring as a channel.
 
    The 2:1:2 template read radially from a bullseye's center is three circle
@@ -2792,12 +2793,12 @@
    angle subpixel crossings, first-harmonic center correction (k=1 IS the
    centering error — F5b's diagnostic as corrector), mean radius as scale.
    Three edges × five deployments = fifteen circle fits per frame; the solve
-   turns the verified centers into one least-squares homography (the §9
+   turns the verified centers into one least-squares homography (the v3 pose ladder's
    "per-frame plate solve" rung — the center-shift field across bullseyes is
    the measured perspective k=1, so the DLT absorbs exactly the term the
    static conic can only average).
 
-   The beacon (§5) needs no machinery of its own: the breaker ring's OUTER
+   The beacon needs no machinery of its own: the breaker ring's OUTER
    edge is one more boundary-CPM channel — an annulus-shaped descriptor sends
    it through the same sample→DFT→track→demap chain as the data edges, and
    the only beacon-specific code is the byte framing (magic, len, envelope,
@@ -2914,11 +2915,11 @@
     return out;
   }
 
-  /* The §9 plate solve: measure every deployed bullseye, least-squares a
+  /* The per-frame plate solve: measure every deployed bullseye, least-squares a
      fresh homography from the verified centers. HIERARCHICAL, because the
      seed H's scale error is levered by the corner arm (2% scale × 2.65 u ×
      166 px ≈ 9 px of corner displacement — past the edge-fit windows): fit
-     the CENTER bullseye first (small arm, and §5's crop-survival anchor),
+     the CENTER bullseye first (small arm, and the plate's crop-survival anchor),
      fold its measured center + px-per-unit into the working H, then seed the
      corners — their residual is rotation/perspective only. Needs ≥ minPoints
      (default 4). Returns { H, used, points, residPx } or null. */
@@ -2947,7 +2948,7 @@
     // bullseye is absent (qr_persistent: the QR sits there). The first anchor
     // attempt (H-derived point, fires after 3 corners verify) failed in the
     // field at 0/601 — the failure was UPSTREAM: without a measured
-    // center+scale, corners seed from the raw static H and ≤2 verify. §4's
+    // center+scale, corners seed from the raw static H and ≤2 verify. The
     // unmodulated outer circle is present in every variant and radially
     // symmetric: fit it per frame (k=1 center + mean-radius scale, the
     // ring-reg refine identity), fold the measurement into Hwork, THEN seek
@@ -3243,7 +3244,7 @@
     return beaconFrames(decoded, align ? align.lag : 0, M);
   }
 
-  /* §6 envelope, internal format v1 (emission.envelopeBytes is the writer):
+  /* The envelope, internal format v1 (emission.envelopeBytes is the writer):
      version · family · flags (bit0 = high-rate) · session32 · K · len ·
      pcrc16 · capability · freeze (ds) · loop (s) · tiling · tile · grid ·
      CRC16 over bytes 0–17. Returns the fields, or null when the bytes are
@@ -3341,7 +3342,7 @@
             consider({ offset: off, lag: ph, score: frames.length, max: decoded.length,
                        method: "framed", framing: "frame", verified: verified });
         }
-        // Chunked framing (ruling 2) — scanned at every candidate alignment
+        // Chunked framing (D-ring ruling 2) — scanned at every candidate alignment
         // regardless of what the profile declares, so the receiver never has
         // to know which framing the emitter runs. A chunked alignment is
         // accepted sealed (per-chunk checks are 12 bits — never alone) — OR,
@@ -4111,7 +4112,7 @@
 <script>
 /* inlined: sample.js */
 /* sample.js — stages 4–5: per-annulus radial profiles → boundary contour r(θ).
-   No edge detection, no contour tracing (spec §9): sample radially through the
+   No edge detection, no contour tracing: sample radially through the
    homography, SELF-NORMALIZE the profile (review F9: an absolute threshold would
    quietly reintroduce intensity dependence), and locate the 0.5 crossing subpixel.
    Each angle also records its source ROW — the rolling-shutter timestamp hook
@@ -4187,7 +4188,7 @@
       // Light 3-tap smooth, then normalized crossing with the strongest slope.
       // v2 annuli and outward-facing v3 edges cross UPWARD (fill→bg walking out);
       // v3 inner-facing edges (crossing: "down") cross bg→fill — the flipped
-      // mode the contract's §10 sampler item names. Same subpixel math, sense
+      // mode the v3 contract's sampler item names. Same subpixel math, sense
       // inverted; everything downstream reads the contour identically.
       var down = annulus.crossing === "down";
       var bestIdx = -1, bestSlope = 0;
@@ -5339,7 +5340,7 @@
    boundary is unobserved, when a long gap undermines the bridge, or when the
    decision is low-confidence (>0.35 step residual) — erasures feed the fountain
    layer's accounting (spec C4; review F7 posture). Alignment: correlate against
-   the known preamble (spec §7.3.1's fixed-rate-header move). */
+   the known preamble (the fixed-rate-header pattern). */
 (function (global) {
   "use strict";
 
@@ -5543,7 +5544,7 @@
   // D = symbols per droplet. Ceil: droplet_bits divisible by 12 covers the
   // 2/3/4-bit constellations exactly; M=32 (5 bits, the v3 high-rate preset)
   // pads the tail symbol with zero bits — the block universe stays global
-  // (ruling 1), only the wire pads.
+  // (v3 ruling 1), only the wire pads.
   function ringD(annulus, g) { return Math.ceil(g.dropletBits / log2M(annulus.rotation.M)); }
   // A capture window is short; the header must RECUR or mid-loop assembly
   // would wait a whole carousel (~minutes on the base ring). Every 8th
@@ -5710,7 +5711,7 @@
     return syms;
   }
 
-  /* v3 §3 payload self-framing: block 0 opens with len16 + type8 + reserved8,
+  /* The v3 payload self-framing: block 0 opens with len16 + type8 + reserved8,
      paid once per payload — the true length (and a type lane) ride the wire
      itself, so delivery NEVER depends on envelope sighting. The 24-mode header
      is just [magic, K]; this is where its length lives. */
@@ -5978,7 +5979,7 @@
      paying a second assemble for: while the peel is merely INCOMPLETE we are
      short of droplets, not on the wrong rule, so accumulation costs nothing
      extra. This is what lets a profile default to v2 while every clip already
-     filmed under v1 — including the ::b carriage and the loopback specimens —
+     filmed under v1 — including the first complete field carriage and the loopback specimens —
      keeps decoding with no setting to remember. */
   function assemble(perRing, profile, opts) {
     var declared = geom(profile).subsetVersion;
@@ -7912,7 +7913,7 @@
    scheduler answers WAIT with the frame count it needs rather than a span,
    and a live source's dead-air guard ends the run on time.
 
-   Termination is un-quantized (the draft's §2): validated peel (early
+   Termination is un-quantized (the continuous-receiver design): validated peel (early
    exit), coverage exhausted, dead clip, live dead-air, or a stop. */
 (function (global) {
   "use strict";
@@ -8251,7 +8252,7 @@
 </script>
 <script>
 /* inlined: degrade.js */
-/* degrade.js — the degradation suite's transforms (spec §10.2), applied to clean
+/* degrade.js — the degradation suite's transforms, applied to clean
    frames: blur, noise, flip, rotation, exposure/white-balance ramps, resampling,
    composites for multi-emitter frames. All pure functions on {w,h,data}. */
 (function (global) {
@@ -8421,8 +8422,8 @@
 </script>
 <script>
 /* inlined: pipeline.js */
-/* pipeline.js — the decoder pipeline (spec §9), stages 1–8 + scoring, per emitter.
-   Multi-emitter is structural (spec §5.1): registration returns a LIST and the
+/* pipeline.js — the decoder pipeline, stages 1–8 + scoring, per emitter.
+   Multi-emitter is structural: registration returns a LIST and the
    pipeline decodes each. Mirror parity is applied ONCE, to the frame, before
    registration (C9 — config flag, never auto-detected). */
 (function (global) {
@@ -8578,7 +8579,7 @@
       });
     }
 
-    // Per-frame plate solve (v3 §9, the ladder's second rung): re-fit H from
+    // Per-frame plate solve (the v3 pose ladder's second rung): re-fit H from
     // the measured bullseye constellation on every frame — the center-shift
     // field IS the perspective k=1, so the DLT absorbs per-frame what the
     // static conic could only average. Runs AFTER the conic composition:
@@ -8589,7 +8590,7 @@
       var plateM = dep("plate");
       // v3.1 quadrant corners: the per-frame solve IS the saddle tracker —
       // project last H, cross-selective refine, re-DLT (solve-as-tracker,
-      // §9's shape). Bullseye corners keep the circle-fit plateSolve.
+      // the pose ladder's shape). Bullseye corners keep the circle-fit plateSolve.
       var saddleM = profile.plate.corner_style === "quadrant" ? dep("saddle") : null;
       solveBriefs = emitters.map(function (_, pe) {
         var HsP = tracksH[pe].Hs, solved = 0, residSum = 0, usedMin = 9;
@@ -8622,14 +8623,14 @@
       });
     }
 
-    // The beacon rides as one more channel (§5): the breaker ring's outer
+    // The beacon rides as one more channel: the breaker ring's outer
     // edge through the identical sample→track→align→demap chain; only the
     // byte framing downstream is beacon-specific. layer −1 = out of every
     // layer lookup; excluded from the payload pool.
     var channels = profile.annuli;
     if (opts.beacon && profile.plate) channels = channels.concat([dep("plate").beaconAnnulus(profile)]);
 
-    // Multi-tile identity (§5): exactly one tile carries the breaker pair —
+    // Multi-tile identity: exactly one tile carries the breaker pair —
     // find it, then read every other tile's grid offset in the designated
     // tile's own frame (tile 0 renders top-left, so offsets are non-negative
     // in emission coords; mirror stays config, never auto-detected). Tiles
@@ -8637,7 +8638,7 @@
     // tile index matters exactly twice: the assemble seed, and the pool.
     var tileOf = null, designatedIdx = -1;
     var tilesN = profile.plate ? (profile.tiling || 1) : 1;
-    // clause 2′ (center_style quadrant3): the designated tile is read from its
+    // v4 clause 2′ (center_style quadrant3): the designated tile is read from its
     // center target's VARIANT — identity by shape, per plate, no breaker. The
     // middle section's polarity flips on the designated tile: sample the four
     // quadrant mid-angles at two radii inside [R/3, 2R/3]; plain reads
@@ -9013,7 +9014,7 @@
               folded: align.folded || undefined,
               foldAgree: align.folded ? align.foldAgree : undefined,
               foldCompared: align.folded ? align.foldCompared : undefined,
-              // The fast tag = the envelope's CRC16 seal (ruling 2) — derivable
+              // The fast tag = the envelope's CRC16 seal (D-ring ruling 2) — derivable
               // under either framing once the envelope is in hand; chunked
               // alignments also report how often the tag chunk itself was
               // seen, and a tagConfirmed row re-verified a KNOWN tag without
@@ -9226,7 +9227,7 @@
              timings: T || undefined };
   }
 
-  /* v3 preset auto-detect (§2, as ruled: binary, dual-geometry, ≥2 agreeing
+  /* v3 preset auto-detect (as ruled: binary, dual-geometry, ≥2 agreeing
      CRC passes). The presets share every optical stage — only M and droplet
      geometry differ — so the mechanism is decode-under-both and let the CRC
      passes vote: the wrong geometry's chance rate is 1/256 per droplet.
@@ -9373,7 +9374,7 @@ let stream = null, capturing = false, camFrames = [], frameCounter = 0;
 $("caps").textContent =
   "capabilities: secureContext=" + window.isSecureContext +
   " · getUserMedia=" + !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia) +
-  " · origin=" + location.protocol + " — file-input decode needs NO camera and NO secure context (§9.1); " +
+  " · origin=" + location.protocol + " — file-input decode needs NO camera and NO secure context; " +
   "this page is the sneakernet artifact: it must keep working from file://.";
 
 function setStatus(t, cls) { $("status").textContent = t; $("status").className = cls || ""; }
@@ -10508,7 +10509,7 @@ function synthSource(msg, loopS) {
   });
 })();
 
-/* ---------- recorded input (§9.1 — first-class, works without camera/secure ctx) ----------
+/* ---------- recorded input (first-class, works without camera/secure ctx) ----------
    Seek-stepped, crop-at-native-resolution. Browser-agnostic by construction: no
    rVFC dependence (Firefox lacks it — its rAF fallback jittered frame timing),
    and no 800 px downscale (which cost the phase margin that made laptop decodes
@@ -10809,7 +10810,7 @@ function ocApplySettings(str) {
   const map = { "15": pay ? "v2p" : "v2",
                 "v3": "v3", "v3hr": "v3hr", "v3i": "v3", "v3c": "v3c",
                 // Trial-era strings resolve to the paced standard they always
-                // meant (ruling 2026-08-23); v3f is the flat legacy opt-out.
+                // meant (D-ring ruling 3); v3f is the flat legacy opt-out.
                 "v3p": "v3", "v3hrp": "v3hr", "v3f": "v3f" };  // v3i strings predate the flip
   const target = map[kv.prof];
   if (!target) return { err: "unknown prof \"" + kv.prof + "\"" };

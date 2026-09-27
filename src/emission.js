@@ -89,23 +89,24 @@
      the unmodulated outer circle at exactly flat_circle_r (the units anchor
      and per-frame conic gauge), a 2:1:2 bullseye at three deployments, the
      breaker/beacon ring pair on the center bullseye, and a recurring
-     countdown QR whose center-mean matches the steady face (§5). */
+     countdown QR whose center-mean matches the steady face (the matched-mean rule). */
 
   function isV3(p) { return !!(p && p.bands && p.plate); }
 
   function FN() { return (typeof module !== "undefined" && module.exports) ? require("./fountain.js") : global.OC.fountain; }
 
-  /* §6 envelope, internal format v1, 20 bytes. info: { K, len, pcrc, capability }
+  /* The envelope, internal format v1, 20 bytes. info: { K, len, pcrc, capability }
      for an attached payload (null → zeros: identity-only envelope).
      tile: the index of the tile carrying THIS copy (D-ring ruling 4,
-     2026-08-23) — the beacon rides tile 0 today, so it defaults to 0; the
-     per-tile D-ring (ruling 1b) will stamp each tile's own. */
+     2026-08-23); it defaults to 0, the tile a breaker-placed beacon rides.
+     Under D-ring ruling 1b every tile carries its own copy, stamped with
+     its own index. */
   function envelopeBytes(profile, info, tile) {
     var F = FN();
     var b = new Uint8Array(20);
     b[0] = 1;                                        // envelope format version
-    b[1] = profile.family || 3;                      // profile family: 3 = v3; 4 = the v4 geometry dividend (clause 3)
-    b[2] = profile.preset === "high-rate" ? 1 : 0;   // §2: the ONE toggle rides the envelope
+    b[1] = profile.family || 3;                      // profile family: 3 = v3; 4 = the v4 geometry dividend (v4 clause 3)
+    b[2] = profile.preset === "high-rate" ? 1 : 0;   // the preset: the ONE toggle rides the envelope
     var s32 = (profile.session32 || 0) >>> 0;
     b[3] = s32 >>> 24; b[4] = (s32 >>> 16) & 255; b[5] = (s32 >>> 8) & 255; b[6] = s32 & 255;
     if (info) {
@@ -188,7 +189,7 @@
     return syms;
   }
 
-  /* §5 beacon control carousel v0: the envelope mirror — magic, length, envelope
+  /* The beacon's control carousel v0: the envelope mirror — magic, length, envelope
      bytes, CRC8 — cycled by the schedule. One 23-byte frame under one CRC. */
   function beaconSymbols(envBytes, M) {
     var F = FN();
@@ -254,7 +255,7 @@
                          profile.preamble_symbols, syms);
   }
 
-  /* §6 recurring countdown: wall-clock frame → { freeze, eff }. The emission
+  /* The recurring countdown: wall-clock frame → { freeze, eff }. The emission
      clock PAUSES during freeze (v2's frozen-frame-0 scheme, recurring): eff is
      the schedule position, so a mid-loop joiner sees motion resume exactly
      where the plate froze. */
@@ -514,7 +515,7 @@
               if (qrm[my * qrN + mx]) v = qrDark;
             }
           } else if (centerQ3) {
-            // clause 2′: the three-section center target replaces bullseye AND
+            // v4 clause 2′: the three-section center target replaces bullseye AND
             // breaker; the 1-up plate is tile 0 = the designated VARIANT
             var covQ = quadrant3Cov(x, y, r, centerRout, scale, soft, true);
             if (covQ > 0) v = bg + (shade - bg) * covQ;
@@ -565,9 +566,9 @@
     return img;
   }
 
-  /* §7 tiling layout: 1 / 2 / 6-up as a grid (2×1, 3×2 — grid beats hex on
+  /* The tiling layout: 1 / 2 / 6-up as a grid (2×1, 3×2 — grid beats hex on
      16:9 to two rows). Tile 0 = top-left = the DESIGNATED tile: the only one
-     carrying the breaker pair + beacon (§5's count asymmetry is the decoder's
+     carrying the breaker pair + beacon (the plate's count asymmetry is the decoder's
      tile identity). Gutter-vertex bullseyes sit on INTERIOR lattice vertices
      (border vertices would clip half a bullseye off the canvas; 2-up has no
      interior vertex and leans on its ten plate bullseyes). */
@@ -732,7 +733,7 @@
                 if (qrm[my * qrN + mx]) v = profile.qr.dark;
               }
             } else if (pl.center_style === "quadrant3") {
-              // clause 2′: identity by shape — tile 0 carries the VARIANT,
+              // v4 clause 2′: identity by shape — tile 0 carries the VARIANT,
               // every other tile the plain target; no breaker anywhere
               var covQ3 = quadrant3Cov(x, y, r, pl.center.r_out, scale, soft, t === 0);
               if (covQ3 > 0) v = bg + (shade - bg) * covQ3;
@@ -777,7 +778,7 @@
     return img;
   }
 
-  /* Matched-mean arithmetic (§5): exact areas for the steady face, the actual
+  /* Matched-mean arithmetic: exact areas for the steady face, the actual
      module map for the countdown face. The validator errors past 0.05; T22
      re-checks the same bound on rendered pixels. */
   function centerMeans(profile) {

@@ -1,4 +1,4 @@
-/* plate.js — v3 decoder rung 2 (contract §5/§9): the bullseye constellation as
+/* plate.js — v3 decoder rung 2: the bullseye constellation as
    a per-frame registration instrument, and the beacon ring as a channel.
 
    The 2:1:2 template read radially from a bullseye's center is three circle
@@ -7,12 +7,12 @@
    angle subpixel crossings, first-harmonic center correction (k=1 IS the
    centering error — F5b's diagnostic as corrector), mean radius as scale.
    Three edges × five deployments = fifteen circle fits per frame; the solve
-   turns the verified centers into one least-squares homography (the §9
+   turns the verified centers into one least-squares homography (the v3 pose ladder's
    "per-frame plate solve" rung — the center-shift field across bullseyes is
    the measured perspective k=1, so the DLT absorbs exactly the term the
    static conic can only average).
 
-   The beacon (§5) needs no machinery of its own: the breaker ring's OUTER
+   The beacon needs no machinery of its own: the breaker ring's OUTER
    edge is one more boundary-CPM channel — an annulus-shaped descriptor sends
    it through the same sample→DFT→track→demap chain as the data edges, and
    the only beacon-specific code is the byte framing (magic, len, envelope,
@@ -129,11 +129,11 @@
     return out;
   }
 
-  /* The §9 plate solve: measure every deployed bullseye, least-squares a
+  /* The per-frame plate solve: measure every deployed bullseye, least-squares a
      fresh homography from the verified centers. HIERARCHICAL, because the
      seed H's scale error is levered by the corner arm (2% scale × 2.65 u ×
      166 px ≈ 9 px of corner displacement — past the edge-fit windows): fit
-     the CENTER bullseye first (small arm, and §5's crop-survival anchor),
+     the CENTER bullseye first (small arm, and the plate's crop-survival anchor),
      fold its measured center + px-per-unit into the working H, then seed the
      corners — their residual is rotation/perspective only. Needs ≥ minPoints
      (default 4). Returns { H, used, points, residPx } or null. */
@@ -162,7 +162,7 @@
     // bullseye is absent (qr_persistent: the QR sits there). The first anchor
     // attempt (H-derived point, fires after 3 corners verify) failed in the
     // field at 0/601 — the failure was UPSTREAM: without a measured
-    // center+scale, corners seed from the raw static H and ≤2 verify. §4's
+    // center+scale, corners seed from the raw static H and ≤2 verify. The
     // unmodulated outer circle is present in every variant and radially
     // symmetric: fit it per frame (k=1 center + mean-radius scale, the
     // ring-reg refine identity), fold the measurement into Hwork, THEN seek
@@ -458,7 +458,7 @@
     return beaconFrames(decoded, align ? align.lag : 0, M);
   }
 
-  /* §6 envelope, internal format v1 (emission.envelopeBytes is the writer):
+  /* The envelope, internal format v1 (emission.envelopeBytes is the writer):
      version · family · flags (bit0 = high-rate) · session32 · K · len ·
      pcrc16 · capability · freeze (ds) · loop (s) · tiling · tile · grid ·
      CRC16 over bytes 0–17. Returns the fields, or null when the bytes are
@@ -556,7 +556,7 @@
             consider({ offset: off, lag: ph, score: frames.length, max: decoded.length,
                        method: "framed", framing: "frame", verified: verified });
         }
-        // Chunked framing (ruling 2) — scanned at every candidate alignment
+        // Chunked framing (D-ring ruling 2) — scanned at every candidate alignment
         // regardless of what the profile declares, so the receiver never has
         // to know which framing the emitter runs. A chunked alignment is
         // accepted sealed (per-chunk checks are 12 bits — never alone) — OR,

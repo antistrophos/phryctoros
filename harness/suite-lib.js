@@ -50,7 +50,7 @@ async function tick(msg) { statusEl.textContent = msg; bumpTitle(msg); postProgr
 function annulusResult(res, emitterIdx, annulusIdx) {
   return res.emitters[emitterIdx].annuli[annulusIdx];
 }
-// v2 swapped the ring order (layer 0 outermost, per spec §7.1's rule) — assertions
+// v2 swapped the ring order (layer 0 outermost, per the original spec's layer rule) — assertions
 // that mean "the robust base layer" must look up by LAYER, not ring index.
 function layerResult(res, emitterIdx, L) {
   if (!res || res.error || !res.emitters || !res.emitters[emitterIdx])

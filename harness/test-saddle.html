@@ -84,7 +84,7 @@ async function main() {
     const outDark = px(at + 0.212, at + 0.212), outLight = px(at + 0.212, at - 0.212);
     const inSwap = px(at + 0.085, at + 0.085), inDark = px(at + 0.085, at - 0.085);
     const tlDark = px(-at - 0.212, -at - 0.212), trDark = px(at + 0.212, -at - 0.212);
-    record("T24a quadrant mark: profile validates (amendment-2 warning), saddle center mid-shade, dark bowtie on each corner's plate diagonal, swap circle inverts polarity",
+    record("T24a quadrant mark: profile validates (v3.1 amendment-2 warning), saddle center mid-shade, dark bowtie on each corner's plate diagonal, swap circle inverts polarity",
       vQ.ok && vQ.warnings.some(w => /quadrant/.test(w)) &&
       Math.abs(ctr - 0.47) < 0.03 &&
       outDark < 0.35 && outLight > 0.59 && inSwap > 0.59 && inDark < 0.35 &&

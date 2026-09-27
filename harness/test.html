@@ -264,7 +264,7 @@ async function main() {
       "regDied:" + extreme.regDied + " — " + extreme.txt);
   }
 
-  // T6 — two emitters in one frame (spec §5.1).
+  // T6 — two emitters in one frame (multi-emitter by design).
   await tick("T6: two-emitter composite…");
   const comp = cleanFrames.map(fr => ({ f: fr.f, img: OC.degrade.composite2(fr.img, fr.img, 0.72, 0.62) }));
   const r6 = OC.pipeline.decodeSequence(comp, profile, { aligned: true, maxEmitters: 4 });
@@ -378,7 +378,8 @@ async function main() {
     // Three criterion upgrades were tried against this (partner-only bound,
     // union, final-pass tight-partner): each fixed a synthetic regime and
     // regressed the FIELD controls (field12 L0 0.000 → 0.034) — all
-    // reverted. Investigation + open direction in the corpus v2r20 entry.
+    // reverted. The investigation and the open direction are in the design
+    // records (the v2r20 build's entry).
     record("T13 row-time repair: 4-frame torn run, single looks — every layer SER==0 (erasures ≤2), all 12 seams detected, each either repaired or honestly erased, ≥5 repaired",
       okAll && torn >= 10 && repaired + invalidated >= 10 && repaired >= 5,
       det13 + "  (torn " + torn + ", repaired " + repaired + ", invalidated " + invalidated + ")");

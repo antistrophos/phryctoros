@@ -183,7 +183,7 @@ async function main() {
       (conB ? "conic " + JSON.stringify(conB) : "no diag") + "  identical:" + identical);
   }
 
-  // ——— T22 family: THE V3 CONTRACT, emitter side (freeze order §10) ———
+  // ——— T22 family: THE V3 CONTRACT, emitter side (in the contract's build order) ———
   // The calibration plate that happens to carry data: edges/bands/plate render,
   // the units-anchor flat circle, beacon luminance-constancy, the QR↔bullseye
   // AE-neutrality swap, and the equalized carriage at the byte level (24-bit
@@ -204,7 +204,7 @@ async function main() {
       v3h.ok && p3h.annuli[0].rotation.M === 4 && p3h.annuli[0].layer === 0 &&
       p3h.annuli[3].rotation.M === 32 && p3h.carriage.droplet_bits === 48,
       (v3h.errors[0] || "0 errors") + " M-ladder " + p3h.annuli.map(a => a.rotation.M).join("/"));
-    // Frozen §1 geometry spot-checks: sums 0.090, C-pinch exactly 0.23, approach 0.20.
+    // Frozen v3 ring-geometry spot-checks: sums 0.090, C-pinch exactly 0.23, approach 0.20.
     const sums = p3.annuli.map(a => OC.profile.sumAmp(a));
     const cPinch = 3.00 - (2.68 + sums[3]);
     const approachAB = (1.80 - sums[1]) - (1.42 + sums[0]);
@@ -388,7 +388,7 @@ async function main() {
     const e2 = OC.emission.envelopeBytes(p2e, null);
     const f1 = OC.plate.parseEnvelope(e1), f6a = OC.plate.parseEnvelope(e6a),
           f6b = OC.plate.parseEnvelope(e6b), f2 = OC.plate.parseEnvelope(e2);
-    record("T22e tile/grid fields (ruling 4): tiling=1 writes zeros (pre-ruling envelopes byte-exact) and parses as tile 0 of 1×1; 6-up writes grid 0x32 (3×2) and stamps the carrying tile; 2-up writes 0x21; two tiles of one grid seal to DISTINCT tags",
+    record("T22e tile/grid fields (D-ring ruling 4): tiling=1 writes zeros (pre-ruling envelopes byte-exact) and parses as tile 0 of 1×1; 6-up writes grid 0x32 (3×2) and stamps the carrying tile; 2-up writes 0x21; two tiles of one grid seal to DISTINCT tags",
       !!(e1[16] === 0 && e1[17] === 0 && f1 && f1.tile === 0 && f1.grid.cols === 1 && f1.grid.rows === 1 &&
          e6a[17] === 0x32 && f6a && f6a.grid.cols === 3 && f6a.grid.rows === 2 && f6a.tile === 0 &&
          e6b[16] === 4 && f6b && f6b.tile === 4 && f6b.grid.cols === 3 &&
@@ -482,8 +482,8 @@ async function main() {
 
   await tick("T22k: the inverted ladder is the DEFAULT — mirror integrity, classic still intact, full round-trip…");
   {
-    // Ruled 2026-08-21 (practitioner), amending the frozen contract's §1
-    // M-ladder after the first complete field carriage (::b) ran inverted:
+    // Ruled 2026-08-21 (practitioner), amending the frozen v3 contract's
+    // M-ladder after the first complete field carriage ran inverted:
     // profileV3() IS base-innermost now. The four edge configs mirror across
     // radii — base (M=4) innermost with the deepest harmonic ladder, M=16
     // outermost — and rates move WITH the configs so every k·f_rot flicker
@@ -787,7 +787,7 @@ async function main() {
       " · sibling lags " + sibLags.join(","));
   }
 
-  // ——— T23: tiling (§7) — the density knob, tile identity, the cross-tile pool ———
+  // ——— T23: tiling — the density knob, tile identity, the cross-tile pool ———
   await tick("T23a: 6-up render geometry (designated tile, gutter vertices, per-tile gauge)…");
   {
     // Reduced scale: geometry probes need no decode headroom.

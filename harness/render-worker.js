@@ -33,7 +33,7 @@ function setup(m) {
   }
   var beaconSchedulesT = null;
   if (P.beacon.placement === "a-inner" && layout.n > 1) {
-    // ruling 1b: per-tile envelopes (b[16]) → per-tile beacon schedules
+    // D-ring ruling 1b: per-tile envelopes (b[16]) → per-tile beacon schedules
     beaconSchedulesT = [];
     for (var bt = 0; bt < layout.n; bt++)
       beaconSchedulesT.push(OC.emission.buildBeaconSchedule(P, m.effLoopFrames,

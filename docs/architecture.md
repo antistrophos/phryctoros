@@ -3,7 +3,8 @@
 This document describes the emission, the wire format, the per-window decode
 pipeline, and the receiver that runs it over a clip or a live camera. It is the
 map. The header comment of each module in `src/` is the detailed reference, and
-the code governs where the two differ.
+the code governs where the two differ. The last section defines the short IDs
+(C1, F5b, D-ring ruling 1b, …) that comments in the code use.
 
 ## Terms
 
@@ -262,3 +263,64 @@ decodes only what this one lacked.
   the network.
 - The golden render path uses `dtrig.js`, so frames are bit-identical across
   engines; the live decoder uses native `Math`.
+
+## Reference IDs
+
+Comments in the code refer to the design's constraints, findings, and rulings
+by short IDs. The documents they come from — the original design spec, its
+first review, and the rulings recorded as the design evolved — are not in this
+repository; this section defines every ID the code uses. Comments also credit
+decisions to *the practitioner*, the project's owner, with the date each was
+made.
+
+### Constraints (C1–C11)
+
+The original spec's hard constraints on the deployment environment.
+
+| ID | constraint |
+|---|---|
+| C1 | Live camera capture (`getUserMedia`) needs a secure context: HTTPS or `localhost`. Recorded clips do not. |
+| C2 | Auto white balance and auto exposure cannot be reliably disabled, so no information may live in absolute brightness or colour — only in geometry, rate, and phase. |
+| C3 | A rolling shutter reads the sensor row by row, so a moving edge shears during capture (see F2). |
+| C4 | Frames drop routinely, so nothing may depend on a contiguous frame sequence: the symbols are differential and the payload is fountain-coded. |
+| C5 | Display refresh limits modulation to 60–240 Hz. |
+| C6 | Global-shutter phone cameras exist: never depend on rolling-shutter behavior. |
+| C7 | Visible light only in practice: near-infrared is never required. |
+| C8 | The decoder is plain JavaScript: no WASM and no libraries. |
+| C9 | A mirror flips handedness. The receiver is told through a configuration flag and never guesses. |
+| C10 | Front and rear cameras are different instruments: measure each separately. |
+| C11 | People can see the emission, so photosensitivity limits its parameters (see F1). |
+
+### Findings (F1–F9)
+
+The findings of the spec's first review.
+
+| ID | finding |
+|---|---|
+| F1 | Local flicker near a ring edge is k·f_rot for harmonic k, not f_rot. The photosensitivity bound applies to k times the rotation rate, including the modulation's deviation; low contrast and soft edges are the free mitigation. `flicker.js` computes it. |
+| F2 | A rolling shutter samples each part of a ring at a different time. The static shear cancels in frame-to-frame phase differences; the remaining tears are repaired by fitting against each sample's image row (`rowtime.js`). |
+| F3 | Layer 0's parameters are fixed; everything above layer 0 is declared by the emission. A receiver must not decode higher rings before reading that declaration, because a rotating pattern can alias into a plausible false rotation. |
+| F4 | Every length is measured in fiducial widths from the plate center (in v3, the flat outer circle defines the unit), so the geometry is independent of the camera's scale. |
+| F5 | Coupling rules between the shape and phase channels: (a) the harmonics' phases are static pilots; (b) the k = 1 harmonic is confounded with registration error, so it guides the phase branch but never enters the estimate (**F5b**); (c) every ring needs an odd harmonic, or a half-turn symmetry halves the cycle-slip bound (**F5c**); (d) harmonic magnitudes need floors so their phase stays defined. |
+| F6 | A one-way broadcast has no return path, so any liveness signal must ride another medium. |
+| F7 | Persistent occlusion identifies itself: mark it as erasures, not errors, because erasures are worth about twice as much to the decoder. |
+| F8 | Golden vectors: a decoder must be byte-exact against committed frames, and an encoder conforms when a reference decoder recovers its output byte-exact. The reference frames render with deterministic trigonometry (`dtrig.js`). |
+| F9 | Smaller notes, among them: keep a mid-gray surround so the plate never saturates, and normalize each radial profile locally, because an absolute threshold would bring back intensity dependence. |
+
+### Rulings and amendments
+
+| ID | ruled | what it settled |
+|---|---|---|
+| v3 ruling 1 | 2026-08-16 | Two presets — resilient (24-bit droplets) and high-rate (48-bit) — each with one droplet size shared by every ring. |
+| v3 ruling 2 | 2026-08-16 | The steady state is QR-free; the envelope rode a countdown QR at each loop boundary (later omitted by v4 clause 1). |
+| v3.1 amendment 2 | Aug 2026 | Quadrant swap-target corner marks, read by saddle registration. |
+| D-ring ruling 1b | 2026-08-23 | The control ring moves to band A's inner edge on every tile; the breaker ring stays, static. |
+| D-ring ruling 2 | 2026-08-23 | Chunked control framing, with the envelope's CRC16 as the fast identity tag. |
+| D-ring ruling 3 | 2026-08-23 | Pacing is the v3.1 standard, so it needs no wire flag. |
+| D-ring ruling 4 | 2026-08-23 | The envelope's tile and grid fields, scoped to one panel; sessions never tile together by default. |
+| v4 clause 1 | 2026-08-28 | The envelope QR is omitted. |
+| v4 clause 2′ | 2026-08-28 | The bullseye and the breaker retire into a three-section center target; the designated tile carries the inverted variant. |
+| v4 clause 3 | 2026-08-28 | The geometry change: quiet zone to 0.70, band A's inner edge to 0.95, and the control amplitude budget to 0.090, behind family byte 4. |
+| v4 clause 4 | 2026-08-29 | The training window. Its content was refuted — a droplet's CRC binds its slot to its position in the stream — so freeze 0 is the standing posture instead. |
+
+Test IDs (T…, TH…, TR…) name the cases on the suite pages ([testing.md](testing.md)).

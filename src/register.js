@@ -1,4 +1,4 @@
-/* register.js — stage 2: find EVERY fiducial in the frame (spec §5.1: never write a
+/* register.js — stage 2: find EVERY fiducial in the frame (never write a
    decoder that finds *a* fiducial). Finder-pattern detection is the classic
    1:1:3:1:1 run-length scan (plain JS, no QR library — C8). Output: one candidate
    emitter per finder triple, each with its own canonical→image homography.
@@ -232,7 +232,7 @@
     // Dark-band spans + the outer radius + the refine target. v2: annuli ARE
     // bands (r_inner→r0), outer ring's modulated boundary refines. v3: annuli
     // are EDGES — bands come from profile.bands at nominal radii, and the
-    // refine target is THE FLAT CIRCLE at 3.00 (the units anchor, §4: measured
+    // refine target is THE FLAT CIRCLE at 3.00 (the units anchor: measured
     // every frame with no modulation to average — sampleBoundary with an empty
     // harmonic set and sum 0 is exactly that gauge).
     var isV3 = !!(profile.bands && profile.plate);
@@ -473,7 +473,7 @@
      geometric triples by timing+structure; the BEST is accepted on structure
      alone (blur-tolerant — a real fiducial outranks ring/collar decoys whenever
      its timing resolves, and still verifies structurally when blur erases the
-     timing). ADDITIONAL emitters (multi-emitter/§5.1, decoy-exposed) must pass
+     timing). ADDITIONAL emitters (multi-emitter, decoy-exposed) must pass
      the strict timing signature too. When the finder path comes up EMPTY and
      the caller supplied the emission profile, fall back to ring registration
      (the fiducial dies before the rings — walks 4–5). */

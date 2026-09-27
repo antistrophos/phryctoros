@@ -29,7 +29,7 @@
   <div id="rxSummary" style="font-size:1.05rem;padding:.35rem .6rem;border-radius:4px;margin-top:.4rem"></div>
 </fieldset>
 
-<fieldset><legend>Session metadata (logged with every decode — spec §6)</legend>
+<fieldset><legend>Session metadata (logged with every decode)</legend>
   <label>range (m) <input id="m_range" type="number" step="0.5" style="width:4.5rem"></label>
   <label>lighting <select id="m_light"><option>indoor-dim</option><option>indoor-bright</option><option>dark</option><option>daylight-shade</option><option>daylight-direct</option></select></label>
   <label>tx type <input id="m_tx" value="laptop-screen" style="width:8rem"></label>
@@ -50,7 +50,7 @@
   <button id="capBtn" disabled>Capture <input id="capSecs" type="number" value="8" min="3" style="width:3rem"> s → decode</button>
   <button id="liveBtn" disabled title="the continuous receiver on the camera: take-what-comes, telemetry until it comes back with data or doesn't">Live harvest</button>
   <button id="liveStopBtn" disabled>Stop live</button>
-  <label style="border:1px dashed #555; padding:.4rem .6rem">video file (§9.1): <input id="fileIn" type="file" accept="video/*"></label>
+  <label style="border:1px dashed #555; padding:.4rem .6rem">video file: <input id="fileIn" type="file" accept="video/*"></label>
 </p>
 
 <fieldset><legend>Harvest (payload modes) — droplet-aware hop + early exit</legend>
@@ -157,7 +157,7 @@ let stream = null, capturing = false, camFrames = [], frameCounter = 0;
 $("caps").textContent =
   "capabilities: secureContext=" + window.isSecureContext +
   " · getUserMedia=" + !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia) +
-  " · origin=" + location.protocol + " — file-input decode needs NO camera and NO secure context (§9.1); " +
+  " · origin=" + location.protocol + " — file-input decode needs NO camera and NO secure context; " +
   "this page is the sneakernet artifact: it must keep working from file://.";
 
 function setStatus(t, cls) { $("status").textContent = t; $("status").className = cls || ""; }
@@ -1292,7 +1292,7 @@ function synthSource(msg, loopS) {
   });
 })();
 
-/* ---------- recorded input (§9.1 — first-class, works without camera/secure ctx) ----------
+/* ---------- recorded input (first-class, works without camera/secure ctx) ----------
    Seek-stepped, crop-at-native-resolution. Browser-agnostic by construction: no
    rVFC dependence (Firefox lacks it — its rAF fallback jittered frame timing),
    and no 800 px downscale (which cost the phase margin that made laptop decodes
@@ -1593,7 +1593,7 @@ function ocApplySettings(str) {
   const map = { "15": pay ? "v2p" : "v2",
                 "v3": "v3", "v3hr": "v3hr", "v3i": "v3", "v3c": "v3c",
                 // Trial-era strings resolve to the paced standard they always
-                // meant (ruling 2026-08-23); v3f is the flat legacy opt-out.
+                // meant (D-ring ruling 3); v3f is the flat legacy opt-out.
                 "v3p": "v3", "v3hrp": "v3hr", "v3f": "v3f" };  // v3i strings predate the flip
   const target = map[kv.prof];
   if (!target) return { err: "unknown prof \"" + kv.prof + "\"" };
